@@ -1,11 +1,16 @@
 import { createPrismaClient } from "@ticketapp/db";
 import { buildApp } from "./app";
+import { mailerFromEnv } from "./lib/mailer";
 
 const port = Number(process.env.PORT ?? 4000);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const prisma = createPrismaClient();
-const app = await buildApp({ prisma }, { logger: true });
+const app = await buildApp(
+  { prisma, mailer: mailerFromEnv() },
+  // Behind a hosting proxy, trust X-Forwarded-For so rate limits see the client's IP.
+  { logger: true, trustProxy: process.env.TRUST_PROXY === "true" },
+);
 app.addHook("onClose", async () => {
   await prisma.$disconnect();
 });

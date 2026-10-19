@@ -1,0 +1,43 @@
+# Render Blueprint for the API and its Postgres database. See docs/deploy.md.
+databases:
+  - name: ticketapp-db
+    databaseName: ticketapp
+    user: ticketapp
+    # Free databases expire after 30 days; move to a paid plan before real events.
+    plan: free
+
+services:
+  - type: web
+    name: ticketapp-api
+    runtime: node
+    plan: free
+    # Dev dependencies are needed to build, so install them despite NODE_ENV=production.
+    buildCommand: >-
+      npx --yes pnpm@10.28.0 install --frozen-lockfile --prod=false &&
+      npx --yes pnpm@10.28.0 turbo run build --filter=@ticketapp/api
+    # Migrations run on start so they work on every plan (pre-deploy commands are paid-only).
+    startCommand: >-
+      (cd packages/db && ../../node_modules/.bin/prisma migrate deploy) &&
+      node apps/api/dist/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ticketapp-db
+          property: connectionString
+      # Dashboard URL (from Vercel), used in sign-in links and for CORS.
+      - key: WEB_BASE_URL
+        sync: false
+      - key: WEB_ORIGIN
+        sync: false
+      # smtps://resend:<API key>@smtp.resend.com:465 until the real domain is set up.
+      - key: SMTP_URL
+        sync: false
+      - key: MAIL_FROM
+        value: TicketApp <onboarding@resend.dev>
