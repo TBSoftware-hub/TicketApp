@@ -19,7 +19,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "eslint .",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "dev": "expo start",
+    "build": "expo export --platform ios --platform android --output-dir dist"
   },
   "private": true
 }
