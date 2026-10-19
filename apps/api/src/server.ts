@@ -3,13 +3,15 @@ import { buildApp } from "./app";
 import { mailerFromEnv } from "./lib/mailer";
 
 const port = Number(process.env.PORT ?? 4000);
+const trustedProxyHops = Number(process.env.TRUSTED_PROXY_HOPS ?? 0);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const prisma = createPrismaClient();
 const app = await buildApp(
   { prisma, mailer: mailerFromEnv() },
-  // Behind a hosting proxy, trust X-Forwarded-For so rate limits see the client's IP.
-  { logger: true, trustProxy: process.env.TRUST_PROXY === "true" },
+  // Number of proxy hops in front of the API. Trusting only those hops means a client can't pick
+  // its own IP (and dodge rate limits) by sending a forged X-Forwarded-For.
+  { logger: true, trustProxy: (_address, hop) => hop < trustedProxyHops },
 );
 app.addHook("onClose", async () => {
   await prisma.$disconnect();
