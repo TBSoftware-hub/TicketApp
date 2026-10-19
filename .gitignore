@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.next/
+.expo/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+.env
+.env.*
+!.env.example
+coverage/
+.DS_Store
+# Expo native builds
+apps/mobile/ios/
+apps/mobile/android/
