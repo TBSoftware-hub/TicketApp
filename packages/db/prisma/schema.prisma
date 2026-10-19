@@ -1,0 +1,359 @@
+// TicketApp core data model. See docs/build-plan.md ("Core data model").
+// Money is stored as integer cents. Times are stored in UTC.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Organizations and staff ────────────────────────────────────────────────
+
+model District {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  name          String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  organizations Organization[]
+}
+
+enum OrganizationType {
+  SCHOOL
+  COMMITTEE
+  NONPROFIT
+}
+
+model Organization {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  name            String
+  slug            String           @unique
+  type            OrganizationType
+  timezone        String           @default("America/New_York")
+  districtId      String?          @db.Uuid
+  district        District?        @relation(fields: [districtId], references: [id])
+  stripeAccountId String?          @unique
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  memberships     Membership[]
+  events          Event[]
+  waiverTemplates WaiverTemplate[]
+
+  @@index([districtId])
+}
+
+model User {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  email       String       @unique
+  name        String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  memberships Membership[]
+  scans       ScanEvent[]
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  DOOR_STAFF
+  VIEWER
+}
+
+model Membership {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  userId         String       @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           Role
+  createdAt      DateTime     @default(now())
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+// ─── Events and tickets ─────────────────────────────────────────────────────
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+}
+
+model Event {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  organizationId String        @db.Uuid
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  slug           String
+  description    String?
+  venue          String?
+  startsAt       DateTime
+  endsAt         DateTime
+  capacity       Int?
+  status         EventStatus   @default(DRAFT)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  ticketTypes    TicketType[]
+  orders         Order[]
+  tickets        Ticket[]
+  waivers        EventWaiver[]
+  scans          ScanEvent[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, startsAt])
+}
+
+model TicketType {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  eventId      String    @db.Uuid
+  event        Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name         String
+  priceCents   Int
+  quantity     Int?
+  maxPerOrder  Int       @default(10)
+  salesStartAt DateTime?
+  salesEndAt   DateTime?
+  studentsOnly Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  tickets      Ticket[]
+
+  @@index([eventId])
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CARD
+  CASH
+  COMP
+}
+
+model Order {
+  id                    String        @id @default(uuid(7)) @db.Uuid
+  eventId               String        @db.Uuid
+  event                 Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  buyerName             String
+  buyerEmail            String
+  buyerPhone            String?
+  status                OrderStatus   @default(PENDING)
+  paymentMethod         PaymentMethod @default(CARD)
+  subtotalCents         Int
+  feeCents              Int           @default(0)
+  totalCents            Int
+  stripePaymentIntentId String?       @unique
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  tickets               Ticket[]
+
+  @@index([eventId, status])
+  @@index([buyerEmail])
+}
+
+enum TicketStatus {
+  VALID
+  VOID
+}
+
+/// One per attendee. `code` is what the QR encodes; it is random, never guessable.
+model Ticket {
+  id           String            @id @default(uuid(7)) @db.Uuid
+  code         String            @unique
+  orderId      String            @db.Uuid
+  order        Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  eventId      String            @db.Uuid
+  event        Event             @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  ticketTypeId String            @db.Uuid
+  ticketType   TicketType        @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+  attendeeId   String            @db.Uuid
+  attendee     Attendee          @relation(fields: [attendeeId], references: [id], onDelete: Restrict)
+  status       TicketStatus      @default(VALID)
+  /// Denormalised from the latest scan so the door app can answer in one read.
+  isInside     Boolean           @default(false)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  signatures   WaiverSignature[]
+  scans        ScanEvent[]
+
+  @@unique([eventId, attendeeId])
+  @@index([eventId, isInside])
+}
+
+// ─── Attendees and guardians ────────────────────────────────────────────────
+
+model Attendee {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  firstName        String
+  lastName         String
+  email            String?
+  phone            String?
+  dateOfBirth      DateTime?          @db.Date
+  grade            Int?
+  studentId        String?
+  emergencyContact String?
+  medicalNotes     String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  tickets          Ticket[]
+  guardians        AttendeeGuardian[]
+}
+
+model Guardian {
+  id            String             @id @default(uuid(7)) @db.Uuid
+  name          String
+  email         String?
+  phone         String?
+  /// When the guardian agreed to receive check-in/out texts (TCPA consent). Null = no texts.
+  smsOptInAt    DateTime?
+  smsOptOutAt   DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  attendees     AttendeeGuardian[]
+  signatures    WaiverSignature[]
+  notifications Notification[]
+}
+
+model AttendeeGuardian {
+  attendeeId   String   @db.Uuid
+  attendee     Attendee @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+  guardianId   String   @db.Uuid
+  guardian     Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+  relationship String?
+  /// Whether this guardian gets check-in/out texts for this attendee.
+  notify       Boolean  @default(true)
+
+  @@id([attendeeId, guardianId])
+  @@index([guardianId])
+}
+
+// ─── Waivers ────────────────────────────────────────────────────────────────
+
+model WaiverTemplate {
+  id                        String            @id @default(uuid(7)) @db.Uuid
+  organizationId            String            @db.Uuid
+  organization              Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  title                     String
+  body                      String
+  version                   Int               @default(1)
+  requiresGuardianForMinors Boolean           @default(true)
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+  events                    EventWaiver[]
+  signatures                WaiverSignature[]
+
+  @@index([organizationId])
+}
+
+model EventWaiver {
+  eventId          String         @db.Uuid
+  event            Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  waiverTemplateId String         @db.Uuid
+  waiverTemplate   WaiverTemplate @relation(fields: [waiverTemplateId], references: [id], onDelete: Restrict)
+
+  @@id([eventId, waiverTemplateId])
+}
+
+enum SignerRole {
+  ATTENDEE
+  GUARDIAN
+}
+
+/// Audit trail for one signature. `documentHash` is the SHA-256 of the exact text signed.
+model WaiverSignature {
+  id               String         @id @default(uuid(7)) @db.Uuid
+  ticketId         String         @db.Uuid
+  ticket           Ticket         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  waiverTemplateId String         @db.Uuid
+  waiverTemplate   WaiverTemplate @relation(fields: [waiverTemplateId], references: [id], onDelete: Restrict)
+  templateVersion  Int
+  signerRole       SignerRole
+  signerName       String
+  guardianId       String?        @db.Uuid
+  guardian         Guardian?      @relation(fields: [guardianId], references: [id], onDelete: SetNull)
+  signedAt         DateTime       @default(now())
+  ipAddress        String?
+  userAgent        String?
+  documentHash     String
+  pdfStorageKey    String?
+
+  @@unique([ticketId, waiverTemplateId, signerRole])
+}
+
+// ─── Door scans and notifications ───────────────────────────────────────────
+
+enum ScanDirection {
+  IN
+  OUT
+}
+
+/// Mirrors ScanOutcome in @ticketapp/shared.
+enum ScanOutcome {
+  ADMITTED
+  CHECKED_OUT
+  ALREADY_INSIDE
+  NOT_INSIDE
+  WAIVER_MISSING
+  INVALID_TICKET
+}
+
+model ScanEvent {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  eventId        String         @db.Uuid
+  event          Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  ticketId       String?        @db.Uuid
+  ticket         Ticket?        @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  direction      ScanDirection
+  outcome        ScanOutcome
+  /// Set when staff let someone in despite a blocking outcome.
+  overrideReason String?
+  staffUserId    String?        @db.Uuid
+  staffUser      User?          @relation(fields: [staffUserId], references: [id], onDelete: SetNull)
+  deviceId       String?
+  /// When the scan happened on the device; differs from createdAt for offline scans.
+  scannedAt      DateTime
+  createdAt      DateTime       @default(now())
+  notifications  Notification[]
+
+  @@index([eventId, scannedAt])
+  @@index([ticketId])
+}
+
+enum NotificationChannel {
+  SMS
+  EMAIL
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+}
+
+model Notification {
+  id                String              @id @default(uuid(7)) @db.Uuid
+  guardianId        String?             @db.Uuid
+  guardian          Guardian?           @relation(fields: [guardianId], references: [id], onDelete: SetNull)
+  scanEventId       String?             @db.Uuid
+  scanEvent         ScanEvent?          @relation(fields: [scanEventId], references: [id], onDelete: SetNull)
+  channel           NotificationChannel
+  to                String
+  body              String
+  status            NotificationStatus  @default(QUEUED)
+  providerMessageId String?             @unique
+  error             String?
+  attempts          Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@index([status])
+  @@index([scanEventId])
+}

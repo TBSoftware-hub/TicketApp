@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/.next/**",
       "**/.expo/**",
       "**/next-env.d.ts",
+      "**/generated/**",
       "apps/mobile/index.ts",
     ],
   },

@@ -21,6 +21,9 @@ Requires Node.js 22 and pnpm 10 (`corepack enable` picks up the pinned version).
 
 ```bash
 pnpm install
+cp packages/db/.env.example packages/db/.env   # point DATABASE_URL at a local Postgres 16
+pnpm --filter @ticketapp/db migrate:deploy
+pnpm --filter @ticketapp/db seed                # demo after-prom with one ticket
 pnpm dev            # API on :4000, web on :3000, Expo dev server for mobile
 ```
 
@@ -29,7 +32,7 @@ Run one app with a filter, for example `pnpm --filter @ticketapp/api dev`. For t
 
 ## Checks
 
-These run in CI on every pull request:
+These run in CI on every pull request (the database tests need `DATABASE_URL` and migrations applied):
 
 ```bash
 pnpm format:check
@@ -38,3 +41,8 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+## Database changes
+
+Edit `packages/db/prisma/schema.prisma`, then run `pnpm --filter @ticketapp/db migrate:dev --name <change>`
+to create and apply a migration. Commit the generated folder under `prisma/migrations`.
