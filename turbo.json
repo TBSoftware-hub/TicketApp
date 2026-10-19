@@ -11,7 +11,8 @@
       "dependsOn": ["^typecheck"]
     },
     "test": {
-      "dependsOn": ["^test"]
+      "dependsOn": ["^test"],
+      "env": ["DATABASE_URL"]
     },
     "dev": {
       "cache": false,
