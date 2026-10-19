@@ -1,0 +1,45 @@
+# Deploying
+
+The API and its Postgres database run on Render, set up from `render.yaml`. The web dashboard
+runs on Vercel. The mobile app ships through Expo later (E1.7).
+
+## Email for sign-in links
+
+In production the API refuses to start without a real email sender, so sign-in links never
+land in logs. Configure one of:
+
+- `RESEND_API_KEY`: sends through Resend's HTTPS API. Works on Render's free plan.
+- `SMTP_URL`: any SMTP provider, for example `smtps://user:password@smtp.example.com:465`.
+  Render's free web services block outbound SMTP ports, so this needs a paid instance.
+
+Both need `MAIL_FROM`, for example `TicketApp <tickets@example.com>`. If both are set, Resend wins.
+
+Until our own domain is ready, we use Resend's shared test sender: create an API key in Resend
+and set `RESEND_API_KEY`. `MAIL_FROM` is already `TicketApp <onboarding@resend.dev>`. The test
+sender only delivers to the email address that owns the Resend account, so only that person can
+sign in until the domain is verified.
+
+Moving to the real domain is a settings change on Render: verify the domain in Resend and update
+`MAIL_FROM`, or switch to the domain's SMTP with `SMTP_URL` on a paid instance.
+
+## API on Render
+
+1. In Render, choose **New > Blueprint**, pick this repository and confirm. Render creates
+   `ticketapp-db` and `ticketapp-api` from `render.yaml`.
+2. When asked, fill in `RESEND_API_KEY` (above). Leave `WEB_BASE_URL` and `WEB_ORIGIN` as a
+   placeholder until the dashboard has a URL, then set both to it (for example
+   `https://ticketapp.vercel.app`).
+3. Every push to `main` redeploys. Migrations run when the service starts.
+4. Check `https://<service>.onrender.com/health` returns `{"status":"ok"}`.
+
+`TRUSTED_PROXY_HOPS=1` makes the API take the client IP from the address Render's load
+balancer appends to `X-Forwarded-For`, so forged entries can't dodge the per-IP rate limit.
+
+Free plans sleep when idle and the free database expires after 30 days; switch both to paid
+plans before a real event.
+
+## Dashboard on Vercel
+
+1. In Vercel, choose **Add New > Project** and import this repository.
+2. Set **Root Directory** to `apps/web`. Vercel detects Next.js, pnpm and the workspace.
+3. Deploy. Every push to `main` deploys production; pull requests get preview URLs.

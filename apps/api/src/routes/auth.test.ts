@@ -133,3 +133,28 @@ describe("sign-in link requests per IP", () => {
     }
   });
 });
+
+describe("client IP behind a proxy", () => {
+  it("ignores forged X-Forwarded-For entries when counting requests per IP", async () => {
+    const t = await buildTestApp(
+      { magicLinkPerIpPerMinute: 2 },
+      { trustProxy: (_address: string, hop: number) => hop < 1 },
+    );
+    try {
+      // The proxy appends the address it saw; anything to the left came from the client.
+      const request = (forged: string) =>
+        t.app.inject({
+          method: "POST",
+          url: "/auth/magic-link",
+          remoteAddress: "10.0.0.1",
+          headers: { "x-forwarded-for": `${forged}, 203.0.113.7` },
+          payload: { email: `proxy-${randomUUID()}@example.com` },
+        });
+      expect((await request("198.51.100.1")).statusCode).toBe(202);
+      expect((await request("198.51.100.2")).statusCode).toBe(202);
+      expect((await request("198.51.100.3")).statusCode).toBe(429);
+    } finally {
+      await t.close();
+    }
+  });
+});

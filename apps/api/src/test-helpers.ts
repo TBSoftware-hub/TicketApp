@@ -1,21 +1,28 @@
 import "dotenv/config";
 import { createPrismaClient } from "@ticketapp/db";
+import type { FastifyServerOptions } from "fastify";
 import { randomUUID } from "node:crypto";
 import { buildApp, type AppDeps } from "./app";
 import type { MailMessage } from "./lib/mailer";
 
 /** Builds the app against the test database with a mailer that records messages instead of sending. */
-export async function buildTestApp(overrides: Partial<AppDeps> = {}) {
+export async function buildTestApp(
+  overrides: Partial<AppDeps> = {},
+  options: FastifyServerOptions = {},
+) {
   const prisma = createPrismaClient();
   const sent: MailMessage[] = [];
-  const app = await buildApp({
-    prisma,
-    webBaseUrl: "https://dashboard.test",
-    mailer: { send: async (m) => void sent.push(m) },
-    // Tests sign in many times from one address; the IP limit has its own test.
-    magicLinkPerIpPerMinute: 10_000,
-    ...overrides,
-  });
+  const app = await buildApp(
+    {
+      prisma,
+      webBaseUrl: "https://dashboard.test",
+      mailer: { send: async (m) => void sent.push(m) },
+      // Tests sign in many times from one address; the IP limit has its own test.
+      magicLinkPerIpPerMinute: 10_000,
+      ...overrides,
+    },
+    options,
+  );
 
   async function signIn(email = `staff-${randomUUID()}@example.com`, name = "Test Staff") {
     await app.inject({ method: "POST", url: "/auth/magic-link", payload: { email, name } });

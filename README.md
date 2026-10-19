@@ -50,3 +50,7 @@ pnpm build
 
 Edit `packages/db/prisma/schema.prisma`, then run `pnpm --filter @ticketapp/db migrate:dev --name <change>`
 to create and apply a migration. Commit the generated folder under `prisma/migrations`.
+
+## Deploying
+
+See [docs/deploy.md](docs/deploy.md) for Render (API and database) and Vercel (dashboard).
