@@ -5,6 +5,6 @@ export default defineConfig({
   format: ["esm"],
   target: "node22",
   clean: true,
-  // Bundle the shared package's TypeScript source into the API build.
-  noExternal: ["@ticketapp/shared"],
+  // Bundle the workspace packages' TypeScript source into the API build.
+  noExternal: ["@ticketapp/shared", "@ticketapp/db"],
 });

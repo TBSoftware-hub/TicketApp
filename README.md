@@ -22,10 +22,14 @@ Requires Node.js 22 and pnpm 10 (`corepack enable` picks up the pinned version).
 ```bash
 pnpm install
 cp packages/db/.env.example packages/db/.env   # point DATABASE_URL at a local Postgres 16
+cp apps/api/.env.example apps/api/.env         # same DATABASE_URL; the API and its tests use it
 pnpm --filter @ticketapp/db migrate:deploy
 pnpm --filter @ticketapp/db seed                # demo after-prom with one ticket
 pnpm dev            # API on :4000, web on :3000, Expo dev server for mobile
 ```
+
+In development the API writes sign-in emails to its log instead of sending them, so copy the
+link from there.
 
 Run one app with a filter, for example `pnpm --filter @ticketapp/api dev`. For the mobile app,
 `pnpm --filter @ticketapp/mobile start` and scan the QR code with Expo Go.

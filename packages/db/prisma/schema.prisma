@@ -52,6 +52,36 @@ model User {
   updatedAt   DateTime     @updatedAt
   memberships Membership[]
   scans       ScanEvent[]
+  sessions    Session[]
+}
+
+/// One-time sign-in link. Only the SHA-256 of the token is stored.
+model MagicLinkToken {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  email      String
+  /// Display name supplied at sign-up; used if no user exists yet for this email.
+  name       String?
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([email, createdAt])
+}
+
+/// Signed-in staff session (web cookie or mobile bearer token). Only the SHA-256 is stored.
+model Session {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 enum Role {
