@@ -1,17 +1,20 @@
 import "dotenv/config";
 import { createPrismaClient } from "@ticketapp/db";
 import { randomUUID } from "node:crypto";
-import { buildApp } from "./app";
+import { buildApp, type AppDeps } from "./app";
 import type { MailMessage } from "./lib/mailer";
 
 /** Builds the app against the test database with a mailer that records messages instead of sending. */
-export async function buildTestApp() {
+export async function buildTestApp(overrides: Partial<AppDeps> = {}) {
   const prisma = createPrismaClient();
   const sent: MailMessage[] = [];
   const app = await buildApp({
     prisma,
     webBaseUrl: "https://dashboard.test",
     mailer: { send: async (m) => void sent.push(m) },
+    // Tests sign in many times from one address; the IP limit has its own test.
+    magicLinkPerIpPerMinute: 10_000,
+    ...overrides,
   });
 
   async function signIn(email = `staff-${randomUUID()}@example.com`, name = "Test Staff") {

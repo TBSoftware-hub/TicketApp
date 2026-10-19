@@ -100,4 +100,36 @@ describe("staff sign-in", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("stops sending links to one email after five in fifteen minutes", async () => {
+    const email = `limited-${randomUUID()}@example.com`;
+    const request = () =>
+      t.app.inject({ method: "POST", url: "/auth/magic-link", payload: { email } });
+    for (let i = 0; i < 5; i++) expect((await request()).statusCode).toBe(202);
+
+    const res = await request();
+    expect(res.statusCode).toBe(429);
+    expect(t.sent.filter((m) => m.to === email)).toHaveLength(5);
+    expect(await t.prisma.magicLinkToken.count({ where: { email } })).toBe(5);
+  });
+});
+
+describe("sign-in link requests per IP", () => {
+  it("returns 429 once a client passes the per-minute limit", async () => {
+    const t = await buildTestApp({ magicLinkPerIpPerMinute: 2 });
+    try {
+      const request = () =>
+        t.app.inject({
+          method: "POST",
+          url: "/auth/magic-link",
+          payload: { email: `ip-${randomUUID()}@example.com` },
+        });
+      expect((await request()).statusCode).toBe(202);
+      expect((await request()).statusCode).toBe(202);
+      expect((await request()).statusCode).toBe(429);
+      expect(t.sent).toHaveLength(2);
+    } finally {
+      await t.close();
+    }
+  });
 });

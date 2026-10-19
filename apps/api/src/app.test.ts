@@ -1,5 +1,7 @@
+import type { PrismaClient } from "@ticketapp/db";
 import { healthResponseSchema } from "@ticketapp/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "./app";
 import { buildTestApp } from "./test-helpers";
 
 describe("GET /health", () => {
@@ -22,5 +24,17 @@ describe("GET /health", () => {
   it("rejects malformed organization ids", async () => {
     const res = await t.app.inject({ method: "GET", url: "/orgs/not-a-uuid" });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("buildApp in production", () => {
+  it("refuses to start without a real mailer", async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      await expect(buildApp({ prisma: {} as PrismaClient })).rejects.toThrow(/mailer/);
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
   });
 });
