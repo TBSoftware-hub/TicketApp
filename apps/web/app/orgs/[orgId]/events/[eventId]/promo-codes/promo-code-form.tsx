@@ -93,7 +93,9 @@ export function PromoCodeForm({
               {tt.name}
             </label>
           ))}
-          <p className="muted hint">Leave them all unticked to apply it to every ticket type, including ones added later.</p>
+          <p className="muted hint">
+            Leave them all unticked to apply it to every ticket type, including ones added later.
+          </p>
         </fieldset>
       )}
       {state.error && (
