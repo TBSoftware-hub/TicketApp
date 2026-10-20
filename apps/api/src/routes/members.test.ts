@@ -264,6 +264,35 @@ describe("team members and invitations", () => {
     expect([201, 409]).toContain(reinvited.statusCode);
   });
 
+  it("refuses an expired invitation without joining or signing in", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    const email = newEmail();
+    const created = await invite(owner.headers, orgId, email, "ADMIN");
+    const { id } = created.json().invitation;
+    await t.prisma.invitation.update({
+      where: { id },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    const token = inviteToken(email);
+
+    const lookup = await t.app.inject({
+      method: "POST",
+      url: "/invitations/lookup",
+      payload: { token },
+    });
+    expect(lookup.statusCode).toBe(400);
+    const accept = await t.app.inject({
+      method: "POST",
+      url: "/invitations/accept",
+      payload: { token },
+    });
+    expect(accept.statusCode).toBe(400);
+
+    const row = await t.prisma.invitation.findUniqueOrThrow({ where: { id } });
+    expect(row.acceptedAt).toBeNull();
+    expect(await t.prisma.user.findUnique({ where: { email } })).toBeNull();
+  });
+
   it("revokes a pending invitation", async () => {
     const { owner, orgId } = await ownerWithOrg();
     const email = newEmail();
