@@ -134,6 +134,35 @@ describe("events", () => {
     expect(patch.statusCode).toBe(400);
   });
 
+  it("keeps the event valid when both ends are edited at the same moment", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    const created = await t.app.inject({
+      method: "POST",
+      url: `/orgs/${orgId}/events`,
+      headers: owner.headers,
+      payload: homecoming(),
+    });
+    const id = created.json().event.id;
+    // Each change is fine alone; together they would end the event before it starts.
+    const results = await Promise.all([
+      t.app.inject({
+        method: "PATCH",
+        url: `/orgs/${orgId}/events/${id}`,
+        headers: owner.headers,
+        payload: { startsAt: "2026-11-15T02:00:00.000Z" },
+      }),
+      t.app.inject({
+        method: "PATCH",
+        url: `/orgs/${orgId}/events/${id}`,
+        headers: owner.headers,
+        payload: { endsAt: "2026-11-15T01:00:00.000Z" },
+      }),
+    ]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    const row = await t.prisma.event.findUniqueOrThrow({ where: { id } });
+    expect(row.endsAt > row.startsAt).toBe(true);
+  });
+
   it("refuses a web address another event in the organization uses", async () => {
     const { owner, orgId } = await ownerWithOrg();
     const input = homecoming();

@@ -28,6 +28,13 @@ describe("zoned time", () => {
     );
   });
 
+  it("refuses a time skipped when clocks spring forward", () => {
+    expect(zonedLocalToUtc("2027-03-14T02:30", "America/New_York")).toBeNull();
+    expect(zonedLocalToUtc("2027-03-14T03:30", "America/New_York")?.toISOString()).toBe(
+      "2027-03-14T07:30:00.000Z",
+    );
+  });
+
   it("rejects malformed input", () => {
     expect(zonedLocalToUtc("tomorrow", "America/New_York")).toBeNull();
   });

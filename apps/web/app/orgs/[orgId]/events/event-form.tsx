@@ -12,6 +12,9 @@ export interface EventFormValues {
   startsAt: string;
   endsAt: string;
   capacity: string;
+  /** Stored instants of an existing event, so unchanged times are saved exactly as they were. */
+  startsAtUtc?: string;
+  endsAtUtc?: string;
 }
 
 export function EventForm({
@@ -46,6 +49,14 @@ export function EventForm({
 
   return (
     <form onSubmit={onSubmit} className="stack">
+      {initial.startsAtUtc && (
+        <>
+          <input type="hidden" name="startsAtOriginal" value={initial.startsAt} />
+          <input type="hidden" name="startsAtOriginalUtc" value={initial.startsAtUtc} />
+          <input type="hidden" name="endsAtOriginal" value={initial.endsAt} />
+          <input type="hidden" name="endsAtOriginalUtc" value={initial.endsAtUtc} />
+        </>
+      )}
       <label>
         Name
         <input

@@ -125,9 +125,23 @@ export async function saveEvent(
   const token = await getSessionToken();
   if (!token) redirect("/sign-in");
 
-  const startsAt = zonedLocalToUtc(String(formData.get("startsAt") ?? ""), timezone);
-  const endsAt = zonedLocalToUtc(String(formData.get("endsAt") ?? ""), timezone);
-  if (!startsAt || !endsAt) return { error: "Enter when the event starts and ends" };
+  // An unchanged time keeps its stored instant. During the hour that repeats when clocks fall back,
+  // the wall-clock time alone can't say which of the two it meant.
+  const time = (name: "startsAt" | "endsAt") => {
+    const local = String(formData.get(name) ?? "");
+    const original = String(formData.get(`${name}Original`) ?? "");
+    const originalUtc = String(formData.get(`${name}OriginalUtc`) ?? "");
+    if (local && local === original && originalUtc) return new Date(originalUtc);
+    return local ? zonedLocalToUtc(local, timezone) : null;
+  };
+  const startsAt = time("startsAt");
+  const endsAt = time("endsAt");
+  if (!formData.get("startsAt") || !formData.get("endsAt")) {
+    return { error: "Enter when the event starts and ends" };
+  }
+  if (!startsAt || !endsAt) {
+    return { error: "That time is skipped when the clocks change. Pick a different time." };
+  }
   const text = (name: string) => String(formData.get(name) ?? "").trim() || null;
   const capacity = text("capacity");
 

@@ -32,7 +32,11 @@ function zoneOffsetMs(instant: Date, timeZone: string): number {
   return asUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
-/** "2026-11-14T19:00" in `timeZone` → the UTC instant. Returns null for malformed input. */
+/**
+ * "2026-11-14T19:00" in `timeZone` → the UTC instant. Returns null for malformed input and for times
+ * that don't exist in the zone. A time that occurs twice (when clocks fall back) resolves to one of
+ * the two.
+ */
 export function zonedLocalToUtc(local: string, timeZone: string): Date | null {
   const m = LOCAL_PATTERN.exec(local);
   if (!m) return null;
@@ -41,7 +45,10 @@ export function zonedLocalToUtc(local: string, timeZone: string): Date | null {
   // Two passes settle the offset across daylight-saving changes.
   let utc = naive - zoneOffsetMs(new Date(naive), timeZone);
   utc = naive - zoneOffsetMs(new Date(utc), timeZone);
-  return new Date(utc);
+  const result = new Date(utc);
+  // Times skipped when clocks spring forward (2:30am on that day) don't exist; refuse them rather
+  // than quietly picking another time.
+  return utcToZonedLocal(result, timeZone) === local ? result : null;
 }
 
 /** UTC instant → "2026-11-14T19:00" in `timeZone`, the format of an `<input type="datetime-local">`. */

@@ -65,14 +65,20 @@ export async function eventRoutes(app: FastifyInstance, { prisma }: { prisma: Pr
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
     const input = parse(updateEventSchema, request.body);
-    const current = await prisma.event.findFirst({ where: { id: eventId, organizationId: orgId } });
-    if (!current) throw new HttpError(404, "Event not found");
-    // A change to only one end of the event still has to leave it ending after it starts.
-    if ((input.endsAt ?? current.endsAt) <= (input.startsAt ?? current.startsAt)) {
-      throw new HttpError(400, "The event has to end after it starts");
-    }
-    const event = await prisma.event
-      .update({ where: { id: eventId }, data: input, select: eventFields })
+    // Lock the row so a concurrent edit to the other end can't slip past the check.
+    const event = await prisma
+      .$transaction(async (tx) => {
+        const [current] = await tx.$queryRaw<{ startsAt: Date; endsAt: Date }[]>`
+          SELECT "startsAt", "endsAt" FROM "Event"
+          WHERE id = ${eventId}::uuid AND "organizationId" = ${orgId}::uuid
+          FOR UPDATE`;
+        if (!current) throw new HttpError(404, "Event not found");
+        // A change to only one end of the event still has to leave it ending after it starts.
+        if ((input.endsAt ?? current.endsAt) <= (input.startsAt ?? current.startsAt)) {
+          throw new HttpError(400, "The event has to end after it starts");
+        }
+        return tx.event.update({ where: { id: eventId }, data: input, select: eventFields });
+      })
       .catch(slugTaken);
     return { event };
   });
