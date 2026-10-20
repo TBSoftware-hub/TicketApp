@@ -138,6 +138,12 @@ export default async function EditEventPage({
             ))}
           </ul>
         )}
+        {ticketTypes.length > 0 && (
+          <p className="links">
+            <a href={`/orgs/${orgId}/events/${eventId}/promo-codes`}>Promo codes</a>
+            <a href={`/orgs/${orgId}/events/${eventId}/comps`}>Comp tickets</a>
+          </p>
+        )}
       </section>
     </main>
   );

@@ -55,6 +55,7 @@ model User {
   scans       ScanEvent[]
   sessions    Session[]
   invitations Invitation[]
+  compOrders  Order[]
 }
 
 /// One-time sign-in link. Only the SHA-256 of the token is stored.
@@ -150,6 +151,7 @@ model Event {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   ticketTypes    TicketType[]
+  promoCodes     PromoCode[]
   orders         Order[]
   tickets        Ticket[]
   waivers        EventWaiver[]
@@ -160,27 +162,56 @@ model Event {
 }
 
 model TicketType {
-  id               String    @id @default(uuid(7)) @db.Uuid
-  eventId          String    @db.Uuid
-  event            Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  id               String      @id @default(uuid(7)) @db.Uuid
+  eventId          String      @db.Uuid
+  event            Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
   name             String
   priceCents       Int
   quantity         Int?
-  maxPerOrder      Int       @default(10)
+  maxPerOrder      Int         @default(10)
   salesStartAt     DateTime?
   salesEndAt       DateTime?
   /// Only students may buy. Checked against the buyer's details at checkout (and the roster, once E6.2 lands).
-  studentsOnly     Boolean   @default(false)
+  studentsOnly     Boolean     @default(false)
   /// Inclusive grade range for students-only tickets; null means no limit on that side.
   minGrade         Int?
   maxGrade         Int?
   /// Guest passes: each purchase waits for staff approval before the ticket is valid.
-  requiresApproval Boolean   @default(false)
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  requiresApproval Boolean     @default(false)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
   tickets          Ticket[]
+  promoCodes       PromoCode[]
 
   @@index([eventId])
+}
+
+enum DiscountType {
+  PERCENT
+  AMOUNT
+}
+
+/// A discount buyers enter at checkout. `code` is stored upper-case and unique within the event.
+model PromoCode {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  eventId       String       @db.Uuid
+  event         Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  code          String
+  discountType  DiscountType
+  /// Whole percent (1–100) for PERCENT, cents off the order for AMOUNT.
+  discountValue Int
+  /// Orders that may use it; null means unlimited.
+  maxUses       Int?
+  validFrom     DateTime?
+  validUntil    DateTime?
+  active        Boolean      @default(true)
+  /// Ticket types it applies to; empty means all of the event's types.
+  ticketTypes   TicketType[]
+  orders        Order[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([eventId, code])
 }
 
 enum OrderStatus {
@@ -206,6 +237,13 @@ model Order {
   status                OrderStatus   @default(PENDING)
   paymentMethod         PaymentMethod @default(CARD)
   subtotalCents         Int
+  discountCents         Int           @default(0)
+  promoCodeId           String?       @db.Uuid
+  promoCode             PromoCode?    @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
+  /// Who on staff issued a comp order.
+  compedById            String?       @db.Uuid
+  compedBy              User?         @relation(fields: [compedById], references: [id], onDelete: SetNull)
+  note                  String?
   feeCents              Int           @default(0)
   totalCents            Int
   stripePaymentIntentId String?       @unique
@@ -215,6 +253,7 @@ model Order {
 
   @@index([eventId, status])
   @@index([buyerEmail])
+  @@index([promoCodeId])
 }
 
 enum TicketStatus {

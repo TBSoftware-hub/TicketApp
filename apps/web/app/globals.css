@@ -294,3 +294,17 @@ button.secondary {
 .status-panel .links {
   align-items: center;
 }
+
+.code,
+.code-input {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.04em;
+}
+
+.code-input {
+  text-transform: uppercase;
+}
+
+.struck {
+  text-decoration: line-through;
+}

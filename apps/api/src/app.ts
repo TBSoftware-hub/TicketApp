@@ -6,9 +6,11 @@ import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import { authRoutes } from "./routes/auth";
+import { compRoutes } from "./routes/comps";
 import { eventRoutes } from "./routes/events";
 import { memberRoutes } from "./routes/members";
 import { orgRoutes } from "./routes/orgs";
+import { promoCodeRoutes } from "./routes/promo-codes";
 import { publicEventRoutes } from "./routes/public-events";
 import { ticketTypeRoutes } from "./routes/ticket-types";
 
@@ -70,6 +72,8 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
   await app.register(publicEventRoutes, { prisma: deps.prisma });
+  await app.register(promoCodeRoutes, { prisma: deps.prisma });
+  await app.register(compRoutes, { prisma: deps.prisma });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 
   return app;
