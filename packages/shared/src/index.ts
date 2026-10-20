@@ -7,4 +7,5 @@ export * from "./orgs";
 export * from "./roles";
 export * from "./scan";
 export * from "./slug";
+export * from "./ticket-types";
 export * from "./time";
