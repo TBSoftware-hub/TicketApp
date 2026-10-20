@@ -14,7 +14,9 @@ export default async function SignInPage({
       <p className="eyebrow">TicketApp</p>
       <h1>Sign in</h1>
       {expired && (
-        <p className="notice error">That sign-in link has expired or was already used.</p>
+        <p className="notice error" role="alert">
+          That sign-in link has expired or was already used.
+        </p>
       )}
       <p className="muted">We&apos;ll email you a link that signs you in. No password needed.</p>
       <SignInForm />

@@ -4,6 +4,8 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:400
   "",
 );
 
+export const UNREACHABLE = "Couldn't reach TicketApp. Check your connection and try again.";
+
 export interface ApiResult<T> {
   status: number;
   data: T | { error: string };
@@ -14,15 +16,22 @@ export async function api<T>(
   path: string,
   { token, method = "GET", body }: { token?: string; method?: string; body?: unknown } = {},
 ): Promise<ApiResult<T>> {
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: "no-store",
+    });
+  } catch (err) {
+    // Status 0 means the API couldn't be reached at all; callers show a retryable error.
+    console.error(`API request to ${path} failed`, err);
+    return { status: 0, data: { error: UNREACHABLE } };
+  }
   if (res.status === 204) return { status: res.status, data: {} as T };
   // A proxy or crash page may not be JSON; report it as an error instead of throwing.
   const data = (await res

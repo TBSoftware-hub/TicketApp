@@ -73,7 +73,11 @@ export function NewOrganizationForm() {
           ))}
         </select>
       </label>
-      {state.error && <p className="notice error">{state.error}</p>}
+      {state.error && (
+        <p className="notice error" role="alert">
+          {state.error}
+        </p>
+      )}
       <button type="submit" disabled={pending}>
         {pending ? "Creating…" : "Create organization"}
       </button>

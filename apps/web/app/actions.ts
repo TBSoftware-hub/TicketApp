@@ -6,25 +6,24 @@ import { api, errorMessage } from "../lib/api";
 import { clearSessionToken, getSessionToken, setSessionToken } from "../lib/session";
 
 export async function verifySignIn(formData: FormData) {
+  const token = String(formData.get("token") ?? "");
   const { status, data } = await api<{ sessionToken: string }>("/auth/verify", {
     method: "POST",
-    body: { token: String(formData.get("token") ?? "") },
+    body: { token },
   });
-  if (status !== 200 || !("sessionToken" in data)) redirect("/sign-in?expired=1");
+  // Only a 400 means the link itself is bad; anything else leaves it unused, so offer a retry.
+  if (status === 400) redirect("/sign-in?expired=1");
+  if (status !== 200 || !("sessionToken" in data)) {
+    redirect(`/sign-in/verify?token=${encodeURIComponent(token)}&retry=1`);
+  }
   await setSessionToken(data.sessionToken);
   redirect("/");
 }
 
 export async function signOut() {
   const token = await getSessionToken();
-  if (token) {
-    // Signing out locally must not depend on the API being reachable.
-    try {
-      await api("/auth/sign-out", { method: "POST", token });
-    } catch (err) {
-      console.error("Couldn't revoke the session with the API", err);
-    }
-  }
+  // api() never throws, so the local session is cleared even if the API can't be reached.
+  if (token) await api("/auth/sign-out", { method: "POST", token });
   await clearSessionToken();
   redirect("/sign-in");
 }
