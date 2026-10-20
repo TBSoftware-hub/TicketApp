@@ -1,7 +1,7 @@
 import { roleCan } from "@ticketapp/shared";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { api } from "../../../../lib/api";
+import { api, errorMessage } from "../../../../lib/api";
 import { loadOrg } from "../../../../lib/org";
 import { openStripe } from "../../../actions";
 
@@ -33,8 +33,9 @@ export default async function PayoutsPage({
     `/orgs/${encodeURIComponent(orgId)}/payments`,
     { token },
   );
-  if (!("payments" in data)) throw new Error(`Couldn't load payout status (${status})`);
-  const p = data.payments;
+  if (status === 401) redirect("/sign-in");
+  // Stripe can be briefly unreachable; say so and offer a retry rather than an error page.
+  const p = "payments" in data ? data.payments : null;
 
   const stripeButton = (target: "onboarding" | "dashboard", label: string) => (
     <form action={openStripe}>
@@ -68,7 +69,11 @@ export default async function PayoutsPage({
       )}
 
       <section className="stack">
-        {!p.available ? (
+        {!p ? (
+          <p className="notice error" role="alert">
+            {errorMessage(data)} <a href={`/orgs/${orgId}/payouts`}>Reload</a>
+          </p>
+        ) : !p.available ? (
           <p className="notice">Payments aren&apos;t switched on yet. Check back soon.</p>
         ) : !p.connected ? (
           <>

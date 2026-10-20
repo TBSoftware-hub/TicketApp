@@ -29,6 +29,10 @@ ticket money goes straight to them; TicketApp is the Connect platform and never 
 
 Without the key, the Payouts page says payments aren't switched on yet.
 
+Test-mode accounts don't exist in live mode. Each saved account remembers which mode made it, so
+after switching to the live key, organizations show as not set up and go through Stripe's setup
+once more to get a live account. Nothing needs clearing by hand.
+
 ## API on Render
 
 1. In Render, choose **New > Blueprint**, pick this repository and confirm. Render creates

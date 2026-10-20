@@ -14,6 +14,8 @@ export interface PaymentAccountStatus {
  * or group rather than through the platform.
  */
 export interface Payments {
+  /** True with a live key. Accounts made in test mode don't exist in live mode, and vice versa. */
+  livemode: boolean;
   createAccount(org: { id: string; name: string }): Promise<string>;
   onboardingLink(
     accountId: string,
@@ -37,7 +39,7 @@ async function viaStripe<T>(call: () => Promise<T>): Promise<T> {
 
 export function createStripePayments(secretKey: string): Payments {
   const stripe = new Stripe(secretKey);
-  const payments: Payments = {
+  const payments: Omit<Payments, "livemode"> = {
     async createAccount(org) {
       const account = await stripe.accounts.create(
         {
@@ -76,6 +78,7 @@ export function createStripePayments(secretKey: string): Payments {
     },
   };
   return {
+    livemode: secretKey.startsWith("sk_live_") || secretKey.startsWith("rk_live_"),
     createAccount: (org) => viaStripe(() => payments.createAccount(org)),
     onboardingLink: (id, urls) => viaStripe(() => payments.onboardingLink(id, urls)),
     accountStatus: (id) => viaStripe(() => payments.accountStatus(id)),

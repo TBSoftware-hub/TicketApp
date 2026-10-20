@@ -7,6 +7,7 @@ function fakePayments() {
   const created: string[] = [];
   const statuses = new Map<string, PaymentAccountStatus>();
   const payments: Payments = {
+    livemode: false,
     async createAccount(org) {
       const id = `acct_${org.id.slice(0, 8)}_${created.length}`;
       created.push(id);
@@ -104,6 +105,32 @@ describe("payout setup", () => {
 
     const dashboard = await call("POST", "/dashboard");
     expect(dashboard.json().url).toBe(`https://connect.stripe.test/express/${org.stripeAccountId}`);
+  });
+
+  it("starts a fresh account when the saved one is from the other Stripe mode", async () => {
+    const { orgId, call } = await orgWithOwner();
+    // As if the account was made with a live key and the API now runs on a test key.
+    await t.prisma.organization.update({
+      where: { id: orgId },
+      data: {
+        stripeAccountId: `acct_live_${orgId.slice(0, 8)}`,
+        stripeLivemode: true,
+        stripeChargesEnabled: true,
+        stripePayoutsEnabled: true,
+        stripeDetailsSubmitted: true,
+      },
+    });
+
+    expect((await call("GET")).json().payments).toEqual({ available: true, connected: false });
+    const stale = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
+    expect(stale.stripeChargesEnabled).toBe(false);
+    expect((await call("POST", "/dashboard")).statusCode).toBe(409);
+
+    const start = await call("POST", "/onboarding");
+    const fresh = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
+    expect(fresh.stripeAccountId).not.toBe(`acct_live_${orgId.slice(0, 8)}`);
+    expect(fresh.stripeLivemode).toBe(false);
+    expect(new URL(start.json().url).pathname).toBe(`/setup/${fresh.stripeAccountId}`);
   });
 
   it("is limited to owners", async () => {
