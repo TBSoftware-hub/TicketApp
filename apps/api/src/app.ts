@@ -6,6 +6,7 @@ import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import { authRoutes } from "./routes/auth";
+import { eventRoutes } from "./routes/events";
 import { memberRoutes } from "./routes/members";
 import { orgRoutes } from "./routes/orgs";
 
@@ -64,6 +65,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     magicLinkPerIpPerMinute: deps.magicLinkPerIpPerMinute ?? 10,
   });
   await app.register(orgRoutes, { prisma: deps.prisma });
+  await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 
   return app;

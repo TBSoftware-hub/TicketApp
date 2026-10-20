@@ -41,7 +41,10 @@ export default async function HomePage() {
             <span className="muted">
               {ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role} · tickets/{organization.slug}
             </span>
-            <a href={`/orgs/${organization.id}/team`}>Team</a>
+            <span className="links">
+              <a href={`/orgs/${organization.id}/events`}>Events</a>
+              <a href={`/orgs/${organization.id}/team`}>Team</a>
+            </span>
           </li>
         ))}
       </ul>

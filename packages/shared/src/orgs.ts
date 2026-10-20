@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+/** True for IANA zone names this runtime knows, e.g. "America/New_York" but not "America/NewYork". */
+export function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const organizationTypeSchema = z.enum(["SCHOOL", "COMMITTEE", "NONPROFIT"]);
 
 export const createOrganizationSchema = z.object({
@@ -11,7 +21,7 @@ export const createOrganizationSchema = z.object({
     .max(60)
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Use lowercase letters, numbers and single hyphens"),
   type: organizationTypeSchema,
-  timezone: z.string().min(1).max(64).optional(),
+  timezone: z.string().min(1).max(64).refine(isTimeZone, "Choose a valid time zone").optional(),
 });
 export type CreateOrganization = z.infer<typeof createOrganizationSchema>;
 
