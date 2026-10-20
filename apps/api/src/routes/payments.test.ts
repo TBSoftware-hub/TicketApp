@@ -11,7 +11,7 @@ function fakePayments() {
   const gate: { wait?: Promise<void> } = {};
   const payments: Payments = {
     livemode: false,
-    async createAccount(org) {
+    async createAccount() {
       const id = `acct_${randomUUID()}`;
       created.push(id);
       return id;
