@@ -123,6 +123,8 @@ model Invitation {
   createdAt      DateTime     @default(now())
 
   @@index([organizationId, email])
+  @@index([email, createdAt])
+  @@index([invitedById, createdAt])
 }
 
 // ─── Events and tickets ─────────────────────────────────────────────────────
