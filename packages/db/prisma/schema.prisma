@@ -38,6 +38,7 @@ model Organization {
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   memberships     Membership[]
+  invitations     Invitation[]
   events          Event[]
   waiverTemplates WaiverTemplate[]
 
@@ -53,6 +54,7 @@ model User {
   memberships Membership[]
   scans       ScanEvent[]
   sessions    Session[]
+  invitations Invitation[]
 }
 
 /// One-time sign-in link. Only the SHA-256 of the token is stored.
@@ -102,6 +104,27 @@ model Membership {
 
   @@unique([userId, organizationId])
   @@index([organizationId])
+}
+
+/// Invitation to join an organization. Accepting it proves the invitee owns the email, so it
+/// also signs them in. Only the SHA-256 of the token is stored.
+model Invitation {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           Role
+  tokenHash      String       @unique
+  invitedById    String?      @db.Uuid
+  invitedBy      User?        @relation(fields: [invitedById], references: [id], onDelete: SetNull)
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, email])
+  @@index([email, createdAt])
+  @@index([invitedById, createdAt])
 }
 
 // ─── Events and tickets ─────────────────────────────────────────────────────

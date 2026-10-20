@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { api } from "../lib/api";
+import { ROLE_LABELS } from "../lib/roles";
 import { getSessionToken } from "../lib/session";
 import { signOut } from "./actions";
 
@@ -10,13 +11,6 @@ interface Me {
     organization: { id: string; name: string; slug: string; type: string };
   }[];
 }
-
-const ROLE_LABELS: Record<string, string> = {
-  OWNER: "Owner",
-  ADMIN: "Admin",
-  DOOR_STAFF: "Door staff",
-  VIEWER: "Viewer",
-};
 
 export default async function HomePage() {
   const token = await getSessionToken();
@@ -45,8 +39,9 @@ export default async function HomePage() {
           <li key={organization.id} className="card">
             <strong>{organization.name}</strong>
             <span className="muted">
-              {ROLE_LABELS[role] ?? role} · tickets/{organization.slug}
+              {ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role} · tickets/{organization.slug}
             </span>
+            <a href={`/orgs/${organization.id}/team`}>Team</a>
           </li>
         ))}
       </ul>

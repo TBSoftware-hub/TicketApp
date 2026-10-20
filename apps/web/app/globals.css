@@ -151,3 +151,19 @@ button.link {
   border-radius: 10px;
   background: color-mix(in srgb, var(--ink) 5%, transparent);
 }
+
+.card.row {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.stack-tight {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+section {
+  margin-top: 32px;
+}

@@ -5,6 +5,7 @@ import { requireUser, SESSION_TTL_MS } from "../lib/auth";
 import { HttpError } from "../lib/errors";
 import type { Mailer } from "../lib/mailer";
 import { generateToken, hashToken } from "../lib/tokens";
+import { sendOrFail } from "../lib/send";
 import { parse } from "../lib/validate";
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
@@ -35,7 +36,7 @@ export async function authRoutes(
     }
 
     const token = generateToken();
-    await prisma.magicLinkToken.create({
+    const link = await prisma.magicLinkToken.create({
       data: {
         email,
         name,
@@ -44,12 +45,17 @@ export async function authRoutes(
       },
     });
 
-    const link = `${webBaseUrl}/sign-in/verify?token=${encodeURIComponent(token)}`;
-    await mailer.send({
-      to: email,
-      subject: "Your TicketApp sign-in link",
-      text: `Use this link to sign in. It works once and expires in 15 minutes.\n\n${link}\n\nIf you didn't ask for this, you can ignore this email.`,
-    });
+    const url = `${webBaseUrl}/sign-in/verify?token=${encodeURIComponent(token)}`;
+    await sendOrFail(
+      mailer,
+      {
+        to: email,
+        subject: "Your TicketApp sign-in link",
+        text: `Use this link to sign in. It works once and expires in 15 minutes.\n\n${url}\n\nIf you didn't ask for this, you can ignore this email.`,
+      },
+      request.log,
+      () => prisma.magicLinkToken.delete({ where: { id: link.id } }),
+    );
 
     return reply.code(202).send({ ok: true });
   });
