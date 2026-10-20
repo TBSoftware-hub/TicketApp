@@ -1,9 +1,11 @@
 "use server";
 
 import {
+  createCompSchema,
   createEventSchema,
   createInvitationSchema,
   createOrganizationSchema,
+  createPromoCodeSchema,
   createTicketTypeSchema,
   parseDollarsToCents,
   zonedLocalToUtc,
@@ -239,15 +241,17 @@ export async function deleteTicketType(formData: FormData) {
   const eventId = String(formData.get("eventId") ?? "");
   const ticketTypeId = String(formData.get("ticketTypeId") ?? "");
   const eventPath = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
-  const { status } = await api(`${eventPath}/ticket-types/${encodeURIComponent(ticketTypeId)}`, {
-    method: "DELETE",
-    token,
-  });
+  const { status, data } = await api(
+    `${eventPath}/ticket-types/${encodeURIComponent(ticketTypeId)}`,
+    { method: "DELETE", token },
+  );
   if (status === 401) redirect("/sign-in");
   revalidatePath(`/orgs/${orgId}/events/${eventId}`);
   // 404 means it's already gone, which the refreshed list shows.
   if (status !== 204 && status !== 404) {
-    redirect(`/orgs/${orgId}/events/${eventId}/tickets/${ticketTypeId}?deleteFailed=1`);
+    redirect(
+      `/orgs/${orgId}/events/${eventId}/tickets/${ticketTypeId}?error=${encodeURIComponent(errorMessage(data))}`,
+    );
   }
   redirect(`/orgs/${orgId}/events/${eventId}`);
 }
@@ -273,4 +277,125 @@ export async function setEventStatus(formData: FormData) {
     );
   }
   redirect(`/orgs/${orgId}/events/${eventId}`);
+}
+
+export interface CreatedState extends FormState {
+  /** Set after a success, so the form can clear itself and say what happened. */
+  done?: { id: string; label: string };
+}
+
+export async function createPromoCode(
+  orgId: string,
+  eventId: string,
+  timezone: string,
+  _prev: CreatedState,
+  formData: FormData,
+): Promise<CreatedState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+
+  const discountType = String(formData.get("discountType") ?? "");
+  const rawValue = String(formData.get("discountValue") ?? "").trim();
+  const discountValue =
+    discountType === "AMOUNT"
+      ? parseDollarsToCents(rawValue)
+      : /^\d+$/.test(rawValue)
+        ? Number(rawValue)
+        : null;
+  if (discountValue === null) {
+    return {
+      error: discountType === "AMOUNT" ? "Enter an amount like 5 or 2.50" : "Enter a whole percent",
+    };
+  }
+  const validFrom = formTime(formData, "validFrom", timezone);
+  const validUntil = formTime(formData, "validUntil", timezone);
+  if ((formData.get("validFrom") && !validFrom) || (formData.get("validUntil") && !validUntil)) {
+    return { error: SKIPPED_TIME };
+  }
+  const maxUses = String(formData.get("maxUses") ?? "").trim();
+
+  const parsed = createPromoCodeSchema.safeParse({
+    code: formData.get("code"),
+    discountType,
+    discountValue,
+    maxUses: maxUses ? Number(maxUses) : null,
+    validFrom,
+    validUntil,
+    ticketTypeIds: formData.getAll("ticketTypeIds").map(String),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+
+  const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/promo-codes`;
+  const { status, data } = await api(path, { method: "POST", token, body: parsed.data });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 201) return { error: errorMessage(data) };
+  revalidatePath(`/orgs/${orgId}/events/${eventId}/promo-codes`);
+  const { promoCode } = data as { promoCode: { id: string } };
+  return { done: { id: promoCode.id, label: parsed.data.code } };
+}
+
+export async function updatePromoCode(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const eventId = String(formData.get("eventId") ?? "");
+  const promoCodeId = String(formData.get("promoCodeId") ?? "");
+  const intent = String(formData.get("intent") ?? "");
+  const page = `/orgs/${orgId}/events/${eventId}/promo-codes`;
+  const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/promo-codes/${encodeURIComponent(promoCodeId)}`;
+  const { status, data } =
+    intent === "delete"
+      ? await api(path, { method: "DELETE", token })
+      : await api(path, { method: "PATCH", token, body: { active: intent === "activate" } });
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(page);
+  // 404 means it's already gone, which the refreshed list shows.
+  if (status !== 200 && status !== 204 && status !== 404) {
+    redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
+  }
+  redirect(page);
+}
+
+export async function issueComp(
+  orgId: string,
+  eventId: string,
+  _prev: CreatedState,
+  formData: FormData,
+): Promise<CreatedState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const note = String(formData.get("note") ?? "").trim();
+  const parsed = createCompSchema.safeParse({
+    ticketTypeId: formData.get("ticketTypeId"),
+    firstName: formData.get("firstName"),
+    lastName: formData.get("lastName"),
+    email: formData.get("email"),
+    note: note || null,
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+
+  const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/comps`;
+  const { status, data } = await api(path, { method: "POST", token, body: parsed.data });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 201) return { error: errorMessage(data) };
+  revalidatePath(`/orgs/${orgId}/events/${eventId}/comps`);
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  const { comp } = data as { comp: { id: string } };
+  return { done: { id: comp.id, label: `${parsed.data.firstName} ${parsed.data.lastName}` } };
+}
+
+export async function voidComp(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const eventId = String(formData.get("eventId") ?? "");
+  const orderId = String(formData.get("orderId") ?? "");
+  const page = `/orgs/${orgId}/events/${eventId}/comps`;
+  const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/comps/${encodeURIComponent(orderId)}/void`;
+  const { status, data } = await api(path, { method: "POST", token });
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(page);
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  if (status !== 200) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
+  redirect(page);
 }

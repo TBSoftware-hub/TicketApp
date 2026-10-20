@@ -15,10 +15,10 @@ export default async function EditTicketTypePage({
   searchParams,
 }: {
   params: Promise<{ orgId: string; eventId: string; ticketTypeId: string }>;
-  searchParams: Promise<{ deleteFailed?: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const { orgId, eventId, ticketTypeId } = await params;
-  const { deleteFailed } = await searchParams;
+  const { error } = await searchParams;
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "events.manage")) redirect(`/orgs/${orgId}/events`);
   const base = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
@@ -63,11 +63,9 @@ export default async function EditTicketTypePage({
           salesEndAtUtc: tt.salesEndAt,
         }}
       />
-      {deleteFailed && (
+      {error && (
         <p className="notice error" role="alert">
-          {tt.hasTickets
-            ? "Tickets have been issued for this type, so it can't be deleted."
-            : "We couldn't delete this ticket type. Try again."}
+          {error}
         </p>
       )}
       {!tt.hasTickets && (
