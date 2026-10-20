@@ -99,14 +99,14 @@ export async function promoCodeRoutes(app: FastifyInstance, { prisma }: { prisma
     const { orgId, eventId, promoCodeId } = parse(promoParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
     const input = parse(updatePromoCodeSchema, request.body);
-    const { count } = await prisma.promoCode.updateMany({
-      where: { id: promoCodeId, eventId, event: { organizationId: orgId } },
-      data: input,
-    });
-    if (count === 0) throw new HttpError(404, "Promo code not found");
-    const promo = await prisma.promoCode.findUniqueOrThrow({
-      where: { id: promoCodeId },
-      select: promoFields,
+    // One transaction, so a delete can't land between the update and the read.
+    const promo = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.promoCode.updateMany({
+        where: { id: promoCodeId, eventId, event: { organizationId: orgId } },
+        data: input,
+      });
+      if (count === 0) throw new HttpError(404, "Promo code not found");
+      return tx.promoCode.findUniqueOrThrow({ where: { id: promoCodeId }, select: promoFields });
     });
     return { promoCode: present(promo) };
   });

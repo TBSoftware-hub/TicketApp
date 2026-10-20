@@ -241,15 +241,17 @@ export async function deleteTicketType(formData: FormData) {
   const eventId = String(formData.get("eventId") ?? "");
   const ticketTypeId = String(formData.get("ticketTypeId") ?? "");
   const eventPath = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
-  const { status } = await api(`${eventPath}/ticket-types/${encodeURIComponent(ticketTypeId)}`, {
-    method: "DELETE",
-    token,
-  });
+  const { status, data } = await api(
+    `${eventPath}/ticket-types/${encodeURIComponent(ticketTypeId)}`,
+    { method: "DELETE", token },
+  );
   if (status === 401) redirect("/sign-in");
   revalidatePath(`/orgs/${orgId}/events/${eventId}`);
   // 404 means it's already gone, which the refreshed list shows.
   if (status !== 204 && status !== 404) {
-    redirect(`/orgs/${orgId}/events/${eventId}/tickets/${ticketTypeId}?deleteFailed=1`);
+    redirect(
+      `/orgs/${orgId}/events/${eventId}/tickets/${ticketTypeId}?error=${encodeURIComponent(errorMessage(data))}`,
+    );
   }
   redirect(`/orgs/${orgId}/events/${eventId}`);
 }
