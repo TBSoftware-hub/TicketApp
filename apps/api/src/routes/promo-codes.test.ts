@@ -239,6 +239,23 @@ describe("promo codes and comp tickets", () => {
       expect(results.filter((r) => r.statusCode === 409)).toHaveLength(3);
     });
 
+    it("issues comps and creates codes for the same type side by side without deadlocking", async () => {
+      const { addType, call } = await eventWithTickets();
+      const type = await addType();
+      const results = await Promise.all(
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].flatMap((n) => [
+          call("POST", "/comps", chaperone(type, n)),
+          call("POST", "/promo-codes", {
+            code: `RACE${n}`,
+            discountType: "PERCENT",
+            discountValue: 10,
+            ticketTypeIds: [type],
+          }),
+        ]),
+      );
+      expect(results.map((r) => r.statusCode)).toEqual(Array(20).fill(201));
+    });
+
     it("voids a comp, which frees its seat", async () => {
       const { addType, call } = await eventWithTickets(1);
       const type = await addType();

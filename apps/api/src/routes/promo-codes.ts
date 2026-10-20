@@ -62,10 +62,16 @@ export async function promoCodeRoutes(app: FastifyInstance, { prisma }: { prisma
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
     const { ticketTypeIds = [], ...input } = parse(createPromoCodeSchema, request.body);
-    await requireEvent(orgId, eventId);
     const ids = [...new Set(ticketTypeIds)];
     try {
       const promo = await prisma.$transaction(async (tx) => {
+        // Event first, then types: the same order comp issuance locks them in, so the two can't
+        // deadlock. KEY SHARE is what the insert's foreign key takes on the event anyway.
+        const [event] = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "Event"
+          WHERE id = ${eventId}::uuid AND "organizationId" = ${orgId}::uuid
+          FOR KEY SHARE`;
+        if (!event) throw new HttpError(404, "Event not found");
         // Locking the types keeps them from being deleted out from under the new code.
         const found = ids.length
           ? await tx.$queryRaw<{ id: string }[]>`
