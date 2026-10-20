@@ -1,0 +1,114 @@
+import { roleCan } from "@ticketapp/shared";
+import type { Metadata } from "next";
+import { redirect } from "next/navigation";
+import { api } from "../../../../lib/api";
+import { loadOrg } from "../../../../lib/org";
+import { openStripe } from "../../../actions";
+
+export const metadata: Metadata = { title: "Payouts · TicketApp" };
+
+type PaymentsStatus =
+  | { available: boolean; connected: false }
+  | {
+      available: true;
+      connected: true;
+      chargesEnabled: boolean;
+      payoutsEnabled: boolean;
+      detailsSubmitted: boolean;
+      requirementsDue: number;
+    };
+
+export default async function PayoutsPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ orgId: string }>;
+  searchParams: Promise<{ error?: string; expired?: string }>;
+}) {
+  const { orgId } = await params;
+  const { error, expired } = await searchParams;
+  const { token, org, role } = await loadOrg(orgId);
+  if (!roleCan(role, "org.manage")) redirect(`/orgs/${orgId}/events`);
+  const { status, data } = await api<{ payments: PaymentsStatus }>(
+    `/orgs/${encodeURIComponent(orgId)}/payments`,
+    { token },
+  );
+  if (!("payments" in data)) throw new Error(`Couldn't load payout status (${status})`);
+  const p = data.payments;
+
+  const stripeButton = (target: "onboarding" | "dashboard", label: string) => (
+    <form action={openStripe}>
+      <input type="hidden" name="orgId" value={orgId} />
+      <input type="hidden" name="target" value={target} />
+      <button type="submit">{label}</button>
+    </form>
+  );
+
+  return (
+    <main className="narrow">
+      <header className="topbar">
+        <a href="/">← All organizations</a>
+      </header>
+      <p className="eyebrow">{org.name}</p>
+      <h1>Payouts</h1>
+      <p className="muted">
+        Ticket money goes straight to {org.name}&apos;s own Stripe account and on to your bank.
+        TicketApp never holds it.
+      </p>
+
+      {error && (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      )}
+      {expired && (
+        <p className="notice" role="status">
+          That setup link expired. Pick up where you left off below.
+        </p>
+      )}
+
+      <section className="stack">
+        {!p.available ? (
+          <p className="notice">Payments aren&apos;t switched on yet. Check back soon.</p>
+        ) : !p.connected ? (
+          <>
+            <p>
+              Stripe will ask for your organization&apos;s details, a contact person and the bank
+              account to pay into. It takes about ten minutes.
+            </p>
+            {stripeButton("onboarding", "Set up payouts with Stripe")}
+          </>
+        ) : p.chargesEnabled ? (
+          <>
+            <p className="notice" role="status">
+              <strong>Ready to sell tickets.</strong>{" "}
+              {p.payoutsEnabled
+                ? "Payouts go to your bank account automatically."
+                : "Stripe is still checking your bank details before the first payout."}
+            </p>
+            {p.requirementsDue > 0 && (
+              <>
+                <p>Stripe needs a little more information to keep payouts running.</p>
+                {stripeButton("onboarding", "Update details")}
+              </>
+            )}
+            {stripeButton("dashboard", "Open Stripe dashboard")}
+          </>
+        ) : p.detailsSubmitted && p.requirementsDue === 0 ? (
+          <p className="notice" role="status">
+            Stripe is reviewing your details. This page updates once you can sell tickets.
+          </p>
+        ) : (
+          <>
+            <p className="notice" role="status">
+              Setup isn&apos;t finished yet.
+              {p.requirementsDue > 0 &&
+                ` Stripe still needs ${p.requirementsDue} ${p.requirementsDue === 1 ? "detail" : "details"}.`}
+            </p>
+            {stripeButton("onboarding", "Continue setup")}
+          </>
+        )}
+      </section>
+    </main>
+  );
+}

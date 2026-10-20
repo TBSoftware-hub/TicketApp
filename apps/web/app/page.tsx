@@ -1,3 +1,4 @@
+import { roleCan, type Role } from "@ticketapp/shared";
 import { redirect } from "next/navigation";
 import { api } from "../lib/api";
 import { ROLE_LABELS } from "../lib/roles";
@@ -44,6 +45,9 @@ export default async function HomePage() {
             <span className="links">
               <a href={`/orgs/${organization.id}/events`}>Events</a>
               <a href={`/orgs/${organization.id}/team`}>Team</a>
+              {roleCan(role as Role, "org.manage") && (
+                <a href={`/orgs/${organization.id}/payouts`}>Payouts</a>
+              )}
             </span>
           </li>
         ))}

@@ -43,3 +43,6 @@ services:
         sync: false
       - key: MAIL_FROM
         value: TicketApp <no-reply@mail.myschooltix.com>
+      # Stripe Connect platform key; payments stay switched off until it's set.
+      - key: STRIPE_SECRET_KEY
+        sync: false

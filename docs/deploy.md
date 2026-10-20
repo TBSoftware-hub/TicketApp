@@ -18,6 +18,17 @@ We send from `mail.myschooltix.com`, which is verified in Resend: set `RESEND_AP
 `MAIL_FROM` is already `TicketApp <no-reply@mail.myschooltix.com>`. Its DNS records live at GoDaddy
 under the `mail` subdomain, so they don't touch the Microsoft 365 mailboxes on the main domain.
 
+## Payments
+
+Each organization connects its own Stripe Express account from **Payouts** in the dashboard, so
+ticket money goes straight to them; TicketApp is the Connect platform and never holds it.
+
+1. In the Stripe dashboard, open **Connect**, choose **Platform or marketplace** and enable
+   **Express** accounts. Add the TicketApp name and colour under Connect branding.
+2. Set `STRIPE_SECRET_KEY` on the API (an `sk_test_` key until launch, then the live key).
+
+Without the key, the Payouts page says payments aren't switched on yet.
+
 ## API on Render
 
 1. In Render, choose **New > Blueprint**, pick this repository and confirm. Render creates
