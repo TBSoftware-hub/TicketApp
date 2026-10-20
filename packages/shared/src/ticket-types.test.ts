@@ -4,6 +4,7 @@ import {
   createTicketTypeSchema,
   gradeRangeLabel,
   parseDollarsToCents,
+  ticketSaleStatus,
   updateTicketTypeSchema,
 } from "./index";
 
@@ -106,5 +107,33 @@ describe("checkEligibility", () => {
     expect(gradeRangeLabel(1, 1)).toBe("1st grade");
     expect(gradeRangeLabel(9, null)).toBe("grades 9 and up");
     expect(gradeRangeLabel(null, 8)).toBe("grades 8 and below");
+  });
+});
+
+describe("ticketSaleStatus", () => {
+  const now = new Date("2026-11-01T12:00:00Z");
+  const eventEndsAt = new Date("2026-11-15T03:00:00Z");
+  const open = { quantity: null, salesStartAt: null, salesEndAt: null };
+  const ctx = { sold: 0, eventEndsAt, eventRemaining: null, now };
+
+  it("is on sale with no limits", () => {
+    expect(ticketSaleStatus(open, ctx)).toBe("onSale");
+  });
+
+  it("follows the sale window", () => {
+    expect(ticketSaleStatus({ ...open, salesStartAt: new Date("2026-11-02T00:00:00Z") }, ctx)).toBe(
+      "upcoming",
+    );
+    expect(ticketSaleStatus({ ...open, salesEndAt: now }, ctx)).toBe("ended");
+  });
+
+  it("ends when the event is over", () => {
+    expect(ticketSaleStatus(open, { ...ctx, now: eventEndsAt })).toBe("ended");
+  });
+
+  it("sells out on its own quantity or the event's capacity", () => {
+    expect(ticketSaleStatus({ ...open, quantity: 5 }, { ...ctx, sold: 5 })).toBe("soldOut");
+    expect(ticketSaleStatus({ ...open, quantity: 5 }, { ...ctx, sold: 4 })).toBe("onSale");
+    expect(ticketSaleStatus(open, { ...ctx, eventRemaining: 0 })).toBe("soldOut");
   });
 });

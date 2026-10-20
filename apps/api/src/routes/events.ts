@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@ticketapp/db";
-import { createEventSchema, updateEventSchema } from "@ticketapp/shared";
+import { createEventSchema, eventStatusSchema, updateEventSchema } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
@@ -80,6 +80,28 @@ export async function eventRoutes(app: FastifyInstance, { prisma }: { prisma: Pr
         return tx.event.update({ where: { id: eventId }, data: input, select: eventFields });
       })
       .catch(slugTaken);
+    return { event };
+  });
+
+  app.post("/orgs/:orgId/events/:eventId/status", async (request) => {
+    const { orgId, eventId } = parse(eventParamsSchema, request.params);
+    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    const { status } = parse(z.object({ status: eventStatusSchema }), request.body);
+    const event = await prisma.$transaction(async (tx) => {
+      // Lock the event so a ticket type can't be deleted between the check and the update.
+      const [current] = await tx.$queryRaw<{ endsAt: Date }[]>`
+        SELECT "endsAt" FROM "Event"
+        WHERE id = ${eventId}::uuid AND "organizationId" = ${orgId}::uuid
+        FOR UPDATE`;
+      if (!current) throw new HttpError(404, "Event not found");
+      if (status === "PUBLISHED") {
+        if (current.endsAt <= new Date()) throw new HttpError(409, "This event has already ended");
+        if ((await tx.ticketType.count({ where: { eventId } })) === 0) {
+          throw new HttpError(409, "Add at least one ticket type before publishing");
+        }
+      }
+      return tx.event.update({ where: { id: eventId }, data: { status }, select: eventFields });
+    });
     return { event };
   });
 }

@@ -1,25 +1,31 @@
 import { roleCan, utcToZonedLocal } from "@ticketapp/shared";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { api } from "../../../../../lib/api";
-import type { EventRecord } from "../../../../../lib/events";
+import { STATUS_LABELS, type EventRecord } from "../../../../../lib/events";
 import { loadOrg } from "../../../../../lib/org";
+import { publicEventPath } from "../../../../../lib/public-events";
 import {
   formatEligibility,
   formatPrice,
   formatSaleWindow,
   type TicketTypeRecord,
 } from "../../../../../lib/ticket-types";
+import { setEventStatus } from "../../../../actions";
 import { EventForm } from "../event-form";
 
 export const metadata: Metadata = { title: "Edit event · TicketApp" };
 
 export default async function EditEventPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ orgId: string; eventId: string }>;
+  searchParams: Promise<{ statusError?: string }>;
 }) {
   const { orgId, eventId } = await params;
+  const { statusError } = await searchParams;
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "events.manage")) redirect(`/orgs/${orgId}/events`);
   const base = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
@@ -34,6 +40,18 @@ export default async function EditEventPage({
   }
   const e = data.event;
   const ticketTypes = typesRes.data.ticketTypes;
+  const h = await headers();
+  const publicUrl = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}${publicEventPath(org.slug, e.slug)}`;
+  const statusButton = (status: EventRecord["status"], label: string, className?: string) => (
+    <form action={setEventStatus}>
+      <input type="hidden" name="orgId" value={orgId} />
+      <input type="hidden" name="eventId" value={eventId} />
+      <input type="hidden" name="status" value={status} />
+      <button type="submit" className={className}>
+        {label}
+      </button>
+    </form>
+  );
 
   return (
     <main className="narrow">
@@ -42,6 +60,34 @@ export default async function EditEventPage({
       </header>
       <p className="eyebrow">{org.name}</p>
       <h1>{e.name}</h1>
+      <section className="card status-panel">
+        <span className="stack-tight">
+          <strong>{STATUS_LABELS[e.status]}</strong>
+          {e.status === "DRAFT" && (
+            <span className="muted">Only your team can see it. Publish to share the link.</span>
+          )}
+          {e.status === "PUBLISHED" && (
+            <span className="muted">
+              Anyone with the link can see it: <a href={publicUrl}>{publicUrl}</a>
+            </span>
+          )}
+          {e.status === "CANCELLED" && (
+            <span className="muted">
+              The <a href={publicUrl}>public page</a> says it&apos;s cancelled.
+            </span>
+          )}
+        </span>
+        {statusError && (
+          <p className="notice error" role="alert">
+            {statusError}
+          </p>
+        )}
+        <span className="links">
+          {e.status !== "PUBLISHED" && statusButton("PUBLISHED", "Publish")}
+          {e.status === "PUBLISHED" && statusButton("DRAFT", "Unpublish", "secondary")}
+          {e.status === "PUBLISHED" && statusButton("CANCELLED", "Cancel event", "link")}
+        </span>
+      </section>
       <EventForm
         orgId={orgId}
         eventId={e.id}
