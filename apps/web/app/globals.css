@@ -193,3 +193,15 @@ a.button {
   color: var(--bg);
   text-decoration: none;
 }
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.section-head h2 {
+  margin: 0;
+}

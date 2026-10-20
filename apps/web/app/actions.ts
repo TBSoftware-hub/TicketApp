@@ -4,6 +4,8 @@ import {
   createEventSchema,
   createInvitationSchema,
   createOrganizationSchema,
+  createTicketTypeSchema,
+  parseDollarsToCents,
   zonedLocalToUtc,
 } from "@ticketapp/shared";
 import { revalidatePath } from "next/cache";
@@ -115,6 +117,22 @@ export async function acceptInvitation(formData: FormData) {
   redirect("/");
 }
 
+/**
+ * Reads a datetime-local field as a UTC instant in the organization's time zone. Null when the field
+ * is blank or names a time skipped by a clock change.
+ */
+function formTime(formData: FormData, name: string, timezone: string): Date | null {
+  const local = String(formData.get(name) ?? "");
+  const original = String(formData.get(`${name}Original`) ?? "");
+  const originalUtc = String(formData.get(`${name}OriginalUtc`) ?? "");
+  // An unchanged time keeps its stored instant. During the hour that repeats when clocks fall back,
+  // the wall-clock time alone can't say which of the two it meant.
+  if (local && local === original && originalUtc) return new Date(originalUtc);
+  return local ? zonedLocalToUtc(local, timezone) : null;
+}
+
+const SKIPPED_TIME = "That time is skipped when the clocks change. Pick a different time.";
+
 export async function saveEvent(
   orgId: string,
   eventId: string | null,
@@ -125,22 +143,13 @@ export async function saveEvent(
   const token = await getSessionToken();
   if (!token) redirect("/sign-in");
 
-  // An unchanged time keeps its stored instant. During the hour that repeats when clocks fall back,
-  // the wall-clock time alone can't say which of the two it meant.
-  const time = (name: "startsAt" | "endsAt") => {
-    const local = String(formData.get(name) ?? "");
-    const original = String(formData.get(`${name}Original`) ?? "");
-    const originalUtc = String(formData.get(`${name}OriginalUtc`) ?? "");
-    if (local && local === original && originalUtc) return new Date(originalUtc);
-    return local ? zonedLocalToUtc(local, timezone) : null;
-  };
-  const startsAt = time("startsAt");
-  const endsAt = time("endsAt");
+  const startsAt = formTime(formData, "startsAt", timezone);
+  const endsAt = formTime(formData, "endsAt", timezone);
   if (!formData.get("startsAt") || !formData.get("endsAt")) {
     return { error: "Enter when the event starts and ends" };
   }
   if (!startsAt || !endsAt) {
-    return { error: "That time is skipped when the clocks change. Pick a different time." };
+    return { error: SKIPPED_TIME };
   }
   const text = (name: string) => String(formData.get(name) ?? "").trim() || null;
   const capacity = text("capacity");
@@ -166,4 +175,69 @@ export async function saveEvent(
   if (status !== 200 && status !== 201) return { error: errorMessage(data) };
   revalidatePath(`/orgs/${orgId}/events`);
   redirect(`/orgs/${orgId}/events`);
+}
+
+export async function saveTicketType(
+  orgId: string,
+  eventId: string,
+  ticketTypeId: string | null,
+  timezone: string,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+
+  const priceCents = parseDollarsToCents(String(formData.get("price") ?? ""));
+  if (priceCents === null) return { error: "Enter a price like 15 or 12.50" };
+  const salesStartAt = formTime(formData, "salesStartAt", timezone);
+  const salesEndAt = formTime(formData, "salesEndAt", timezone);
+  if (
+    (formData.get("salesStartAt") && !salesStartAt) ||
+    (formData.get("salesEndAt") && !salesEndAt)
+  ) {
+    return { error: SKIPPED_TIME };
+  }
+  const quantity = String(formData.get("quantity") ?? "").trim();
+
+  const parsed = createTicketTypeSchema.safeParse({
+    name: formData.get("name"),
+    priceCents,
+    quantity: quantity ? Number(quantity) : null,
+    maxPerOrder: Number(formData.get("maxPerOrder")),
+    salesStartAt,
+    salesEndAt,
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+
+  const eventPath = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
+  const base = `${eventPath}/ticket-types`;
+  const { status, data } = await api(
+    ticketTypeId ? `${base}/${encodeURIComponent(ticketTypeId)}` : base,
+    { method: ticketTypeId ? "PATCH" : "POST", token, body: parsed.data },
+  );
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200 && status !== 201) return { error: errorMessage(data) };
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  redirect(`/orgs/${orgId}/events/${eventId}`);
+}
+
+export async function deleteTicketType(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const eventId = String(formData.get("eventId") ?? "");
+  const ticketTypeId = String(formData.get("ticketTypeId") ?? "");
+  const eventPath = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
+  const { status } = await api(`${eventPath}/ticket-types/${encodeURIComponent(ticketTypeId)}`, {
+    method: "DELETE",
+    token,
+  });
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  // 404 means it's already gone, which the refreshed list shows.
+  if (status !== 204 && status !== 404) {
+    redirect(`/orgs/${orgId}/events/${eventId}/tickets/${ticketTypeId}?deleteFailed=1`);
+  }
+  redirect(`/orgs/${orgId}/events/${eventId}`);
 }
