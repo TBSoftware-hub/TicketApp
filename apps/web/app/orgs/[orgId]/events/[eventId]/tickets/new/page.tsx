@@ -42,6 +42,10 @@ export default async function NewTicketTypePage({
           maxPerOrder: "10",
           salesStartAt: "",
           salesEndAt: "",
+          studentsOnly: false,
+          minGrade: "",
+          maxGrade: "",
+          requiresApproval: false,
         }}
       />
     </main>

@@ -199,6 +199,11 @@ export async function saveTicketType(
     return { error: SKIPPED_TIME };
   }
   const quantity = String(formData.get("quantity") ?? "").trim();
+  const studentsOnly = formData.get("studentsOnly") === "true";
+  const grade = (name: string) => {
+    const value = String(formData.get(name) ?? "");
+    return value ? Number(value) : null;
+  };
 
   const parsed = createTicketTypeSchema.safeParse({
     name: formData.get("name"),
@@ -207,6 +212,11 @@ export async function saveTicketType(
     maxPerOrder: Number(formData.get("maxPerOrder")),
     salesStartAt,
     salesEndAt,
+    studentsOnly,
+    // Grade limits only go with students-only tickets; switching to "Anyone" clears them.
+    minGrade: studentsOnly ? grade("minGrade") : null,
+    maxGrade: studentsOnly ? grade("maxGrade") : null,
+    requiresApproval: formData.get("requiresApproval") === "on",
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
 

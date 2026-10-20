@@ -160,19 +160,25 @@ model Event {
 }
 
 model TicketType {
-  id           String    @id @default(uuid(7)) @db.Uuid
-  eventId      String    @db.Uuid
-  event        Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  name         String
-  priceCents   Int
-  quantity     Int?
-  maxPerOrder  Int       @default(10)
-  salesStartAt DateTime?
-  salesEndAt   DateTime?
-  studentsOnly Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  tickets      Ticket[]
+  id               String    @id @default(uuid(7)) @db.Uuid
+  eventId          String    @db.Uuid
+  event            Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name             String
+  priceCents       Int
+  quantity         Int?
+  maxPerOrder      Int       @default(10)
+  salesStartAt     DateTime?
+  salesEndAt       DateTime?
+  /// Only students may buy. Checked against the buyer's details at checkout (and the roster, once E6.2 lands).
+  studentsOnly     Boolean   @default(false)
+  /// Inclusive grade range for students-only tickets; null means no limit on that side.
+  minGrade         Int?
+  maxGrade         Int?
+  /// Guest passes: each purchase waits for staff approval before the ticket is valid.
+  requiresApproval Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  tickets          Ticket[]
 
   @@index([eventId])
 }

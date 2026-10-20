@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from "@ticketapp/db";
-import { createTicketTypeSchema, updateTicketTypeSchema } from "@ticketapp/shared";
+import {
+  createTicketTypeSchema,
+  eligibilityRulesProblem,
+  updateTicketTypeSchema,
+} from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
@@ -17,6 +21,10 @@ const ticketTypeFields = {
   maxPerOrder: true,
   salesStartAt: true,
   salesEndAt: true,
+  studentsOnly: true,
+  minGrade: true,
+  maxGrade: true,
+  requiresApproval: true,
   _count: { select: { tickets: { where: { status: "VALID" } } } },
   // Any ticket at all, voided ones included, keeps the type from being deleted.
   tickets: { select: { id: true }, take: 1 },
@@ -68,9 +76,16 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
     // Lock the row so a concurrent edit or sale can't slip past the checks below.
     const ticketType = await prisma.$transaction(async (tx) => {
       const [current] = await tx.$queryRaw<
-        { salesStartAt: Date | null; salesEndAt: Date | null }[]
+        {
+          salesStartAt: Date | null;
+          salesEndAt: Date | null;
+          studentsOnly: boolean;
+          minGrade: number | null;
+          maxGrade: number | null;
+        }[]
       >`
-        SELECT t."salesStartAt", t."salesEndAt" FROM "TicketType" t
+        SELECT t."salesStartAt", t."salesEndAt", t."studentsOnly", t."minGrade", t."maxGrade"
+        FROM "TicketType" t
         JOIN "Event" e ON e.id = t."eventId"
         WHERE t.id = ${ticketTypeId}::uuid AND t."eventId" = ${eventId}::uuid
           AND e."organizationId" = ${orgId}::uuid
@@ -82,6 +97,13 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
       if (start && end && end <= start) {
         throw new HttpError(400, "Sales have to end after they start");
       }
+      // Likewise the eligibility rules have to hold together once merged with what's stored.
+      const problem = eligibilityRulesProblem({
+        studentsOnly: input.studentsOnly ?? current.studentsOnly,
+        minGrade: input.minGrade === undefined ? current.minGrade : input.minGrade,
+        maxGrade: input.maxGrade === undefined ? current.maxGrade : input.maxGrade,
+      });
+      if (problem) throw new HttpError(400, problem);
       if (input.quantity != null) {
         const sold = await tx.ticket.count({ where: { ticketTypeId, status: "VALID" } });
         if (input.quantity < sold) {

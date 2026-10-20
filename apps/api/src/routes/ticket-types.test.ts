@@ -156,6 +156,52 @@ describe("ticket types", () => {
     });
   });
 
+  it("stores eligibility rules, defaulting to open to anyone", async () => {
+    const { owner, base } = await ownerWithEvent();
+    const open = await create(owner.headers, base);
+    expect(open.json().ticketType).toMatchObject({
+      studentsOnly: false,
+      minGrade: null,
+      maxGrade: null,
+      requiresApproval: false,
+    });
+
+    const rules = { studentsOnly: true, minGrade: 11, maxGrade: 12, requiresApproval: false };
+    const prom = await create(owner.headers, base, { name: "Prom", ...rules });
+    expect(prom.statusCode).toBe(201);
+    expect(prom.json().ticketType).toMatchObject(rules);
+
+    const guest = await create(owner.headers, base, { name: "Guest pass", requiresApproval: true });
+    expect(guest.json().ticketType).toMatchObject({ studentsOnly: false, requiresApproval: true });
+
+    const gradesForAnyone = await create(owner.headers, base, { minGrade: 9 });
+    expect(gradesForAnyone.statusCode).toBe(400);
+  });
+
+  it("checks a partial eligibility change against the stored rules", async () => {
+    const { owner, base } = await ownerWithEvent();
+    const { id } = (
+      await create(owner.headers, base, { studentsOnly: true, minGrade: 9, maxGrade: 12 })
+    ).json().ticketType;
+    const patch = (payload: Record<string, unknown>) =>
+      t.app.inject({ method: "PATCH", url: `${base}/${id}`, headers: owner.headers, payload });
+
+    // Raising only the top of the range is checked against the stored bottom, and vice versa.
+    expect((await patch({ minGrade: 11 })).json().ticketType).toMatchObject({
+      minGrade: 11,
+      maxGrade: 12,
+    });
+    expect((await patch({ maxGrade: 10 })).statusCode).toBe(400);
+    // Opening the ticket to everyone while grade limits remain doesn't hold together.
+    expect((await patch({ studentsOnly: false })).statusCode).toBe(400);
+    const opened = await patch({ studentsOnly: false, minGrade: null, maxGrade: null });
+    expect(opened.json().ticketType).toMatchObject({
+      studentsOnly: false,
+      minGrade: null,
+      maxGrade: null,
+    });
+  });
+
   it("won't drop the quantity below what's sold or delete a type with sales", async () => {
     const { owner, eventId, base } = await ownerWithEvent();
     const { id } = (await create(owner.headers, base, { quantity: 10 })).json().ticketType;
