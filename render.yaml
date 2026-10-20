@@ -42,4 +42,4 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM
-        value: TicketApp <onboarding@resend.dev>
+        value: TicketApp <no-reply@mail.myschooltix.com>

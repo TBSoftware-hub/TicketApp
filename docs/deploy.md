@@ -14,13 +14,9 @@ land in logs. Configure one of:
 
 Both need `MAIL_FROM`, for example `TicketApp <tickets@example.com>`. If both are set, Resend wins.
 
-Until our own domain is ready, we use Resend's shared test sender: create an API key in Resend
-and set `RESEND_API_KEY`. `MAIL_FROM` is already `TicketApp <onboarding@resend.dev>`. The test
-sender only delivers to the email address that owns the Resend account, so only that person can
-sign in until the domain is verified.
-
-Moving to the real domain is a settings change on Render: verify the domain in Resend and update
-`MAIL_FROM`, or switch to the domain's SMTP with `SMTP_URL` on a paid instance.
+We send from `mail.myschooltix.com`, which is verified in Resend: set `RESEND_API_KEY`, and
+`MAIL_FROM` is already `TicketApp <no-reply@mail.myschooltix.com>`. Its DNS records live at GoDaddy
+under the `mail` subdomain, so they don't touch the Microsoft 365 mailboxes on the main domain.
 
 ## API on Render
 
