@@ -70,6 +70,24 @@ describe("publishing and the public event page", () => {
     expect(res.json().error).toMatch(/ticket type/);
   });
 
+  it("won't publish while its last ticket type is being deleted", async () => {
+    const { setStatus, addTicket, eventId } = await draftEvent();
+    const { id } = (await addTicket()).json().ticketType;
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    // Delete the only ticket type in a transaction that stays open while publishing starts.
+    let publishing: ReturnType<typeof setStatus> | undefined;
+    await t.prisma.$transaction(async (tx) => {
+      await tx.ticketType.delete({ where: { id } });
+      publishing = setStatus("PUBLISHED");
+      await wait(300);
+    });
+    const res = await publishing!;
+    expect(res.statusCode).toBe(409);
+    const event = await t.prisma.event.findUniqueOrThrow({ where: { id: eventId } });
+    expect(event.status).toBe("DRAFT");
+  });
+
   it("won't publish an event that has ended", async () => {
     const { setStatus, addTicket } = await draftEvent({
       startsAt: "2020-05-01T03:00:00.000Z",

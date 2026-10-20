@@ -84,7 +84,7 @@ export default async function EditEventPage({
         )}
         <span className="links">
           {e.status !== "PUBLISHED" && statusButton("PUBLISHED", "Publish")}
-          {e.status === "PUBLISHED" && statusButton("DRAFT", "Unpublish", "secondary")}
+          {e.status !== "DRAFT" && statusButton("DRAFT", "Unpublish", "secondary")}
           {e.status === "PUBLISHED" && statusButton("CANCELLED", "Cancel event", "link")}
         </span>
       </section>

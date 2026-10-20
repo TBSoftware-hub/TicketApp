@@ -88,7 +88,6 @@ export async function eventRoutes(app: FastifyInstance, { prisma }: { prisma: Pr
     await requireOrgPermission(prisma, request, orgId, "events.manage");
     const { status } = parse(z.object({ status: eventStatusSchema }), request.body);
     const event = await prisma.$transaction(async (tx) => {
-      // Lock the event so a ticket type can't be deleted between the check and the update.
       const [current] = await tx.$queryRaw<{ endsAt: Date }[]>`
         SELECT "endsAt" FROM "Event"
         WHERE id = ${eventId}::uuid AND "organizationId" = ${orgId}::uuid
@@ -96,7 +95,10 @@ export async function eventRoutes(app: FastifyInstance, { prisma }: { prisma: Pr
       if (!current) throw new HttpError(404, "Event not found");
       if (status === "PUBLISHED") {
         if (current.endsAt <= new Date()) throw new HttpError(409, "This event has already ended");
-        if ((await tx.ticketType.count({ where: { eventId } })) === 0) {
+        // Locking one ticket type keeps it from being deleted until the event is published.
+        const [ticketType] = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "TicketType" WHERE "eventId" = ${eventId}::uuid LIMIT 1 FOR SHARE`;
+        if (!ticketType) {
           throw new HttpError(409, "Add at least one ticket type before publishing");
         }
       }
