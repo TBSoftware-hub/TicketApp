@@ -17,7 +17,14 @@ export async function verifySignIn(formData: FormData) {
 
 export async function signOut() {
   const token = await getSessionToken();
-  if (token) await api("/auth/sign-out", { method: "POST", token });
+  if (token) {
+    // Signing out locally must not depend on the API being reachable.
+    try {
+      await api("/auth/sign-out", { method: "POST", token });
+    } catch (err) {
+      console.error("Couldn't revoke the session with the API", err);
+    }
+  }
   await clearSessionToken();
   redirect("/sign-in");
 }

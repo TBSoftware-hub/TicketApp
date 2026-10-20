@@ -1,7 +1,7 @@
 "use client";
 
 import { slugify } from "@ticketapp/shared";
-import { useActionState, useState } from "react";
+import { startTransition, useActionState, useState, type FormEvent } from "react";
 import { createOrganization, type FormState } from "../../actions";
 
 const TIMEZONES = [
@@ -19,8 +19,16 @@ export function NewOrganizationForm() {
   const [slug, setSlug] = useState("");
   const [slugEdited, setSlugEdited] = useState(false);
 
+  // Submitting through onSubmit skips React's automatic form reset, so a failed attempt (say, a
+  // taken web address) keeps everything the person typed and chose.
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    startTransition(() => formAction(formData));
+  }
+
   return (
-    <form action={formAction} className="stack">
+    <form onSubmit={onSubmit} className="stack">
       <label>
         Name
         <input

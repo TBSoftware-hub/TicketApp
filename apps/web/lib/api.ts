@@ -23,7 +23,11 @@ export async function api<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
   });
-  const data = res.status === 204 ? ({} as T) : ((await res.json()) as T | { error: string });
+  if (res.status === 204) return { status: res.status, data: {} as T };
+  // A proxy or crash page may not be JSON; report it as an error instead of throwing.
+  const data = (await res
+    .json()
+    .catch(() => ({ error: `Unexpected response (${res.status})` }))) as T | { error: string };
   return { status: res.status, data };
 }
 
