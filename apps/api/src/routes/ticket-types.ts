@@ -122,8 +122,25 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
   app.delete("/orgs/:orgId/events/:eventId/ticket-types/:ticketTypeId", async (request, reply) => {
     const { orgId, eventId, ticketTypeId } = parse(ticketTypeParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
-    const { count } = await prisma.ticketType
-      .deleteMany({ where: { id: ticketTypeId, eventId, event: { organizationId: orgId } } })
+    await prisma
+      .$transaction(async (tx) => {
+        // Creating a promo code locks the types it names, so the check below can't miss one.
+        const [current] = await tx.$queryRaw<{ id: string }[]>`
+          SELECT t.id FROM "TicketType" t
+          JOIN "Event" e ON e.id = t."eventId"
+          WHERE t.id = ${ticketTypeId}::uuid AND t."eventId" = ${eventId}::uuid
+            AND e."organizationId" = ${orgId}::uuid
+          FOR UPDATE OF t`;
+        if (!current) throw new HttpError(404, "Ticket type not found");
+        // Dropping a promo's last type would silently turn it into a code for every type.
+        const promos = await tx.promoCode.count({
+          where: { ticketTypes: { some: { id: ticketTypeId } } },
+        });
+        if (promos > 0) {
+          throw new HttpError(409, "A promo code is limited to this type, so it can't be deleted");
+        }
+        await tx.ticketType.delete({ where: { id: ticketTypeId } });
+      })
       .catch((err: unknown) => {
         // Tickets keep their type (onDelete: Restrict), so a sold type can't be removed.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
@@ -134,7 +151,6 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
         }
         throw err;
       });
-    if (count === 0) throw new HttpError(404, "Ticket type not found");
     return reply.code(204).send();
   });
 }

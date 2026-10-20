@@ -116,7 +116,8 @@ describe("promo codes and comp tickets", () => {
           eventId,
           buyerName: "Pat Parent",
           buyerEmail: "pat@example.com",
-          status: "PAID",
+          // A cancelled order gives its use back but still keeps the code.
+          status: "CANCELLED",
           subtotalCents: 3000,
           discountCents: 500,
           totalCents: 2500,
@@ -125,10 +126,26 @@ describe("promo codes and comp tickets", () => {
       });
 
       const off = await call("PATCH", `/promo-codes/${used}`, { active: false });
-      expect(off.json().promoCode).toMatchObject({ active: false, uses: 1 });
+      expect(off.json().promoCode).toMatchObject({ active: false, uses: 0, hasOrders: true });
       expect((await call("DELETE", `/promo-codes/${used}`)).statusCode).toBe(409);
       expect((await call("DELETE", `/promo-codes/${unused}`)).statusCode).toBe(204);
       expect((await call("DELETE", `/promo-codes/${unused}`)).statusCode).toBe(404);
+    });
+
+    it("won't delete a ticket type a code is limited to", async () => {
+      const { addType, call } = await eventWithTickets();
+      const student = await addType();
+      const guest = await addType({ name: "Guest" });
+      await call("POST", "/promo-codes", {
+        code: "STUDENTS",
+        discountType: "PERCENT",
+        discountValue: 10,
+        ticketTypeIds: [student],
+      });
+      expect((await call("DELETE", `/ticket-types/${student}`)).statusCode).toBe(409);
+      expect((await call("DELETE", `/ticket-types/${guest}`)).statusCode).toBe(204);
+      const [promo] = (await call("GET", "/promo-codes")).json().promoCodes;
+      expect(promo.ticketTypeIds).toEqual([student]);
     });
 
     it("keeps codes inside their own organization", async () => {

@@ -21,6 +21,7 @@ interface PromoCodeRecord {
   active: boolean;
   ticketTypeIds: string[];
   uses: number;
+  hasOrders: boolean;
 }
 
 export default async function PromoCodesPage({
@@ -105,7 +106,7 @@ export default async function PromoCodesPage({
                   >
                     {p.active ? "Turn off" : "Turn on"}
                   </button>
-                  {p.uses === 0 && (
+                  {!p.hasOrders && (
                     <>
                       {" · "}
                       <button type="submit" name="intent" value="delete" className="link">

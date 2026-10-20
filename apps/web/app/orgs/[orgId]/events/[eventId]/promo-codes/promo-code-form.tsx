@@ -24,7 +24,12 @@ export function PromoCodeForm({
   const zoneName = timezone.split("/").pop()?.replace(/_/g, " ");
 
   return (
-    <form ref={formRef} onSubmit={onSubmit} className="stack">
+    <form
+      ref={formRef}
+      onSubmit={onSubmit}
+      onReset={() => setDiscountType("PERCENT")}
+      className="stack"
+    >
       <label>
         Code
         <input
@@ -98,7 +103,7 @@ export function PromoCodeForm({
       )}
       {state.done && (
         <p className="notice" role="status" tabIndex={-1} ref={doneRef}>
-          Added {state.done}.
+          Added {state.done.label}.
         </p>
       )}
       <button type="submit" disabled={pending}>

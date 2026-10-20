@@ -4,18 +4,24 @@ import { startTransition, useEffect, useRef, type FormEvent } from "react";
 
 /**
  * Submits through onSubmit so a failed save keeps what the person typed (React's automatic reset
- * is skipped), and clears the form and focuses the confirmation once `done` changes.
+ * is skipped), and clears the form and focuses the confirmation after each success. Controlled
+ * fields reset their own state from the form's onReset.
  */
-export function useClearingForm(done: string | undefined, formAction: (data: FormData) => void) {
+export function useClearingForm(
+  done: { id: string } | undefined,
+  formAction: (data: FormData) => void,
+) {
   const formRef = useRef<HTMLFormElement>(null);
   const doneRef = useRef<HTMLParagraphElement>(null);
 
+  // Keyed on the created record's id, so a second success with the same label still clears.
+  const doneId = done?.id;
   useEffect(() => {
-    if (done) {
+    if (doneId) {
       formRef.current?.reset();
       doneRef.current?.focus();
     }
-  }, [done]);
+  }, [doneId]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

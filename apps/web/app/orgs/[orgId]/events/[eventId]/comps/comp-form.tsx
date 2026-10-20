@@ -57,7 +57,7 @@ export function CompForm({
       )}
       {state.done && (
         <p className="notice" role="status" tabIndex={-1} ref={doneRef}>
-          Comp ticket issued to {state.done}.
+          Comp ticket issued to {state.done.label}.
         </p>
       )}
       <button type="submit" disabled={pending}>

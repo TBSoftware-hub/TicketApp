@@ -21,12 +21,19 @@ const promoFields = {
   ticketTypes: { select: { id: true }, orderBy: { createdAt: "asc" } },
   // Cancelled and refunded orders give their use back.
   _count: { select: { orders: { where: { status: { in: ["PENDING", "PAID"] } } } } },
+  // Any order at all, cancelled ones included, keeps the code from being deleted.
+  orders: { select: { id: true }, take: 1 },
 } as const satisfies Prisma.PromoCodeSelect;
 
 type PromoRow = Prisma.PromoCodeGetPayload<{ select: typeof promoFields }>;
 
-function present({ ticketTypes, _count, ...promo }: PromoRow) {
-  return { ...promo, ticketTypeIds: ticketTypes.map((t) => t.id), uses: _count.orders };
+function present({ ticketTypes, _count, orders, ...promo }: PromoRow) {
+  return {
+    ...promo,
+    ticketTypeIds: ticketTypes.map((t) => t.id),
+    uses: _count.orders,
+    hasOrders: orders.length > 0,
+  };
 }
 
 export async function promoCodeRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
@@ -57,12 +64,21 @@ export async function promoCodeRoutes(app: FastifyInstance, { prisma }: { prisma
     const { ticketTypeIds = [], ...input } = parse(createPromoCodeSchema, request.body);
     await requireEvent(orgId, eventId);
     const ids = [...new Set(ticketTypeIds)];
-    const found = await prisma.ticketType.count({ where: { id: { in: ids }, eventId } });
-    if (found !== ids.length) throw new HttpError(400, "Pick ticket types from this event");
     try {
-      const promo = await prisma.promoCode.create({
-        data: { ...input, eventId, ticketTypes: { connect: ids.map((id) => ({ id })) } },
-        select: promoFields,
+      const promo = await prisma.$transaction(async (tx) => {
+        // Locking the types keeps them from being deleted out from under the new code.
+        const found = ids.length
+          ? await tx.$queryRaw<{ id: string }[]>`
+              SELECT id FROM "TicketType"
+              WHERE id = ANY(${ids}::uuid[]) AND "eventId" = ${eventId}::uuid
+              FOR SHARE`
+          : [];
+        if (found.length !== ids.length)
+          throw new HttpError(400, "Pick ticket types from this event");
+        return tx.promoCode.create({
+          data: { ...input, eventId, ticketTypes: { connect: ids.map((id) => ({ id })) } },
+          select: promoFields,
+        });
       });
       return reply.code(201).send({ promoCode: present(promo) });
     } catch (err) {

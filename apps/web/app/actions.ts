@@ -279,7 +279,7 @@ export async function setEventStatus(formData: FormData) {
 
 export interface CreatedState extends FormState {
   /** Set after a success, so the form can clear itself and say what happened. */
-  done?: string;
+  done?: { id: string; label: string };
 }
 
 export async function createPromoCode(
@@ -328,7 +328,8 @@ export async function createPromoCode(
   if (status === 401) redirect("/sign-in");
   if (status !== 201) return { error: errorMessage(data) };
   revalidatePath(`/orgs/${orgId}/events/${eventId}/promo-codes`);
-  return { done: parsed.data.code };
+  const { promoCode } = data as { promoCode: { id: string } };
+  return { done: { id: promoCode.id, label: parsed.data.code } };
 }
 
 export async function updatePromoCode(formData: FormData) {
@@ -377,7 +378,8 @@ export async function issueComp(
   if (status !== 201) return { error: errorMessage(data) };
   revalidatePath(`/orgs/${orgId}/events/${eventId}/comps`);
   revalidatePath(`/orgs/${orgId}/events/${eventId}`);
-  return { done: `${parsed.data.firstName} ${parsed.data.lastName}` };
+  const { comp } = data as { comp: { id: string } };
+  return { done: { id: comp.id, label: `${parsed.data.firstName} ${parsed.data.lastName}` } };
 }
 
 export async function voidComp(formData: FormData) {
