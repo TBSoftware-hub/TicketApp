@@ -84,7 +84,7 @@ export function PromoCodeForm({
         </label>
       </div>
       <p className="muted hint">Times are in {zoneName} time. Leave them blank for no limit.</p>
-      {ticketTypes.length > 1 && (
+      {ticketTypes.length > 0 && (
         <fieldset className="stack">
           <legend>Applies to</legend>
           {ticketTypes.map((tt) => (
@@ -93,7 +93,7 @@ export function PromoCodeForm({
               {tt.name}
             </label>
           ))}
-          <p className="muted hint">Leave them all unticked to apply it to every ticket type.</p>
+          <p className="muted hint">Leave them all unticked to apply it to every ticket type, including ones added later.</p>
         </fieldset>
       )}
       {state.error && (
