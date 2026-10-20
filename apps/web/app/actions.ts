@@ -88,8 +88,11 @@ export async function revokeInvitation(formData: FormData) {
   const path = `/orgs/${encodeURIComponent(orgId)}/invitations/${encodeURIComponent(invitationId)}`;
   const { status } = await api(path, { method: "DELETE", token });
   if (status === 401) redirect("/sign-in");
-  // A 404 means it was already accepted or revoked; either way the refreshed list shows the truth.
   revalidatePath(`/orgs/${orgId}/team`);
+  // 404 means it was already accepted or cancelled, which the refreshed list shows. Anything else
+  // means the invite may still work, so say so.
+  if (status !== 204 && status !== 404) redirect(`/orgs/${orgId}/team?cancelFailed=1`);
+  redirect(`/orgs/${orgId}/team`);
 }
 
 export async function acceptInvitation(formData: FormData) {

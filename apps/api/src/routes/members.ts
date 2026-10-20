@@ -25,6 +25,12 @@ const ROLE_NAMES = {
   VIEWER: "a viewer",
 };
 
+// Invitations send email to addresses the sender chooses, so cap how many a person can send and
+// how many any one address receives.
+const INVITES_PER_SENDER_PER_HOUR = 30;
+const INVITES_PER_RECIPIENT_PER_HOUR = 3;
+const HOUR_MS = 60 * 60 * 1000;
+
 const openInvitation = (now: Date) => ({
   acceptedAt: null,
   revokedAt: null,
@@ -82,11 +88,28 @@ export async function memberRoutes(
     });
     if (existing) throw new HttpError(409, `${email} is already on this team`);
 
-    const org = await prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
     const now = new Date();
+    const hourAgo = new Date(now.getTime() - HOUR_MS);
+    const [bySender, toRecipient] = await Promise.all([
+      prisma.invitation.count({ where: { invitedById: user.id, createdAt: { gt: hourAgo } } }),
+      prisma.invitation.count({ where: { email, createdAt: { gt: hourAgo } } }),
+    ]);
+    if (bySender >= INVITES_PER_SENDER_PER_HOUR) {
+      throw new HttpError(429, "You've sent a lot of invitations. Try again in an hour.");
+    }
+    if (toRecipient >= INVITES_PER_RECIPIENT_PER_HOUR) {
+      throw new HttpError(
+        429,
+        `${email} was invited several times recently. Try again in an hour.`,
+      );
+    }
+
+    const org = await prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
     const token = generateToken();
-    // Re-inviting someone replaces their earlier link, so only the newest one works.
+    // Re-inviting someone replaces their earlier link, so only the newest one works. Locking the
+    // organization row serializes concurrent invites, so two at once can't both stay usable.
     const invitation = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
       await tx.invitation.updateMany({
         where: { organizationId: orgId, email, ...openInvitation(now) },
         data: { revokedAt: now },

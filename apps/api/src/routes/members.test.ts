@@ -194,6 +194,40 @@ describe("team members and invitations", () => {
     expect(me.json().memberships[0].role).toBe("ADMIN");
   });
 
+  it("leaves only one usable link when the same person is invited twice at once", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    const email = newEmail();
+    const results = await Promise.all([
+      invite(owner.headers, orgId, email, "ADMIN"),
+      invite(owner.headers, orgId, email, "VIEWER"),
+    ]);
+    expect(results.map((r) => r.statusCode)).toEqual([201, 201]);
+    const open = await t.prisma.invitation.count({
+      where: { organizationId: orgId, email, acceptedAt: null, revokedAt: null },
+    });
+    expect(open).toBe(1);
+  });
+
+  it("limits how often one address can be invited", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    const email = newEmail();
+    for (let i = 0; i < 3; i++) {
+      expect((await invite(owner.headers, orgId, email, "VIEWER")).statusCode).toBe(201);
+    }
+    const res = await invite(owner.headers, orgId, email, "VIEWER");
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toContain("invited several times recently");
+  });
+
+  it("limits how many invitations one person sends", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    for (let i = 0; i < 30; i++) {
+      expect((await invite(owner.headers, orgId, newEmail(), "VIEWER")).statusCode).toBe(201);
+    }
+    const res = await invite(owner.headers, orgId, newEmail(), "VIEWER");
+    expect(res.statusCode).toBe(429);
+  });
+
   it("revokes a pending invitation", async () => {
     const { owner, orgId } = await ownerWithOrg();
     const email = newEmail();

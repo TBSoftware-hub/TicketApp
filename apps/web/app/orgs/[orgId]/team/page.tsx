@@ -21,8 +21,15 @@ interface Me {
 
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 
-export default async function TeamPage({ params }: { params: Promise<{ orgId: string }> }) {
+export default async function TeamPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ orgId: string }>;
+  searchParams: Promise<{ cancelFailed?: string }>;
+}) {
   const { orgId } = await params;
+  const { cancelFailed } = await searchParams;
   const token = await getSessionToken();
   if (!token) redirect("/sign-in");
 
@@ -72,6 +79,11 @@ export default async function TeamPage({ params }: { params: Promise<{ orgId: st
       {canManage && invitations.length > 0 && (
         <section>
           <h2>Waiting to accept</h2>
+          {cancelFailed && (
+            <p className="notice error" role="alert">
+              We couldn&apos;t cancel that invitation, so its link may still work. Try again.
+            </p>
+          )}
           <ul className="cards">
             {invitations.map((inv) => (
               <li key={inv.id} className="card row">
