@@ -8,7 +8,10 @@ export interface TicketTypeRecord {
   maxPerOrder: number;
   salesStartAt: string | null;
   salesEndAt: string | null;
+  /** Valid tickets only; voided ones don't count. */
   sold: number;
+  /** Whether any ticket was ever issued, voided ones included. Such a type can't be deleted. */
+  hasTickets: boolean;
 }
 
 export function formatPrice(cents: number) {

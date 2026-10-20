@@ -18,12 +18,14 @@ const ticketTypeFields = {
   salesStartAt: true,
   salesEndAt: true,
   _count: { select: { tickets: { where: { status: "VALID" } } } },
+  // Any ticket at all, voided ones included, keeps the type from being deleted.
+  tickets: { select: { id: true }, take: 1 },
 } as const satisfies Prisma.TicketTypeSelect;
 
 type TicketTypeRow = Prisma.TicketTypeGetPayload<{ select: typeof ticketTypeFields }>;
 
-function present({ _count, ...ticketType }: TicketTypeRow) {
-  return { ...ticketType, sold: _count.tickets };
+function present({ _count, tickets, ...ticketType }: TicketTypeRow) {
+  return { ...ticketType, sold: _count.tickets, hasTickets: tickets.length > 0 };
 }
 
 export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
@@ -103,7 +105,10 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
       .catch((err: unknown) => {
         // Tickets keep their type (onDelete: Restrict), so a sold type can't be removed.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
-          throw new HttpError(409, "Some of these tickets are sold, so this type can't be deleted");
+          throw new HttpError(
+            409,
+            "Tickets have been issued for this type, so it can't be deleted",
+          );
         }
         throw err;
       });

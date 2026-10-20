@@ -50,7 +50,11 @@ describe("ticket types", () => {
     });
   }
 
-  async function sellOne(eventId: string, ticketTypeId: string) {
+  async function sellOne(
+    eventId: string,
+    ticketTypeId: string,
+    status: "VALID" | "VOID" = "VALID",
+  ) {
     const order = await t.prisma.order.create({
       data: {
         eventId,
@@ -71,6 +75,7 @@ describe("ticket types", () => {
         eventId,
         ticketTypeId,
         attendeeId: attendee.id,
+        status,
       },
     });
   }
@@ -90,6 +95,7 @@ describe("ticket types", () => {
       maxPerOrder: 6,
       ...window,
       sold: 0,
+      hasTickets: false,
     });
     await create(owner.headers, base, { name: "Staff (free)", priceCents: 0 });
 
@@ -173,6 +179,21 @@ describe("ticket types", () => {
     });
     expect(exact.json().ticketType).toMatchObject({ quantity: 2, sold: 2 });
 
+    const del = await t.app.inject({
+      method: "DELETE",
+      url: `${base}/${id}`,
+      headers: owner.headers,
+    });
+    expect(del.statusCode).toBe(409);
+  });
+
+  it("counts only valid tickets as sold but won't delete a type with voided tickets", async () => {
+    const { owner, eventId, base } = await ownerWithEvent();
+    const { id } = (await create(owner.headers, base)).json().ticketType;
+    await sellOne(eventId, id, "VOID");
+
+    const list = await t.app.inject({ method: "GET", url: base, headers: owner.headers });
+    expect(list.json().ticketTypes[0]).toMatchObject({ sold: 0, hasTickets: true });
     const del = await t.app.inject({
       method: "DELETE",
       url: `${base}/${id}`,

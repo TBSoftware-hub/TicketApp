@@ -61,12 +61,12 @@ export default async function EditTicketTypePage({
       />
       {deleteFailed && (
         <p className="notice error" role="alert">
-          {tt.sold > 0
-            ? "Some of these tickets have sold, so this type can't be deleted."
+          {tt.hasTickets
+            ? "Tickets have been issued for this type, so it can't be deleted."
             : "We couldn't delete this ticket type. Try again."}
         </p>
       )}
-      {tt.sold === 0 && (
+      {!tt.hasTickets && (
         <section>
           <form action={deleteTicketType}>
             <input type="hidden" name="orgId" value={orgId} />
