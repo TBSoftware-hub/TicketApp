@@ -26,10 +26,15 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     throw new Error("A real mailer must be configured in production");
   }
   const mailer = deps.mailer ?? createLogMailer(app.log);
-  const webBaseUrl = deps.webBaseUrl ?? process.env.WEB_BASE_URL ?? "http://localhost:3000";
+  const webBaseUrl = (
+    deps.webBaseUrl ??
+    process.env.WEB_BASE_URL ??
+    "http://localhost:3000"
+  ).replace(/\/+$/, "");
 
   await app.register(cors, {
-    origin: process.env.WEB_ORIGIN?.split(",") ?? true,
+    // Browsers send origins without a trailing slash, so tolerate one in the setting.
+    origin: process.env.WEB_ORIGIN?.split(",").map((o) => o.trim().replace(/\/+$/, "")) ?? true,
   });
 
   // Limits are opted into per route; in-memory until the API runs on more than one instance.

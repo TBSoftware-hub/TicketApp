@@ -43,3 +43,6 @@ plans before a real event.
 1. In Vercel, choose **Add New > Project** and import this repository.
 2. Set **Root Directory** to `apps/web`. Vercel detects Next.js, pnpm and the workspace.
 3. Deploy. Every push to `main` deploys production; pull requests get preview URLs.
+
+The dashboard finds the API through `NEXT_PUBLIC_API_URL`, set in `apps/web/.env.production`.
+If the API's address changes, update that file (or set the variable in Vercel, which wins).

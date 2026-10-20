@@ -4,3 +4,4 @@ export * from "./money";
 export * from "./orgs";
 export * from "./roles";
 export * from "./scan";
+export * from "./slug";
