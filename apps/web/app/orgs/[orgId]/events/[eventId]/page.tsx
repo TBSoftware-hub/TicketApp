@@ -5,6 +5,7 @@ import { api } from "../../../../../lib/api";
 import type { EventRecord } from "../../../../../lib/events";
 import { loadOrg } from "../../../../../lib/org";
 import {
+  formatEligibility,
   formatPrice,
   formatSaleWindow,
   type TicketTypeRecord,
@@ -86,6 +87,7 @@ export default async function EditEventPage({
                 <span className="muted">
                   {formatSaleWindow(tt.salesStartAt, tt.salesEndAt, org.timezone)}
                 </span>
+                <span className="muted">{formatEligibility(tt)}</span>
               </li>
             ))}
           </ul>

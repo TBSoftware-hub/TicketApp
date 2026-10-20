@@ -1,6 +1,7 @@
 "use client";
 
-import { startTransition, useActionState, type FormEvent } from "react";
+import { MAX_GRADE, MIN_GRADE } from "@ticketapp/shared";
+import { startTransition, useActionState, useState, type FormEvent } from "react";
 import { saveTicketType, type FormState } from "../../../../../actions";
 
 export interface TicketTypeFormValues {
@@ -10,10 +11,16 @@ export interface TicketTypeFormValues {
   maxPerOrder: string;
   salesStartAt: string;
   salesEndAt: string;
+  studentsOnly: boolean;
+  minGrade: string;
+  maxGrade: string;
+  requiresApproval: boolean;
   /** Stored instants of an existing ticket type, so unchanged times are saved exactly as they were. */
   salesStartAtUtc?: string | null;
   salesEndAtUtc?: string | null;
 }
+
+const GRADES = Array.from({ length: MAX_GRADE - MIN_GRADE + 1 }, (_, i) => MIN_GRADE + i);
 
 export function TicketTypeForm({
   orgId,
@@ -32,6 +39,7 @@ export function TicketTypeForm({
     saveTicketType.bind(null, orgId, eventId, ticketTypeId, timezone),
     {},
   );
+  const [studentsOnly, setStudentsOnly] = useState(initial.studentsOnly);
 
   // Submitting through onSubmit skips React's automatic form reset, so a failed save keeps
   // everything the person typed.
@@ -119,6 +127,66 @@ export function TicketTypeForm({
       <p className="muted hint">
         Times are in {zoneName} time. Leave them blank to sell for as long as the event is on sale.
       </p>
+      <fieldset className="stack">
+        <legend>Who can buy</legend>
+        <label className="choice">
+          <input
+            type="radio"
+            name="studentsOnly"
+            value="false"
+            checked={!studentsOnly}
+            onChange={() => setStudentsOnly(false)}
+          />
+          Anyone
+        </label>
+        <label className="choice">
+          <input
+            type="radio"
+            name="studentsOnly"
+            value="true"
+            checked={studentsOnly}
+            onChange={() => setStudentsOnly(true)}
+          />
+          Students only
+        </label>
+        {studentsOnly && (
+          <div className="row-fields">
+            <label>
+              Lowest grade
+              <select name="minGrade" defaultValue={initial.minGrade}>
+                <option value="">Any</option>
+                {GRADES.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Highest grade
+              <select name="maxGrade" defaultValue={initial.maxGrade}>
+                <option value="">Any</option>
+                {GRADES.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+        <label className="choice">
+          <input
+            type="checkbox"
+            name="requiresApproval"
+            defaultChecked={initial.requiresApproval}
+          />
+          Each purchase needs staff approval
+        </label>
+        <p className="muted hint">
+          Use approval for guest passes, so staff can check a guest before their ticket is valid.
+        </p>
+      </fieldset>
       {state.error && (
         <p className="notice error" role="alert">
           {state.error}

@@ -55,6 +55,10 @@ export default async function EditTicketTypePage({
           maxPerOrder: String(tt.maxPerOrder),
           salesStartAt: local(tt.salesStartAt),
           salesEndAt: local(tt.salesEndAt),
+          studentsOnly: tt.studentsOnly,
+          minGrade: tt.minGrade === null ? "" : String(tt.minGrade),
+          maxGrade: tt.maxGrade === null ? "" : String(tt.maxGrade),
+          requiresApproval: tt.requiresApproval,
           salesStartAtUtc: tt.salesStartAt,
           salesEndAtUtc: tt.salesEndAt,
         }}
