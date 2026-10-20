@@ -25,3 +25,129 @@ body {
     "Segoe UI",
     sans-serif;
 }
+
+main.narrow {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 64px 16px;
+}
+
+main.wide {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 16px;
+}
+
+h1 {
+  margin: 4px 0 12px;
+}
+
+a {
+  color: var(--accent);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+
+input,
+select {
+  font: inherit;
+  font-weight: 400;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ink) 25%, transparent);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.prefixed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+}
+
+.prefixed input {
+  flex: 1;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.link {
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 400;
+  text-decoration: underline;
+}
+
+.notice {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.notice.error {
+  background: color-mix(in srgb, #c0392b 15%, transparent);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.cards {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
