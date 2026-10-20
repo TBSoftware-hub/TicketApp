@@ -89,27 +89,32 @@ export async function memberRoutes(
     if (existing) throw new HttpError(409, `${email} is already on this team`);
 
     const now = new Date();
-    const hourAgo = new Date(now.getTime() - HOUR_MS);
-    const [bySender, toRecipient] = await Promise.all([
-      prisma.invitation.count({ where: { invitedById: user.id, createdAt: { gt: hourAgo } } }),
-      prisma.invitation.count({ where: { email, createdAt: { gt: hourAgo } } }),
-    ]);
-    if (bySender >= INVITES_PER_SENDER_PER_HOUR) {
-      throw new HttpError(429, "You've sent a lot of invitations. Try again in an hour.");
-    }
-    if (toRecipient >= INVITES_PER_RECIPIENT_PER_HOUR) {
-      throw new HttpError(
-        429,
-        `${email} was invited several times recently. Try again in an hour.`,
-      );
-    }
-
     const org = await prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
     const token = generateToken();
-    // Re-inviting someone replaces their earlier link, so only the newest one works. Locking the
-    // organization row serializes concurrent invites, so two at once can't both stay usable.
     const invitation = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT 1 FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
+      // Transaction-scoped advisory locks on the sender and the recipient (always in that order)
+      // make the quota checks and the insert atomic, and serialize re-invites of one person so two
+      // at once can't both stay usable. They take no row locks, so they can't deadlock with
+      // acceptance.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`invite-sender:${user.id}`}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`invite-to:${email}`}))`;
+
+      const hourAgo = new Date(now.getTime() - HOUR_MS);
+      const [bySender, toRecipient] = await Promise.all([
+        tx.invitation.count({ where: { invitedById: user.id, createdAt: { gt: hourAgo } } }),
+        tx.invitation.count({ where: { email, createdAt: { gt: hourAgo } } }),
+      ]);
+      if (bySender >= INVITES_PER_SENDER_PER_HOUR) {
+        throw new HttpError(429, "You've sent a lot of invitations. Try again in an hour.");
+      }
+      if (toRecipient >= INVITES_PER_RECIPIENT_PER_HOUR) {
+        throw new HttpError(
+          429,
+          `${email} was invited several times recently. Try again in an hour.`,
+        );
+      }
+
+      // Re-inviting someone replaces their earlier link, so only the newest one works.
       await tx.invitation.updateMany({
         where: { organizationId: orgId, email, ...openInvitation(now) },
         data: { revokedAt: now },

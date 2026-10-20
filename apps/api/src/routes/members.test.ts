@@ -219,6 +219,19 @@ describe("team members and invitations", () => {
     expect(res.json().error).toContain("invited several times recently");
   });
 
+  it("holds the address limit when invites arrive at the same moment", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    const other = await ownerWithOrg();
+    const email = newEmail();
+    await invite(owner.headers, orgId, email, "VIEWER");
+    await invite(owner.headers, orgId, email, "VIEWER");
+    const results = await Promise.all([
+      invite(owner.headers, orgId, email, "VIEWER"),
+      invite(other.owner.headers, other.orgId, email, "VIEWER"),
+    ]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([201, 429]);
+  });
+
   it("limits how many invitations one person sends", async () => {
     const { owner, orgId } = await ownerWithOrg();
     for (let i = 0; i < 30; i++) {
@@ -226,6 +239,29 @@ describe("team members and invitations", () => {
     }
     const res = await invite(owner.headers, orgId, newEmail(), "VIEWER");
     expect(res.statusCode).toBe(429);
+  });
+
+  it("holds the sender limit when invites arrive at the same moment", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    for (let i = 0; i < 29; i++) await invite(owner.headers, orgId, newEmail(), "VIEWER");
+    const results = await Promise.all([
+      invite(owner.headers, orgId, newEmail(), "VIEWER"),
+      invite(owner.headers, orgId, newEmail(), "VIEWER"),
+    ]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([201, 429]);
+  });
+
+  it("doesn't deadlock when a re-invite races an acceptance", async () => {
+    const { owner, orgId } = await ownerWithOrg();
+    const email = newEmail();
+    await invite(owner.headers, orgId, email, "VIEWER");
+    const token = inviteToken(email);
+    const [accepted, reinvited] = await Promise.all([
+      t.app.inject({ method: "POST", url: "/invitations/accept", payload: { token } }),
+      invite(owner.headers, orgId, email, "ADMIN"),
+    ]);
+    expect([200, 400]).toContain(accepted.statusCode);
+    expect([201, 409]).toContain(reinvited.statusCode);
   });
 
   it("revokes a pending invitation", async () => {
