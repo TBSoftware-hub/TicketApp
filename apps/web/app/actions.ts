@@ -1,6 +1,11 @@
 "use server";
 
-import { createInvitationSchema, createOrganizationSchema } from "@ticketapp/shared";
+import {
+  createEventSchema,
+  createInvitationSchema,
+  createOrganizationSchema,
+  zonedLocalToUtc,
+} from "@ticketapp/shared";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { api, errorMessage } from "../lib/api";
@@ -108,4 +113,43 @@ export async function acceptInvitation(formData: FormData) {
   }
   await setSessionToken(data.sessionToken);
   redirect("/");
+}
+
+export async function saveEvent(
+  orgId: string,
+  eventId: string | null,
+  timezone: string,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+
+  const startsAt = zonedLocalToUtc(String(formData.get("startsAt") ?? ""), timezone);
+  const endsAt = zonedLocalToUtc(String(formData.get("endsAt") ?? ""), timezone);
+  if (!startsAt || !endsAt) return { error: "Enter when the event starts and ends" };
+  const text = (name: string) => String(formData.get(name) ?? "").trim() || null;
+  const capacity = text("capacity");
+
+  const parsed = createEventSchema.safeParse({
+    name: formData.get("name"),
+    slug: formData.get("slug"),
+    venue: text("venue"),
+    description: text("description"),
+    startsAt,
+    endsAt,
+    capacity: capacity === null ? null : Number(capacity),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+
+  const base = `/orgs/${encodeURIComponent(orgId)}/events`;
+  const { status, data } = await api(eventId ? `${base}/${encodeURIComponent(eventId)}` : base, {
+    method: eventId ? "PATCH" : "POST",
+    token,
+    body: parsed.data,
+  });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200 && status !== 201) return { error: errorMessage(data) };
+  revalidatePath(`/orgs/${orgId}/events`);
+  redirect(`/orgs/${orgId}/events`);
 }
