@@ -92,33 +92,33 @@ export default async function PayoutsPage({
                 <strong>Ready to sell tickets.</strong>{" "}
                 {p.payoutsEnabled
                   ? "Payouts go to your bank account automatically."
-                  : "Stripe is still checking your bank details before the first payout."}
+                  : p.pendingVerification
+                    ? "Stripe is checking your details before the first payout."
+                    : "Payouts are on hold until Stripe has what it needs."}
               </p>
             ) : p.disabledReason?.startsWith("rejected") ? (
               <p className="notice error" role="alert">
                 Stripe couldn&apos;t approve this account, so it can&apos;t take payments. Open the
                 Stripe dashboard or contact Stripe support to find out more.
               </p>
-            ) : p.requirementsDue > 0 ? (
+            ) : !p.detailsSubmitted ? (
               <p className="notice" role="status">
-                {p.detailsSubmitted
-                  ? "Stripe needs a little more information."
-                  : "Setup isn't finished yet."}{" "}
-                Stripe still needs {p.requirementsDue}{" "}
-                {p.requirementsDue === 1 ? "detail" : "details"}.
+                Setup isn&apos;t finished yet.
               </p>
-            ) : p.pendingVerification ||
-              p.disabledReason === "requirements.pending_verification" ? (
+            ) : p.pendingVerification ? (
               <p className="notice" role="status">
                 Stripe is reviewing your details. This page updates once you can sell tickets.
               </p>
-            ) : p.detailsSubmitted ? (
+            ) : p.requirementsDue === 0 ? (
               <p className="notice error" role="alert">
                 Stripe has paused payments on this account. Open the Stripe dashboard to see why.
               </p>
-            ) : (
-              <p className="notice" role="status">
-                Setup isn&apos;t finished yet.
+            ) : null}
+            {/* Whatever the state above, say when Stripe is waiting on the owner. */}
+            {p.requirementsDue > 0 && !p.disabledReason?.startsWith("rejected") && (
+              <p>
+                Stripe needs {p.requirementsDue} more{" "}
+                {p.requirementsDue === 1 ? "detail" : "details"} from you.
               </p>
             )}
             {(p.requirementsDue > 0 || !p.detailsSubmitted) &&

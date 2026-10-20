@@ -7,8 +7,8 @@ import { buildTestApp, uniqueSlug } from "../test-helpers";
 function fakePayments() {
   const created: string[] = [];
   const statuses = new Map<string, PaymentAccountStatus>();
-  /** Set to hold status reads until the test releases them. */
-  const gate: { wait?: Promise<void> } = {};
+  /** Set to hold status reads until the test releases them; `entered` fires when one starts. */
+  const gate: { wait?: Promise<void>; entered?: () => void } = {};
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -21,6 +21,7 @@ function fakePayments() {
       return `https://connect.stripe.test/setup/${accountId}?${params}`;
     },
     async accountStatus(accountId) {
+      gate.entered?.();
       await gate.wait;
       return (
         statuses.get(accountId) ?? {
@@ -157,8 +158,10 @@ describe("payout setup", () => {
 
     let release!: () => void;
     stripe.gate.wait = new Promise((resolve) => (release = resolve));
+    const entered = new Promise<void>((resolve) => (stripe.gate.entered = resolve));
     const slow = call("GET");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The GET has read the original account and is waiting on Stripe.
+    await entered;
     // Meanwhile the org moves to a new, not yet set up account.
     await t.prisma.organization.update({
       where: { id: orgId },
@@ -166,6 +169,7 @@ describe("payout setup", () => {
     });
     release();
     stripe.gate.wait = undefined;
+    stripe.gate.entered = undefined;
     await slow;
 
     const after = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
