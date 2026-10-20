@@ -16,6 +16,8 @@ type PaymentsStatus =
       payoutsEnabled: boolean;
       detailsSubmitted: boolean;
       requirementsDue: number;
+      pendingVerification: boolean;
+      disabledReason: string | null;
     };
 
 export default async function PayoutsPage({
@@ -83,34 +85,45 @@ export default async function PayoutsPage({
             </p>
             {stripeButton("onboarding", "Set up payouts with Stripe")}
           </>
-        ) : p.chargesEnabled ? (
-          <>
-            <p className="notice" role="status">
-              <strong>Ready to sell tickets.</strong>{" "}
-              {p.payoutsEnabled
-                ? "Payouts go to your bank account automatically."
-                : "Stripe is still checking your bank details before the first payout."}
-            </p>
-            {p.requirementsDue > 0 && (
-              <>
-                <p>Stripe needs a little more information to keep payouts running.</p>
-                {stripeButton("onboarding", "Update details")}
-              </>
-            )}
-            {stripeButton("dashboard", "Open Stripe dashboard")}
-          </>
-        ) : p.detailsSubmitted && p.requirementsDue === 0 ? (
-          <p className="notice" role="status">
-            Stripe is reviewing your details. This page updates once you can sell tickets.
-          </p>
         ) : (
           <>
-            <p className="notice" role="status">
-              Setup isn&apos;t finished yet.
-              {p.requirementsDue > 0 &&
-                ` Stripe still needs ${p.requirementsDue} ${p.requirementsDue === 1 ? "detail" : "details"}.`}
-            </p>
-            {stripeButton("onboarding", "Continue setup")}
+            {p.chargesEnabled ? (
+              <p className="notice" role="status">
+                <strong>Ready to sell tickets.</strong>{" "}
+                {p.payoutsEnabled
+                  ? "Payouts go to your bank account automatically."
+                  : "Stripe is still checking your bank details before the first payout."}
+              </p>
+            ) : p.disabledReason?.startsWith("rejected") ? (
+              <p className="notice error" role="alert">
+                Stripe couldn&apos;t approve this account, so it can&apos;t take payments. Open the
+                Stripe dashboard or contact Stripe support to find out more.
+              </p>
+            ) : p.requirementsDue > 0 ? (
+              <p className="notice" role="status">
+                {p.detailsSubmitted
+                  ? "Stripe needs a little more information."
+                  : "Setup isn't finished yet."}{" "}
+                Stripe still needs {p.requirementsDue}{" "}
+                {p.requirementsDue === 1 ? "detail" : "details"}.
+              </p>
+            ) : p.pendingVerification ||
+              p.disabledReason === "requirements.pending_verification" ? (
+              <p className="notice" role="status">
+                Stripe is reviewing your details. This page updates once you can sell tickets.
+              </p>
+            ) : p.detailsSubmitted ? (
+              <p className="notice error" role="alert">
+                Stripe has paused payments on this account. Open the Stripe dashboard to see why.
+              </p>
+            ) : (
+              <p className="notice" role="status">
+                Setup isn&apos;t finished yet.
+              </p>
+            )}
+            {(p.requirementsDue > 0 || !p.detailsSubmitted) &&
+              stripeButton("onboarding", p.detailsSubmitted ? "Update details" : "Continue setup")}
+            {p.detailsSubmitted && stripeButton("dashboard", "Open Stripe dashboard")}
           </>
         )}
       </section>

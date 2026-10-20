@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PaymentAccountStatus, Payments } from "../lib/payments";
 import { buildTestApp, uniqueSlug } from "../test-helpers";
@@ -6,10 +7,12 @@ import { buildTestApp, uniqueSlug } from "../test-helpers";
 function fakePayments() {
   const created: string[] = [];
   const statuses = new Map<string, PaymentAccountStatus>();
+  /** Set to hold status reads until the test releases them. */
+  const gate: { wait?: Promise<void> } = {};
   const payments: Payments = {
     livemode: false,
     async createAccount(org) {
-      const id = `acct_${org.id.slice(0, 8)}_${created.length}`;
+      const id = `acct_${randomUUID()}`;
       created.push(id);
       return id;
     },
@@ -18,12 +21,15 @@ function fakePayments() {
       return `https://connect.stripe.test/setup/${accountId}?${params}`;
     },
     async accountStatus(accountId) {
+      await gate.wait;
       return (
         statuses.get(accountId) ?? {
           chargesEnabled: false,
           payoutsEnabled: false,
           detailsSubmitted: false,
           requirementsDue: 5,
+          pendingVerification: false,
+          disabledReason: "requirements.past_due",
         }
       );
     },
@@ -31,7 +37,7 @@ function fakePayments() {
       return `https://connect.stripe.test/express/${accountId}`;
     },
   };
-  return { payments, created, statuses };
+  return { payments, created, statuses, gate };
 }
 
 describe("payout setup", () => {
@@ -93,6 +99,8 @@ describe("payout setup", () => {
       payoutsEnabled: true,
       detailsSubmitted: true,
       requirementsDue: 0,
+      pendingVerification: false,
+      disabledReason: null,
     });
     const ready = (await call("GET")).json().payments;
     expect(ready).toMatchObject({ connected: true, chargesEnabled: true, payoutsEnabled: true });
@@ -109,11 +117,12 @@ describe("payout setup", () => {
 
   it("starts a fresh account when the saved one is from the other Stripe mode", async () => {
     const { orgId, call } = await orgWithOwner();
+    const liveAccount = `acct_live_${randomUUID()}`;
     // As if the account was made with a live key and the API now runs on a test key.
     await t.prisma.organization.update({
       where: { id: orgId },
       data: {
-        stripeAccountId: `acct_live_${orgId.slice(0, 8)}`,
+        stripeAccountId: liveAccount,
         stripeLivemode: true,
         stripeChargesEnabled: true,
         stripePayoutsEnabled: true,
@@ -128,9 +137,39 @@ describe("payout setup", () => {
 
     const start = await call("POST", "/onboarding");
     const fresh = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
-    expect(fresh.stripeAccountId).not.toBe(`acct_live_${orgId.slice(0, 8)}`);
+    expect(fresh.stripeAccountId).not.toBe(liveAccount);
     expect(fresh.stripeLivemode).toBe(false);
     expect(new URL(start.json().url).pathname).toBe(`/setup/${fresh.stripeAccountId}`);
+  });
+
+  it("doesn't stamp a slow status read onto an account that replaced it", async () => {
+    const { orgId, call } = await orgWithOwner();
+    await call("POST", "/onboarding");
+    const before = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
+    stripe.statuses.set(before.stripeAccountId!, {
+      chargesEnabled: true,
+      payoutsEnabled: true,
+      detailsSubmitted: true,
+      requirementsDue: 0,
+      pendingVerification: false,
+      disabledReason: null,
+    });
+
+    let release!: () => void;
+    stripe.gate.wait = new Promise((resolve) => (release = resolve));
+    const slow = call("GET");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Meanwhile the org moves to a new, not yet set up account.
+    await t.prisma.organization.update({
+      where: { id: orgId },
+      data: { stripeAccountId: `acct_new_${randomUUID()}` },
+    });
+    release();
+    stripe.gate.wait = undefined;
+    await slow;
+
+    const after = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
+    expect(after.stripeChargesEnabled).toBe(false);
   });
 
   it("is limited to owners", async () => {

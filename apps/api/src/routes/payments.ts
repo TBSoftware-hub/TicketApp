@@ -13,6 +13,8 @@ const NOT_CONNECTED: PaymentAccountStatus = {
   payoutsEnabled: false,
   detailsSubmitted: false,
   requirementsDue: 0,
+  pendingVerification: false,
+  disabledReason: null,
 };
 
 /** Payout setup is limited to owners, since it decides where the organization's money goes. */
@@ -29,8 +31,18 @@ export async function paymentRoutes(
     stripePayoutsEnabled: status.payoutsEnabled,
     stripeDetailsSubmitted: status.detailsSubmitted,
   });
-  const saveStatus = (orgId: string, status: PaymentAccountStatus) =>
-    prisma.organization.update({ where: { id: orgId }, data: flags(status) });
+  type OrgAccount = { id: string; stripeAccountId: string | null; stripeLivemode: boolean | null };
+  // Only writes if the org still has the account the status was read for, so a slow request
+  // can't stamp an old account's status onto one that replaced it.
+  const saveStatus = (org: OrgAccount, status: PaymentAccountStatus) =>
+    prisma.organization.updateMany({
+      where: {
+        id: org.id,
+        stripeAccountId: org.stripeAccountId,
+        stripeLivemode: org.stripeLivemode,
+      },
+      data: flags(status),
+    });
 
   function requirePayments(): Payments {
     if (!payments) throw new HttpError(503, "Payments aren't switched on yet");
@@ -60,13 +72,13 @@ export async function paymentRoutes(
     const { org, accountId } = await currentAccount(orgId, payments);
     if (!accountId) {
       // A test-mode account left over after switching to a live key can't take payments.
-      if (org.stripeAccountId) await saveStatus(orgId, NOT_CONNECTED);
+      if (org.stripeAccountId) await saveStatus(org, NOT_CONNECTED);
       return { payments: { available: true, connected: false } };
     }
     // Read live so the page is right straight after returning from Stripe, and keep the cached
     // flags checkout relies on in step.
     const status = await payments.accountStatus(accountId);
-    await saveStatus(orgId, status);
+    await saveStatus(org, status);
     return { payments: { available: true, connected: true, ...status } };
   });
 

@@ -7,6 +7,10 @@ export interface PaymentAccountStatus {
   detailsSubmitted: boolean;
   /** How many pieces of information Stripe still needs before it can pay out. */
   requirementsDue: number;
+  /** Stripe is checking details it already has. */
+  pendingVerification: boolean;
+  /** Why Stripe has turned off charges, such as `rejected.fraud`; null when nothing is wrong. */
+  disabledReason: string | null;
 }
 
 /**
@@ -70,6 +74,8 @@ export function createStripePayments(secretKey: string): Payments {
         payoutsEnabled: account.payouts_enabled ?? false,
         detailsSubmitted: account.details_submitted ?? false,
         requirementsDue: account.requirements?.currently_due?.length ?? 0,
+        pendingVerification: (account.requirements?.pending_verification?.length ?? 0) > 0,
+        disabledReason: account.requirements?.disabled_reason ?? null,
       };
     },
     async dashboardLink(accountId) {
