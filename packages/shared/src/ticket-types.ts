@@ -110,3 +110,34 @@ export function gradeRangeLabel(minGrade: number | null, maxGrade: number | null
   if (maxGrade !== null) return `grades ${maxGrade} and below`;
   return "all grades";
 }
+
+export type SaleStatus = "upcoming" | "onSale" | "ended" | "soldOut";
+
+/**
+ * Whether a ticket type can be bought right now. `eventRemaining` is what's left of the event's
+ * capacity (null when it has none), since a type with tickets left still can't sell past it.
+ */
+export function ticketSaleStatus(
+  tt: { quantity: number | null; salesStartAt: Date | null; salesEndAt: Date | null },
+  {
+    sold,
+    eventEndsAt,
+    eventRemaining,
+    now = new Date(),
+  }: {
+    sold: number;
+    eventEndsAt: Date;
+    eventRemaining: number | null;
+    now?: Date;
+  },
+): SaleStatus {
+  if (now >= eventEndsAt || (tt.salesEndAt && now >= tt.salesEndAt)) return "ended";
+  if (
+    (tt.quantity !== null && sold >= tt.quantity) ||
+    (eventRemaining !== null && eventRemaining <= 0)
+  ) {
+    return "soldOut";
+  }
+  if (tt.salesStartAt && now < tt.salesStartAt) return "upcoming";
+  return "onSale";
+}

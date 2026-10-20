@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth";
 import { eventRoutes } from "./routes/events";
 import { memberRoutes } from "./routes/members";
 import { orgRoutes } from "./routes/orgs";
+import { publicEventRoutes } from "./routes/public-events";
 import { ticketTypeRoutes } from "./routes/ticket-types";
 
 export const API_VERSION = "0.0.0";
@@ -68,6 +69,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(orgRoutes, { prisma: deps.prisma });
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
+  await app.register(publicEventRoutes, { prisma: deps.prisma });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 
   return app;

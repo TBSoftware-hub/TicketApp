@@ -251,3 +251,26 @@ export async function deleteTicketType(formData: FormData) {
   }
   redirect(`/orgs/${orgId}/events/${eventId}`);
 }
+
+export async function setEventStatus(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const eventId = String(formData.get("eventId") ?? "");
+  const status = String(formData.get("status") ?? "");
+  const eventPath = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
+  const { status: code, data } = await api(`${eventPath}/status`, {
+    method: "POST",
+    token,
+    body: { status },
+  });
+  if (code === 401) redirect("/sign-in");
+  revalidatePath(`/orgs/${orgId}/events`);
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  if (code !== 200) {
+    redirect(
+      `/orgs/${orgId}/events/${eventId}?statusError=${encodeURIComponent(errorMessage(data))}`,
+    );
+  }
+  redirect(`/orgs/${orgId}/events/${eventId}`);
+}

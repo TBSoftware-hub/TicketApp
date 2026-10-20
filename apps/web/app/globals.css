@@ -233,3 +233,64 @@ label.choice input {
   margin: 0;
   accent-color: var(--accent);
 }
+
+main.public {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 40px 16px 64px;
+}
+
+.facts {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 20px;
+}
+
+.facts div {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px;
+}
+
+.facts dt {
+  font-weight: 600;
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.description {
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.ticket-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.on-sale {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+button.secondary {
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.status-panel {
+  margin: 16px 0 8px;
+  gap: 12px;
+}
+
+.status-panel .notice {
+  margin: 0;
+}
+
+.status-panel .links {
+  align-items: center;
+}
