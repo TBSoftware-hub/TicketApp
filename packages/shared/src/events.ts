@@ -3,6 +3,9 @@ import { z } from "zod";
 export const eventStatusSchema = z.enum(["DRAFT", "PUBLISHED", "CANCELLED"]);
 export type EventStatus = z.infer<typeof eventStatusSchema>;
 
+// Coercion alone would turn null or false into 1970; only accept ISO strings and Dates.
+const timestamp = z.union([z.string(), z.date()]).pipe(z.coerce.date());
+
 const eventFields = z.object({
   name: z.string().trim().min(2, "Give the event a name").max(120),
   slug: z
@@ -13,8 +16,8 @@ const eventFields = z.object({
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Use lowercase letters, numbers and single hyphens"),
   description: z.string().trim().max(5000).nullable().optional(),
   venue: z.string().trim().max(200).nullable().optional(),
-  startsAt: z.coerce.date(),
-  endsAt: z.coerce.date(),
+  startsAt: timestamp,
+  endsAt: timestamp,
   capacity: z.int().min(1).max(100_000).nullable().optional(),
 });
 

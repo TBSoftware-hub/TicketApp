@@ -29,3 +29,30 @@ describe("healthResponseSchema", () => {
     });
   });
 });
+
+describe("event and organization validation", () => {
+  it("rejects null or boolean event times instead of coercing them to 1970", async () => {
+    const { createEventSchema, updateEventSchema } = await import("./events");
+    const base = {
+      name: "Homecoming",
+      slug: "homecoming",
+      startsAt: "2026-11-15T00:00:00.000Z",
+      endsAt: "2026-11-15T03:00:00.000Z",
+    };
+    expect(createEventSchema.safeParse(base).success).toBe(true);
+    expect(createEventSchema.safeParse({ ...base, startsAt: null }).success).toBe(false);
+    expect(updateEventSchema.safeParse({ startsAt: false }).success).toBe(false);
+    expect(updateEventSchema.safeParse({ startsAt: new Date() }).success).toBe(true);
+  });
+
+  it("only accepts real time zones", async () => {
+    const { createOrganizationSchema } = await import("./orgs");
+    const org = { name: "Test High", slug: "test-high", type: "SCHOOL" };
+    expect(
+      createOrganizationSchema.safeParse({ ...org, timezone: "America/New_York" }).success,
+    ).toBe(true);
+    expect(
+      createOrganizationSchema.safeParse({ ...org, timezone: "America/NewYork" }).success,
+    ).toBe(false);
+  });
+});
