@@ -102,7 +102,8 @@ export async function doorSaleRoutes(
         },
       });
       if (earlier) {
-        if (earlier.eventId !== eventId) {
+        // Postgres hands UUIDs back in lowercase, whatever case they were sent in.
+        if (earlier.eventId !== eventId.toLowerCase()) {
           throw new HttpError(409, "That sale was for another event");
         }
         // Only the very same sale counts as a repeat. Anything else would report a sale that
@@ -111,7 +112,7 @@ export async function doorSaleRoutes(
           earlier.buyerName === `${input.firstName} ${input.lastName}` &&
           earlier.buyerEmail === (input.email ?? null) &&
           earlier.tickets.length === input.quantity &&
-          earlier.tickets.every((tk) => tk.ticketTypeId === input.ticketTypeId);
+          earlier.tickets.every((tk) => tk.ticketTypeId === input.ticketTypeId.toLowerCase());
         if (!same) {
           throw new HttpError(
             409,

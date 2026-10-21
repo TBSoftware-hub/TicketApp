@@ -193,6 +193,21 @@ describe("door sales", () => {
     const again = await door.sell({ saleKey, quantity: 2 });
     expect(again.statusCode).toBe(200);
     expect(again.json().sale.id).toBe(first.json().sale.id);
+    // The same sale with its IDs in capitals is still the same sale.
+    const shouted = await t.app.inject({
+      method: "POST",
+      url: `${door.base.toUpperCase().replace("/ORGS/", "/orgs/").replace("/EVENTS/", "/events/")}/door-sales`,
+      headers: door.owner.headers,
+      payload: {
+        saleKey: saleKey.toUpperCase(),
+        ticketTypeId: door.ticketTypeId.toUpperCase(),
+        quantity: 2,
+        firstName: "Jo",
+        lastName: "Park",
+      },
+    });
+    expect(shouted.statusCode).toBe(200);
+    expect(shouted.json().sale.id).toBe(first.json().sale.id);
     const { cashCents, saleCount } = (await door.report()).json();
     expect({ cashCents, saleCount }).toEqual({ cashCents: 3000, saleCount: 1 });
 
