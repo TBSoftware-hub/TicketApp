@@ -15,7 +15,7 @@ interface OrderRecord {
   status: "PAID" | "REFUNDED" | "CANCELLED";
   paymentMethod: "CARD" | "CASH" | "COMP";
   buyerName: string;
-  buyerEmail: string;
+  buyerEmail: string | null;
   totalCents: number;
   refundedCents: number;
   createdAt: string;
@@ -64,6 +64,7 @@ export default async function OrdersPage({
     if (o.status === "REFUNDED") return `Refunded ${formatPrice(o.refundedCents)}`;
     if (o.status === "CANCELLED") return "Cancelled";
     if (o.paymentMethod === "COMP") return "Comp";
+    if (o.paymentMethod === "CASH") return `Cash ${formatPrice(o.totalCents)}`;
     return o.totalCents > 0 ? `Paid ${formatPrice(o.totalCents)}` : "Free";
   };
 
@@ -112,7 +113,7 @@ export default async function OrdersPage({
               <li key={o.id} className="card row">
                 <span className="stack-tight">
                   <strong className={open ? undefined : "muted struck"}>{o.buyerName}</strong>
-                  <span className="muted">{o.buyerEmail}</span>
+                  {o.buyerEmail && <span className="muted">{o.buyerEmail}</span>}
                   {o.tickets.map((t) => (
                     <span key={t.id}>
                       {t.attendee.firstName} {t.attendee.lastName} · {t.ticketType.name}
@@ -135,7 +136,9 @@ export default async function OrdersPage({
                     question={
                       refunds
                         ? `Refund ${formatPrice(o.totalCents)} to ${o.buyerName} and void their ${count}? This can't be undone.`
-                        : `Cancel ${o.buyerName}'s order and void their ${count}? This can't be undone.`
+                        : o.paymentMethod === "CASH" && o.totalCents > 0
+                          ? `Cancel ${o.buyerName}'s order and void their ${count}? Hand back ${formatPrice(o.totalCents)} in cash. This can't be undone.`
+                          : `Cancel ${o.buyerName}'s order and void their ${count}? This can't be undone.`
                     }
                   />
                 )}

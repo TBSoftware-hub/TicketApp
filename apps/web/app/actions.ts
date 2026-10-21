@@ -2,6 +2,8 @@
 
 import {
   createCompSchema,
+  doorSaleSchema,
+  formatCents,
   createEventSchema,
   createInvitationSchema,
   createOrganizationSchema,
@@ -382,6 +384,41 @@ export async function issueComp(
   revalidatePath(`/orgs/${orgId}/events/${eventId}`);
   const { comp } = data as { comp: { id: string } };
   return { done: { id: comp.id, label: `${parsed.data.firstName} ${parsed.data.lastName}` } };
+}
+
+export async function recordDoorSale(
+  orgId: string,
+  eventId: string,
+  _prev: CreatedState,
+  formData: FormData,
+): Promise<CreatedState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const email = String(formData.get("email") ?? "").trim();
+  const parsed = doorSaleSchema.safeParse({
+    ticketTypeId: formData.get("ticketTypeId"),
+    quantity: Number(formData.get("quantity")),
+    firstName: formData.get("firstName"),
+    lastName: formData.get("lastName"),
+    email: email || null,
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+
+  const page = `/orgs/${orgId}/events/${eventId}/door`;
+  const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/door-sales`;
+  const { status, data } = await api(path, { method: "POST", token, body: parsed.data });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 201) return { error: errorMessage(data) };
+  revalidatePath(page);
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  const { sale } = data as { sale: { id: string; totalCents: number } };
+  const { quantity, firstName, lastName } = parsed.data;
+  return {
+    done: {
+      id: sale.id,
+      label: `${quantity === 1 ? "1 ticket" : `${quantity} tickets`} to ${firstName} ${lastName}. Collect ${formatCents(sale.totalCents)}`,
+    },
+  };
 }
 
 export async function voidComp(formData: FormData) {

@@ -143,13 +143,16 @@ export async function orderRoutes(
     }
 
     const refundedCents = refund ? order.totalCents : 0;
-    const email = cancellationEmail({
-      buyerName: order.buyerName,
-      buyerEmail: order.buyerEmail,
-      ticketCount: order._count.tickets,
-      refundedCents,
-      event: { name: event.name, organizationName: event.organization.name },
-    });
+    // A door sale with no email has nobody to tell.
+    const email = order.buyerEmail
+      ? cancellationEmail({
+          buyerName: order.buyerName,
+          buyerEmail: order.buyerEmail,
+          ticketCount: order._count.tickets,
+          refundedCents,
+          event: { name: event.name, organizationName: event.organization.name },
+        })
+      : null;
     const outcome = await prisma.$transaction(async (tx) => {
       const { count } = await tx.order.updateMany({
         where: { id: orderId, status: "PAID", ...notSendingConfirmation() },
@@ -166,7 +169,7 @@ export async function orderRoutes(
           emailViewKey: null,
           confirmationEmail: Prisma.DbNull,
           // Kept until it's sent, so a mail outage doesn't leave the buyer unaware.
-          cancellationEmail: email as unknown as Prisma.InputJsonObject,
+          cancellationEmail: email ? (email as unknown as Prisma.InputJsonObject) : Prisma.DbNull,
         },
       });
       if (count > 0) {
