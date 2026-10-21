@@ -1,10 +1,20 @@
 import type { FastifyBaseLogger } from "fastify";
 import nodemailer from "nodemailer";
 
+/** An image shown in the HTML body as `<img src="cid:{contentId}">`. */
+export interface InlineImage {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+  contentId: string;
+}
+
 export interface MailMessage {
   to: string;
   subject: string;
   text: string;
+  html?: string;
+  inlineImages?: InlineImage[];
 }
 
 export interface Mailer {
@@ -15,7 +25,8 @@ export interface Mailer {
 export function createLogMailer(log: FastifyBaseLogger): Mailer {
   return {
     async send(message) {
-      log.info({ mail: message }, `Email to ${message.to}: ${message.subject}`);
+      const { to, subject, text } = message;
+      log.info({ mail: { to, subject, text } }, `Email to ${to}: ${subject}`);
     },
   };
 }
@@ -27,8 +38,17 @@ export function createLogMailer(log: FastifyBaseLogger): Mailer {
 export function createSmtpMailer(url: string, from: string): Mailer {
   const transport = nodemailer.createTransport(url);
   return {
-    async send(message) {
-      await transport.sendMail({ from, ...message });
+    async send({ inlineImages, ...message }) {
+      await transport.sendMail({
+        from,
+        ...message,
+        attachments: inlineImages?.map((image) => ({
+          filename: image.filename,
+          content: image.content,
+          contentType: image.contentType,
+          cid: image.contentId,
+        })),
+      });
     },
   };
 }
@@ -36,11 +56,17 @@ export function createSmtpMailer(url: string, from: string): Mailer {
 /** Sends through Resend's HTTPS API, which works on hosts that block outbound SMTP ports. */
 export function createResendMailer(apiKey: string, from: string, fetchFn = fetch): Mailer {
   return {
-    async send(message) {
+    async send({ inlineImages, ...message }) {
+      const attachments = inlineImages?.map((image) => ({
+        filename: image.filename,
+        content: image.content.toString("base64"),
+        content_type: image.contentType,
+        content_id: image.contentId,
+      }));
       const res = await fetchFn("https://api.resend.com/emails", {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ from, ...message }),
+        body: JSON.stringify({ from, ...message, ...(attachments ? { attachments } : {}) }),
       });
       if (!res.ok) throw new Error(`Resend rejected the email: ${res.status} ${await res.text()}`);
     },

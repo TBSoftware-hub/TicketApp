@@ -18,11 +18,21 @@ export async function buildTestApp(
 ) {
   const prisma = createPrismaClient();
   const sent: MailMessage[] = [];
+  /** Set above zero to make that many sends fail, as a provider outage would. */
+  const mailFailures = { remaining: 0 };
   const app = await buildApp(
     {
       prisma,
       webBaseUrl: "https://dashboard.test",
-      mailer: { send: async (m) => void sent.push(m) },
+      mailer: {
+        send: async (m) => {
+          if (mailFailures.remaining > 0) {
+            mailFailures.remaining--;
+            throw new Error("Mail provider is down");
+          }
+          sent.push(m);
+        },
+      },
       // Tests sign in many times from one address; the IP limit has its own test.
       magicLinkPerIpPerMinute: 10_000,
       checkoutPerIpPerMinute: 10_000,
@@ -48,6 +58,7 @@ export async function buildTestApp(
     app,
     prisma,
     sent,
+    mailFailures,
     signIn,
     close: async () => {
       await app.close();

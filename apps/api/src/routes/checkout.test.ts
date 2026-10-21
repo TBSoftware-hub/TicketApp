@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import QRCode from "qrcode";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
@@ -431,6 +433,118 @@ describe("checkout", () => {
       cardFeePaidBy: "ORGANIZATION",
     });
     expect((await page(notReady)).json().event.onlinePayments).toBe(false);
+  });
+
+  describe("confirmation email", () => {
+    const buyer = () => `buyer-${randomUUID()}@example.com`;
+    const mailTo = (email: string) => t.sent.filter((m) => m.to === email);
+    const codesOf = async (orderId: string) =>
+      (
+        await t.prisma.ticket.findMany({
+          where: { orderId },
+          orderBy: { createdAt: "asc" },
+          select: { code: true },
+        })
+      ).map((tk) => tk.code);
+
+    it("emails free tickets straight away with a QR code each and a working order link", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ name: "Chaperone", priceCents: 0 });
+      const email = buyer();
+      const res = await shop.buy([attendee(free, "Sam"), attendee(free, "Alex")], {
+        buyerEmail: email,
+      });
+      const { orderId } = res.json();
+
+      const [mail, ...rest] = mailTo(email);
+      expect(rest).toHaveLength(0);
+      expect(mail!.subject).toBe("Your tickets for After Prom");
+      expect(mail!.text).toContain("- Sam Lee: Chaperone");
+      expect(mail!.text).toContain("- Alex Lee: Chaperone");
+      expect(mail!.text).not.toContain("Total paid");
+      const codes = await codesOf(orderId);
+      expect(mail!.inlineImages!.map((i) => i.contentId)).toEqual(["ticket-1", "ticket-2"]);
+      expect(mail!.html).toContain('src="cid:ticket-1"');
+      // Each image is the QR code for that ticket's code, in the same order as the names.
+      for (const [i, image] of mail!.inlineImages!.entries()) {
+        const expected = await QRCode.toBuffer(codes[i]!, { type: "png", width: 240, margin: 2 });
+        expect(image.content.equals(expected)).toBe(true);
+      }
+
+      const link = new URL(mail!.text.match(/Your order: (\S+)/)![1]!);
+      expect(link.pathname).toBe(`/e/${shop.orgSlug}/${shop.eventSlug}/orders/${orderId}`);
+      const viewed = await shop.view(orderId, link.searchParams.get("key")!);
+      expect(viewed.statusCode).toBe(200);
+      expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("emails paid tickets once the payment is confirmed, and only once", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      expect(mailTo(email)).toHaveLength(0);
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(0);
+
+      stripe.pay(await sessionOf(orderId));
+      await shop.view(orderId, key);
+      await shop.view(orderId, key);
+      const mails = mailTo(email);
+      expect(mails).toHaveLength(1);
+      expect(mails[0]!.subject).toBe("Your ticket for After Prom");
+      expect(mails[0]!.text).toContain("Total paid: $10.00");
+      expect(mails[0]!.text).toContain(`orders/${orderId}?key=${key}`);
+      // The key is only kept until the email carries it.
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.emailViewKey).toBeNull();
+      expect(order.confirmationSentAt).not.toBeNull();
+    });
+
+    it("emails a buyer who paid but never came back once their order is settled", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket({ quantity: 2 });
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+      await lapse(orderId);
+
+      await shop.buy([attendee(general, "Other")]);
+      const [mail] = mailTo(email);
+      expect(mail!.text).toContain(`orders/${orderId}?key=${key}`);
+    });
+
+    it("tries again when the email couldn't be sent", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+
+      t.mailFailures.remaining = 1;
+      const first = await shop.view(orderId, key);
+      expect(first.statusCode).toBe(200);
+      expect(first.json().order.status).toBe("PAID");
+      expect(mailTo(email)).toHaveLength(0);
+
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("sends nothing for an order that was never paid and drops its key", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      await t.app.inject({
+        method: "POST",
+        url: `/public/orders/${orderId}/cancel`,
+        payload: { key },
+      });
+      expect(mailTo(email)).toHaveLength(0);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order).toMatchObject({ status: "CANCELLED", emailViewKey: null });
+    });
   });
 });
 

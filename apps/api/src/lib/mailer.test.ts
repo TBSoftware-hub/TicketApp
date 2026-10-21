@@ -35,6 +35,35 @@ describe("mailerFromEnv", () => {
     });
   });
 
+  it("sends inline images to Resend as attachments with content ids", async () => {
+    const bodies: unknown[] = [];
+    const fakeFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(init!.body as string));
+      return new Response("{}", { status: 200 });
+    };
+    const mailer = createResendMailer("re_test", "a@b.test", fakeFetch as typeof fetch);
+    await mailer.send({
+      to: "x@example.com",
+      subject: "Hi",
+      text: "Body",
+      html: '<img src="cid:qr">',
+      inlineImages: [
+        {
+          filename: "qr.png",
+          content: Buffer.from("png"),
+          contentType: "image/png",
+          contentId: "qr",
+        },
+      ],
+    });
+    expect(bodies[0]).toMatchObject({
+      html: '<img src="cid:qr">',
+      attachments: [
+        { filename: "qr.png", content: "cG5n", content_type: "image/png", content_id: "qr" },
+      ],
+    });
+  });
+
   it("fails when Resend rejects the message", async () => {
     const fakeFetch = async () => new Response("bad key", { status: 401 });
     const mailer = createResendMailer("re_bad", "a@b.test", fakeFetch as typeof fetch);

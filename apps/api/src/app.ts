@@ -4,6 +4,7 @@ import type { PrismaClient } from "@ticketapp/db";
 import type { HealthResponse } from "@ticketapp/shared";
 import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
+import { orderConfirmations } from "./lib/confirmations";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import type { Payments } from "./lib/payments";
 import { authRoutes } from "./routes/auth";
@@ -81,14 +82,16 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
   await app.register(publicEventRoutes, { prisma: deps.prisma, payments: deps.payments });
+  const confirm = orderConfirmations({ prisma: deps.prisma, mailer, webBaseUrl, log: app.log });
   await app.register(checkoutRoutes, {
     prisma: deps.prisma,
     payments: deps.payments,
     webBaseUrl,
     checkoutPerIpPerMinute: deps.checkoutPerIpPerMinute ?? 30,
+    confirm,
   });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
-  await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments });
+  await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(paymentRoutes, { prisma: deps.prisma, payments: deps.payments, webBaseUrl });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 

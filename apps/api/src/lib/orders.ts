@@ -8,7 +8,7 @@ import type { CheckoutState, Payments } from "./payments";
 export async function releaseOrder(tx: Prisma.TransactionClient, orderId: string) {
   const { count } = await tx.order.updateMany({
     where: { id: orderId, status: "PENDING" },
-    data: { status: "CANCELLED" },
+    data: { status: "CANCELLED", emailViewKey: null },
   });
   if (count > 0) {
     await tx.ticket.updateMany({ where: { orderId, status: "HELD" }, data: { status: "VOID" } });
@@ -30,17 +30,23 @@ export async function markPaid(
   }
 }
 
-/** Applies what Stripe says about an order's payment page. An open page changes nothing. */
+/**
+ * Applies what Stripe says about an order's payment page. An open page changes nothing. Returns
+ * whether the order is paid, so the caller can send its confirmation.
+ */
 export async function applyCheckoutState(
   prisma: PrismaClient,
   orderId: string,
   state: CheckoutState,
-) {
+): Promise<boolean> {
   if (state.status === "paid") {
     await prisma.$transaction((tx) => markPaid(tx, orderId, state.paymentIntentId));
-  } else if (state.status === "expired") {
+    return true;
+  }
+  if (state.status === "expired") {
     await prisma.$transaction((tx) => releaseOrder(tx, orderId));
   }
+  return false;
 }
 
 /** How many lapsed orders one checkout settles, so a backlog can't hold up a buyer for long. */
@@ -58,7 +64,7 @@ export async function settleLapsedHolds(
   prisma: PrismaClient,
   payments: Payments | undefined,
   eventId: string,
-  now = new Date(),
+  { now = new Date(), onPaid }: { now?: Date; onPaid?: (orderId: string) => Promise<void> } = {},
 ) {
   const lapsed = await prisma.order.findMany({
     where: { eventId, status: "PENDING", holdExpiresAt: { lte: now } },
@@ -77,7 +83,7 @@ export async function settleLapsedHolds(
           await prisma.$transaction((tx) => releaseOrder(tx, order.id));
         } else if (payments) {
           const state = await payments.checkoutState(order.stripeCheckoutSessionId);
-          await applyCheckoutState(prisma, order.id, state);
+          if (await applyCheckoutState(prisma, order.id, state)) await onPaid?.(order.id);
           if (state.status === "open") deferred.push(order.id);
         }
       } catch (err) {
