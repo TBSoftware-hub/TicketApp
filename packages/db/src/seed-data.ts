@@ -66,6 +66,15 @@ export async function seed(prisma: PrismaClient) {
         organizationId: org.id,
         title: "After-Prom Participation Waiver",
         body: "I agree to follow event rules, including inflatable and activity safety instructions.",
+        versions: {
+          create: {
+            version: 1,
+            title: "After-Prom Participation Waiver",
+            body: "I agree to follow event rules, including inflatable and activity safety instructions.",
+            fields: [],
+            requiresGuardianForMinors: true,
+          },
+        },
       },
     }));
 

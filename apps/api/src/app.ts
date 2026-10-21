@@ -21,6 +21,7 @@ import { paymentRoutes } from "./routes/payments";
 import { promoCodeRoutes } from "./routes/promo-codes";
 import { publicEventRoutes } from "./routes/public-events";
 import { ticketTypeRoutes } from "./routes/ticket-types";
+import { waiverRoutes } from "./routes/waivers";
 
 export const API_VERSION = "0.0.0";
 
@@ -117,6 +118,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     confirm,
   });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
+  await app.register(waiverRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(doorSaleRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(orderRoutes, {
