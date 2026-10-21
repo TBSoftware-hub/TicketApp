@@ -409,7 +409,8 @@ export async function recordDoorSale(
   const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/door-sales`;
   const { status, data } = await api(path, { method: "POST", token, body: parsed.data });
   if (status === 401) redirect("/sign-in");
-  if (status !== 201) return { error: errorMessage(data) };
+  // A sale sent again after a lost response comes back as 200 with the original sale.
+  if (status !== 201 && status !== 200) return { error: errorMessage(data) };
   revalidatePath(page);
   revalidatePath(`/orgs/${orgId}/events/${eventId}`);
   const { sale } = data as { sale: { id: string; totalCents: number } };
