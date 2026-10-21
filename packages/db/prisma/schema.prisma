@@ -334,23 +334,25 @@ enum TicketStatus {
 
 /// One per attendee. `code` is what the QR encodes; it is random, never guessable.
 model Ticket {
-  id           String            @id @default(uuid(7)) @db.Uuid
-  code         String            @unique
-  orderId      String            @db.Uuid
-  order        Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  eventId      String            @db.Uuid
-  event        Event             @relation(fields: [eventId], references: [id], onDelete: Restrict)
-  ticketTypeId String            @db.Uuid
-  ticketType   TicketType        @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
-  attendeeId   String            @db.Uuid
-  attendee     Attendee          @relation(fields: [attendeeId], references: [id], onDelete: Restrict)
-  status       TicketStatus      @default(VALID)
+  id              String                    @id @default(uuid(7)) @db.Uuid
+  code            String                    @unique
+  orderId         String                    @db.Uuid
+  order           Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  eventId         String                    @db.Uuid
+  event           Event                     @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  ticketTypeId    String                    @db.Uuid
+  ticketType      TicketType                @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+  attendeeId      String                    @db.Uuid
+  attendee        Attendee                  @relation(fields: [attendeeId], references: [id], onDelete: Restrict)
+  status          TicketStatus              @default(VALID)
   /// Denormalised from the latest scan so the door app can answer in one read.
-  isInside     Boolean           @default(false)
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  signatures   WaiverSignature[]
-  scans        ScanEvent[]
+  isInside        Boolean                   @default(false)
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  signatures      WaiverSignature[]
+  scans           ScanEvent[]
+  /// Set when the attendee is under 18 and a waiver needs their guardian's signature too.
+  guardianRequest GuardianSignatureRequest?
 
   @@unique([eventId, attendeeId])
   @@index([eventId, isInside])
@@ -376,18 +378,19 @@ model Attendee {
 }
 
 model Guardian {
-  id            String             @id @default(uuid(7)) @db.Uuid
-  name          String
-  email         String?
-  phone         String?
+  id                String                     @id @default(uuid(7)) @db.Uuid
+  name              String
+  email             String?
+  phone             String?
   /// When the guardian agreed to receive check-in/out texts (TCPA consent). Null = no texts.
-  smsOptInAt    DateTime?
-  smsOptOutAt   DateTime?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  attendees     AttendeeGuardian[]
-  signatures    WaiverSignature[]
-  notifications Notification[]
+  smsOptInAt        DateTime?
+  smsOptOutAt       DateTime?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  attendees         AttendeeGuardian[]
+  signatures        WaiverSignature[]
+  notifications     Notification[]
+  signatureRequests GuardianSignatureRequest[]
 }
 
 model AttendeeGuardian {
@@ -450,6 +453,32 @@ model TicketTypeWaiver {
 
   @@id([ticketTypeId, waiverTemplateId])
   @@index([waiverTemplateId])
+}
+
+/// A link sent to a minor's guardian, by email or text, to sign the waivers their ticket needs.
+model GuardianSignatureRequest {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  ticketId         String    @unique @db.Uuid
+  ticket           Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  guardianId       String    @db.Uuid
+  guardian         Guardian  @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the key in the signing link; the link is the guardian's only way in.
+  tokenHash        String    @unique
+  /// The email and text carrying the link, rendered at checkout and kept until they're sent, so
+  /// every retry sends the same message. Cleared once sent or given up on.
+  pendingMessages  Json?
+  emailSentAt      DateTime?
+  textSentAt       DateTime?
+  /// Set while a send is in progress; a claim older than a few minutes was abandoned.
+  sendClaimedAt    DateTime?
+  /// The first attempt. Retries stop a day later, while the email provider still remembers it.
+  sendFirstTriedAt DateTime?
+  sendAttempts     Int       @default(0)
+  signedAt         DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([guardianId])
 }
 
 enum SignerRole {

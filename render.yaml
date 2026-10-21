@@ -46,3 +46,10 @@ services:
       # Stripe Connect platform key; payments stay switched off until it's set.
       - key: STRIPE_SECRET_KEY
         sync: false
+      # Twilio, for texting guardians their waiver link; until all three are set, only email is offered.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM
+        sync: false

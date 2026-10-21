@@ -69,6 +69,11 @@ export default async function CheckoutPage({
           eventSlug={eventSlug}
           ticketTypes={buyable}
           waivers={waivers}
+          event={{
+            startsAt: event.startsAt,
+            timezone: event.timezone,
+            guardianTexts: event.guardianTexts,
+          }}
           fees={{
             cardFeePaidBy: event.cardFeePaidBy,
             serviceFeePaidBy: event.serviceFeePaidBy,

@@ -4,6 +4,7 @@ import {
   checkEligibility,
   checkWaiverAnswers,
   checkoutSchema,
+  isMinorAt,
   orderTotal,
   type Checkout,
   paidTicketCount,
@@ -17,6 +18,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { waiverDocumentHash } from "../lib/canonical";
 import type { ConfirmOrder } from "../lib/confirmations";
+import { renderGuardianRequest, type GuardianMessages } from "../lib/guardian-requests";
 import { HttpError } from "../lib/errors";
 import type { Payments } from "../lib/payments";
 import { applyCheckoutState, releaseOrder, settleLapsedHolds } from "../lib/orders";
@@ -96,6 +98,7 @@ interface WaiverToSign {
   title: string;
   body: string;
   fields: WaiverField[];
+  requiresGuardianForMinors: boolean;
   ticketTypeId: string;
 }
 
@@ -142,6 +145,38 @@ function attendeeSignatures(
   });
 }
 
+/**
+ * Who has to sign for an attendee under 18, when one of their waivers asks for a guardian. Null
+ * when nobody does: no such waiver, or the attendee is an adult on the day.
+ */
+function guardianFor(
+  ticket: Checkout["tickets"][number],
+  waivers: WaiverToSign[],
+  event: { startsAt: Date; timezone: string },
+  texts: boolean,
+) {
+  if (!waivers.some((w) => w.requiresGuardianForMinors)) return null;
+  const first = ticket.firstName;
+  if (!ticket.dateOfBirth) throw new HttpError(400, `Enter ${first}'s date of birth`);
+  if (!isMinorAt(ticket.dateOfBirth, event.startsAt, event.timezone)) return null;
+  const { guardian } = ticket;
+  if (!guardian) {
+    throw new HttpError(400, `${first} is under 18, so give a parent or guardian to sign for them`);
+  }
+  if (!guardian.email && !texts) {
+    throw new HttpError(
+      400,
+      `We can't send texts yet, so give an email for ${first}'s parent or guardian`,
+    );
+  }
+  return {
+    name: guardian.name,
+    email: guardian.email ?? null,
+    phone: guardian.phone ?? null,
+    waiverTitles: waivers.filter((w) => w.requiresGuardianForMinors).map((w) => w.title),
+  };
+}
+
 /** Buying tickets. No sign-in: the buyer gets a private link to their order instead. */
 export async function checkoutRoutes(
   app: FastifyInstance,
@@ -151,12 +186,15 @@ export async function checkoutRoutes(
     webBaseUrl,
     checkoutPerIpPerMinute,
     confirm,
+    texts,
   }: {
     prisma: PrismaClient;
     payments?: Payments;
     webBaseUrl: string;
     checkoutPerIpPerMinute: number;
     confirm: ConfirmOrder;
+    /** Whether guardians can be texted their signing link, not just emailed. */
+    texts: boolean;
   },
 ) {
   // Every checkout holds seats for a while, so one client can't be let loose on them. The
@@ -174,8 +212,12 @@ export async function checkoutRoutes(
         select: {
           id: true,
           name: true,
+          startsAt: true,
+          endsAt: true,
           organization: {
             select: {
+              name: true,
+              timezone: true,
               stripeAccountId: true,
               stripeChargesEnabled: true,
               stripeLivemode: true,
@@ -209,9 +251,9 @@ export async function checkoutRoutes(
       const order = await prisma.$transaction(async (tx) => {
         // The same lock comps take, so two buyers can't both get the last seat.
         const [locked] = await tx.$queryRaw<
-          { capacity: number | null; status: string; endsAt: Date }[]
+          { capacity: number | null; status: string; startsAt: Date; endsAt: Date }[]
         >`
-          SELECT capacity, status, "endsAt" FROM "Event" WHERE id = ${event.id}::uuid FOR UPDATE`;
+          SELECT capacity, status, "startsAt", "endsAt" FROM "Event" WHERE id = ${event.id}::uuid FOR UPDATE`;
         if (!locked || locked.status !== "PUBLISHED")
           throw new HttpError(409, "Tickets aren't on sale");
         // Waiting on Stripe and the lock takes time, so judge sale windows and codes from here.
@@ -289,17 +331,25 @@ export async function checkoutRoutes(
 
         // Locked, so a waiver can't be reworded between this check and the signatures.
         const waivers = await tx.$queryRaw<WaiverToSign[]>`
-          SELECT w.id, w.version, w.title, w.body, w.fields, ttw."ticketTypeId"
+          SELECT w.id, w.version, w.title, w.body, w.fields, w."requiresGuardianForMinors",
+                 ttw."ticketTypeId"
           FROM "TicketTypeWaiver" ttw
           JOIN "WaiverTemplate" w ON w.id = ttw."waiverTemplateId"
           WHERE ttw."ticketTypeId" = ANY(${typeIds}::uuid[])
           ORDER BY w.title, w.id
           FOR SHARE OF w`;
+        const waiversFor = (ticket: Checkout["tickets"][number]) =>
+          waivers.filter((w) => w.ticketTypeId === ticket.ticketTypeId);
         const signatures = input.tickets.map((ticket) =>
-          attendeeSignatures(
-            request,
+          attendeeSignatures(request, ticket, waiversFor(ticket)),
+        );
+        const guardians = input.tickets.map((ticket) =>
+          guardianFor(
             ticket,
-            waivers.filter((w) => w.ticketTypeId === ticket.ticketTypeId),
+            waiversFor(ticket),
+            // Judged from the locked row, so a move to the event can't slip past the age check.
+            { startsAt: locked.startsAt, timezone: org.timezone },
+            texts,
           ),
         );
 
@@ -358,6 +408,40 @@ export async function checkoutRoutes(
         if (!free && totals.totalCents < STRIPE_MINIMUM_CENTS) {
           throw new HttpError(400, "Card payments have to be at least $0.50");
         }
+        // Each minor's guardian gets their own link to sign, sent once the order is paid.
+        const guardianRequests: ({
+          guardianId: string;
+          tokenHash: string;
+          messages: GuardianMessages;
+        } | null)[] = [];
+        for (const [i, ticket] of input.tickets.entries()) {
+          const guardian = guardians[i];
+          if (!guardian) {
+            guardianRequests.push(null);
+            continue;
+          }
+          const { id: guardianId } = await tx.guardian.create({
+            data: { name: guardian.name, email: guardian.email, phone: guardian.phone },
+            select: { id: true },
+          });
+          const token = generateToken();
+          const messages = renderGuardianRequest({
+            guardian,
+            buyer: { name: input.buyerName, email: input.buyerEmail },
+            attendee: ticket,
+            event: {
+              name: event.name,
+              startsAt: locked.startsAt,
+              endsAt: locked.endsAt,
+              organization: org,
+            },
+            waiverTitles: guardian.waiverTitles,
+            url: `${webBaseUrl}/sign?token=${encodeURIComponent(token)}`,
+            texts,
+          });
+          guardianRequests.push({ guardianId, tokenHash: hashToken(token), messages });
+        }
+
         return tx.order.create({
           data: {
             event: { connect: { id: event.id } },
@@ -381,9 +465,29 @@ export async function checkoutRoutes(
                 event: { connect: { id: event.id } },
                 ticketType: { connect: { id: t.ticketTypeId } },
                 attendee: {
-                  create: { firstName: t.firstName, lastName: t.lastName, grade: t.grade ?? null },
+                  create: {
+                    firstName: t.firstName,
+                    lastName: t.lastName,
+                    grade: t.grade ?? null,
+                    dateOfBirth: t.dateOfBirth ? new Date(t.dateOfBirth) : null,
+                    ...(guardianRequests[i]
+                      ? { guardians: { create: { guardianId: guardianRequests[i].guardianId } } }
+                      : {}),
+                  },
                 },
                 signatures: { create: signatures[i]! },
+                ...(guardianRequests[i]
+                  ? {
+                      guardianRequest: {
+                        create: {
+                          guardian: { connect: { id: guardianRequests[i].guardianId } },
+                          tokenHash: guardianRequests[i].tokenHash,
+                          pendingMessages: guardianRequests[i]
+                            .messages as unknown as Prisma.InputJsonObject,
+                        },
+                      },
+                    }
+                  : {}),
               })),
             },
           },

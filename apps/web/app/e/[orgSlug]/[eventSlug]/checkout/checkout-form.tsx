@@ -1,8 +1,15 @@
 "use client";
 
-import { MAX_GRADE, MIN_GRADE, orderTotal, type FeeSettings } from "@ticketapp/shared";
+import {
+  MAX_GRADE,
+  MIN_GRADE,
+  birthDateSchema,
+  isMinorAt,
+  orderTotal,
+  type FeeSettings,
+} from "@ticketapp/shared";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type MouseEvent } from "react";
 import { API_URL, errorMessage, UNREACHABLE } from "../../../../../lib/api";
 import {
   publicEventPath,
@@ -19,9 +26,25 @@ interface Attendee {
   grade: string;
   /** What's been filled in on each of the ticket's waivers, by waiver ID. */
   waivers: Record<string, WaiverDraft>;
+  /** Asked for when a waiver needs a guardian to sign for minors. */
+  dateOfBirth: string;
+  guardianName: string;
+  guardianEmail: string;
+  guardianPhone: string;
 }
 
-const blank: Attendee = { firstName: "", lastName: "", grade: "", waivers: {} };
+type AttendeeField = Exclude<keyof Attendee, "waivers">;
+
+const blank: Attendee = {
+  firstName: "",
+  lastName: "",
+  grade: "",
+  waivers: {},
+  dateOfBirth: "",
+  guardianName: "",
+  guardianEmail: "",
+  guardianPhone: "",
+};
 const blankWaiver: WaiverDraft = { answers: {}, signature: "", agreed: false };
 const GRADES = Array.from({ length: MAX_GRADE - MIN_GRADE + 1 }, (_, i) => MIN_GRADE + i);
 
@@ -33,15 +56,25 @@ export function CheckoutForm({
   eventSlug,
   ticketTypes,
   waivers,
+  event,
   fees,
 }: {
   orgSlug: string;
   eventSlug: string;
   ticketTypes: PublicTicketType[];
   waivers: PublicWaiver[];
+  event: { startsAt: string; timezone: string; guardianTexts: boolean };
   fees: FeeSettings;
 }) {
   const waiverById = new Map(waivers.map((w) => [w.id, w]));
+  /** Whether attendees with this ticket give a date of birth, so a guardian can sign for minors. */
+  const asksAge = (tt: PublicTicketType) =>
+    tt.waiverIds.some((id) => waiverById.get(id)?.requiresGuardianForMinors);
+  /** Whether the attendee is under 18 on the day, judged once their date of birth is complete. */
+  const isMinor = (a: Attendee) => {
+    const dob = birthDateSchema.safeParse(a.dateOfBirth);
+    return dob.success && isMinorAt(dob.data, event.startsAt, event.timezone);
+  };
   const router = useRouter();
   // One attendee per ticket, grouped by ticket type.
   const [attendees, setAttendees] = useState<Record<string, Attendee[]>>(() =>
@@ -72,12 +105,7 @@ export function CheckoutForm({
     });
   }
 
-  function setField(
-    id: string,
-    index: number,
-    field: "firstName" | "lastName" | "grade",
-    value: string,
-  ) {
+  function setField(id: string, index: number, field: AttendeeField, value: string) {
     setAttendees((all) => ({
       ...all,
       [id]: all[id]!.map((a, i) => (i === index ? { ...a, [field]: value } : a)),
@@ -93,15 +121,24 @@ export function CheckoutForm({
     }));
   }
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
+  async function onSubmit(submit: FormEvent<HTMLFormElement>) {
+    submit.preventDefault();
+    const form = new FormData(submit.currentTarget);
     const tickets = ticketTypes.flatMap((tt) =>
       (attendees[tt.id] ?? []).map((a) => ({
         ticketTypeId: tt.id,
         firstName: a.firstName,
         lastName: a.lastName,
         grade: a.grade ? Number(a.grade) : null,
+        dateOfBirth: asksAge(tt) ? a.dateOfBirth || null : null,
+        guardian:
+          asksAge(tt) && isMinor(a)
+            ? {
+                name: a.guardianName,
+                email: a.guardianEmail || null,
+                phone: event.guardianTexts ? a.guardianPhone || null : null,
+              }
+            : null,
         waivers: tt.waiverIds.map((waiverId) => {
           const draft = a.waivers[waiverId] ?? blankWaiver;
           return {
@@ -155,6 +192,27 @@ export function CheckoutForm({
 
   return (
     <form className="stack" onSubmit={onSubmit}>
+      <section className="stack">
+        <h2>Your details</h2>
+        <p className="muted hint">So the school can reach you about your order.</p>
+        <label>
+          Your name
+          <input name="buyerName" autoComplete="name" required maxLength={80} />
+        </label>
+        <label>
+          Email
+          <input name="buyerEmail" type="email" autoComplete="email" required maxLength={254} />
+        </label>
+        <label>
+          Phone <span className="muted">(optional)</span>
+          <input name="buyerPhone" type="tel" autoComplete="tel" maxLength={30} />
+        </label>
+        <label>
+          Promo code <span className="muted">(optional)</span>
+          <input name="promoCode" autoCapitalize="characters" maxLength={24} />
+        </label>
+      </section>
+
       <section className="stack">
         <h2>Tickets</h2>
         <ul className="cards">
@@ -228,7 +286,25 @@ export function CheckoutForm({
                           </select>
                         </label>
                       )}
+                      {asksAge(tt) && (
+                        <label>
+                          Date of birth
+                          <input
+                            type="date"
+                            required
+                            value={a.dateOfBirth}
+                            onChange={(e) => setField(tt.id, i, "dateOfBirth", e.target.value)}
+                          />
+                        </label>
+                      )}
                     </div>
+                    {asksAge(tt) && isMinor(a) && (
+                      <GuardianFields
+                        attendee={a}
+                        texts={event.guardianTexts}
+                        onChange={(field, value) => setField(tt.id, i, field, value)}
+                      />
+                    )}
                     {tt.waiverIds.map((waiverId) => {
                       const waiver = waiverById.get(waiverId);
                       return (
@@ -249,27 +325,6 @@ export function CheckoutForm({
             );
           })}
         </ul>
-      </section>
-
-      <section className="stack">
-        <h2>Your details</h2>
-        <p className="muted hint">So the school can reach you about your order.</p>
-        <label>
-          Your name
-          <input name="buyerName" autoComplete="name" required maxLength={80} />
-        </label>
-        <label>
-          Email
-          <input name="buyerEmail" type="email" autoComplete="email" required maxLength={254} />
-        </label>
-        <label>
-          Phone <span className="muted">(optional)</span>
-          <input name="buyerPhone" type="tel" autoComplete="tel" maxLength={30} />
-        </label>
-        <label>
-          Promo code <span className="muted">(optional)</span>
-          <input name="promoCode" autoCapitalize="characters" maxLength={24} />
-        </label>
       </section>
 
       <section className="stack-tight" aria-live="polite">
@@ -315,5 +370,78 @@ export function CheckoutForm({
         {sending ? "One moment…" : subtotal === 0 ? "Get tickets" : "Continue to payment"}
       </button>
     </form>
+  );
+}
+
+/** Who signs for an attendee under 18. They're sent a link once the order goes through. */
+function GuardianFields({
+  attendee: a,
+  texts,
+  onChange,
+}: {
+  attendee: Attendee;
+  texts: boolean;
+  onChange: (field: AttendeeField, value: string) => void;
+}) {
+  const first = a.firstName.trim() || "This attendee";
+  // The buyer's own details, for the usual case of a parent buying for their child.
+  function useMine(event: MouseEvent<HTMLButtonElement>) {
+    const form = event.currentTarget.form;
+    const value = (name: string) => {
+      const input = form?.elements.namedItem(name);
+      return input instanceof HTMLInputElement ? input.value : "";
+    };
+    onChange("guardianName", value("buyerName"));
+    onChange("guardianEmail", value("buyerEmail"));
+    if (texts) onChange("guardianPhone", value("buyerPhone"));
+  }
+  return (
+    <div className="waiver stack-tight">
+      <strong>Parent or guardian</strong>
+      <span className="muted hint">
+        {first} is under 18, so a parent or guardian signs the waiver too. We&apos;ll send them a
+        link {texts ? "by email or text" : "by email"} once you&apos;ve got the tickets.
+      </span>
+      <div className="row-fields">
+        <label>
+          Their name
+          <input
+            required
+            maxLength={80}
+            autoComplete="off"
+            value={a.guardianName}
+            onChange={(e) => onChange("guardianName", e.target.value)}
+          />
+        </label>
+        <label>
+          Their email{texts && <span className="muted"> (or mobile)</span>}
+          <input
+            type="email"
+            required={!texts || !a.guardianPhone}
+            maxLength={254}
+            autoComplete="off"
+            value={a.guardianEmail}
+            onChange={(e) => onChange("guardianEmail", e.target.value)}
+          />
+        </label>
+        {texts && (
+          <label>
+            Their mobile <span className="muted">(for a text)</span>
+            <input
+              type="tel"
+              maxLength={30}
+              autoComplete="off"
+              value={a.guardianPhone}
+              onChange={(e) => onChange("guardianPhone", e.target.value)}
+            />
+          </label>
+        )}
+      </div>
+      <p>
+        <button type="button" className="link" onClick={useMine}>
+          I&apos;m their parent or guardian
+        </button>
+      </p>
+    </div>
   );
 }

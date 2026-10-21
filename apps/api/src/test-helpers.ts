@@ -19,14 +19,18 @@ export async function buildTestApp(
 ) {
   const prisma = createPrismaClient();
   const sent: MailMessage[] = [];
-  /** Set above zero to make that many sends fail, as a provider outage would. */
-  const mailFailures = { remaining: 0 };
+  /**
+   * Set `remaining` above zero to make that many sends fail, as a provider outage would; add an
+   * address to `to` to make every send to it fail.
+   */
+  const mailFailures = { remaining: 0, to: new Set<string>() };
   const app = await buildApp(
     {
       prisma,
       webBaseUrl: "https://dashboard.test",
       mailer: {
         send: async (m) => {
+          if (mailFailures.to.has(m.to)) throw new Error("Mail provider rejected the address");
           if (mailFailures.remaining > 0) {
             mailFailures.remaining--;
             throw new Error("Mail provider is down");

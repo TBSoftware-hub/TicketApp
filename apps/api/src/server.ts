@@ -2,6 +2,7 @@ import { createPrismaClient } from "@ticketapp/db";
 import { buildApp } from "./app";
 import { mailerFromEnv } from "./lib/mailer";
 import { paymentsFromEnv } from "./lib/payments";
+import { texterFromEnv } from "./lib/texter";
 
 const port = Number(process.env.PORT ?? 4000);
 const trustedProxyHops = Number(process.env.TRUSTED_PROXY_HOPS ?? 0);
@@ -13,6 +14,7 @@ const app = await buildApp(
     prisma,
     mailer: mailerFromEnv(),
     payments: paymentsFromEnv(),
+    texter: texterFromEnv(),
     // Catches confirmation emails that failed, for buyers who don't come back to their order.
     retryMs: 5 * 60_000,
   },

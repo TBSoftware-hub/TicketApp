@@ -3,6 +3,7 @@ export * from "./checkout";
 export * from "./comps";
 export * from "./door-sales";
 export * from "./events";
+export * from "./guardians";
 export * from "./health";
 export * from "./invitations";
 export * from "./money";
