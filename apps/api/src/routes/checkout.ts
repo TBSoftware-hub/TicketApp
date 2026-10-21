@@ -289,8 +289,8 @@ export async function checkoutRoutes(
             ...(promoCodeId ? { promoCode: { connect: { id: promoCodeId } } } : {}),
             ...totals,
             viewKeyHash: hashToken(viewKey),
-            // A free order is emailed straight away with the key in hand; a paid one later.
-            emailViewKey: free ? null : viewKey,
+            // Kept until the confirmation email carries the link, which may be a later retry.
+            emailViewKey: viewKey,
             holdExpiresAt: free ? null : new Date(now.getTime() + HOLD_MINUTES * 60_000),
             tickets: {
               create: input.tickets.map((t) => ({

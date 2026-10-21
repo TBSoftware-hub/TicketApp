@@ -268,8 +268,12 @@ model Order {
   holdExpiresAt           DateTime?
   stripeCheckoutSessionId String?       @unique
   stripePaymentIntentId   String?       @unique
-  /// When the confirmation email with the tickets went out; null until then or after a failure.
+  /// When the provider accepted the confirmation email with the tickets.
   confirmationSentAt      DateTime?
+  /// Set while a send is in progress; a claim older than a few minutes was abandoned and can be retaken.
+  confirmationClaimedAt   DateTime?
+  /// Send attempts so far; retries stop after a few.
+  confirmationAttempts    Int           @default(0)
   /// The order link's key, kept only until the confirmation email carries it to the buyer.
   emailViewKey            String?
   createdAt               DateTime      @default(now())

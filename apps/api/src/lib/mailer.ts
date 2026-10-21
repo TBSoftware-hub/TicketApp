@@ -15,6 +15,8 @@ export interface MailMessage {
   text: string;
   html?: string;
   inlineImages?: InlineImage[];
+  /** Providers that support it drop a repeat of the same key, so a retried send can't arrive twice. */
+  idempotencyKey?: string;
 }
 
 export interface Mailer {
@@ -38,10 +40,14 @@ export function createLogMailer(log: FastifyBaseLogger): Mailer {
 export function createSmtpMailer(url: string, from: string): Mailer {
   const transport = nodemailer.createTransport(url);
   return {
-    async send({ inlineImages, ...message }) {
+    // SMTP has no idempotency keys, so a send retried after an unclear failure could repeat.
+    async send({ to, subject, text, html, inlineImages }) {
       await transport.sendMail({
         from,
-        ...message,
+        to,
+        subject,
+        text,
+        html,
         attachments: inlineImages?.map((image) => ({
           filename: image.filename,
           content: image.content,
@@ -56,7 +62,7 @@ export function createSmtpMailer(url: string, from: string): Mailer {
 /** Sends through Resend's HTTPS API, which works on hosts that block outbound SMTP ports. */
 export function createResendMailer(apiKey: string, from: string, fetchFn = fetch): Mailer {
   return {
-    async send({ inlineImages, ...message }) {
+    async send({ inlineImages, idempotencyKey, ...message }) {
       const attachments = inlineImages?.map((image) => ({
         filename: image.filename,
         content: image.content.toString("base64"),
@@ -65,7 +71,11 @@ export function createResendMailer(apiKey: string, from: string, fetchFn = fetch
       }));
       const res = await fetchFn("https://api.resend.com/emails", {
         method: "POST",
-        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+          ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+        },
         body: JSON.stringify({ from, ...message, ...(attachments ? { attachments } : {}) }),
       });
       if (!res.ok) throw new Error(`Resend rejected the email: ${res.status} ${await res.text()}`);

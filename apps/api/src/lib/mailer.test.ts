@@ -37,8 +37,10 @@ describe("mailerFromEnv", () => {
 
   it("sends inline images to Resend as attachments with content ids", async () => {
     const bodies: unknown[] = [];
+    const headers: Headers[] = [];
     const fakeFetch = async (_url: string | URL | Request, init?: RequestInit) => {
       bodies.push(JSON.parse(init!.body as string));
+      headers.push(new Headers(init!.headers));
       return new Response("{}", { status: 200 });
     };
     const mailer = createResendMailer("re_test", "a@b.test", fakeFetch as typeof fetch);
@@ -47,6 +49,7 @@ describe("mailerFromEnv", () => {
       subject: "Hi",
       text: "Body",
       html: '<img src="cid:qr">',
+      idempotencyKey: "order-confirmation-1",
       inlineImages: [
         {
           filename: "qr.png",
@@ -62,6 +65,8 @@ describe("mailerFromEnv", () => {
         { filename: "qr.png", content: "cG5n", content_type: "image/png", content_id: "qr" },
       ],
     });
+    expect(bodies[0]).not.toHaveProperty("idempotencyKey");
+    expect(headers[0]!.get("idempotency-key")).toBe("order-confirmation-1");
   });
 
   it("fails when Resend rejects the message", async () => {

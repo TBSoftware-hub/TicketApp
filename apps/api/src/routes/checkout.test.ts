@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import QRCode from "qrcode";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { MAX_CONFIRMATION_ATTEMPTS, orderConfirmations } from "../lib/confirmations";
+import type { MailMessage } from "../lib/mailer";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
 describe("checkout", () => {
@@ -529,6 +531,88 @@ describe("checkout", () => {
 
       await shop.view(orderId, key);
       expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("still issues free tickets when the email can't be sent", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const res = await shop.buy([attendee(free)], { buyerEmail: email });
+      expect(res.statusCode).toBe(201);
+      const { orderId, key } = res.json();
+      expect(mailTo(email)).toHaveLength(0);
+
+      // The order link's key is kept for the retry, which can come from the background sweep.
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.emailViewKey).toBe(key);
+    });
+
+    it("retries unsent emails in the background, for buyers who never come back", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket({ quantity: 2 });
+      const email = buyer();
+      const { orderId } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+      await lapse(orderId);
+      // The next checkout settles the order as paid, but the email fails.
+      t.mailFailures.remaining = 1;
+      await shop.buy([attendee(general, "Other")]);
+      expect(mailTo(email)).toHaveLength(0);
+
+      const sent: MailMessage[] = [];
+      const sweep = orderConfirmations({
+        prisma: t.prisma,
+        mailer: { send: async (m) => void sent.push(m) },
+        webBaseUrl: "https://dashboard.test",
+        log: t.app.log,
+      });
+      await sweep.retry();
+      const mine = sent.filter((m) => m.to === email);
+      expect(mine).toHaveLength(1);
+      // Every attempt carries the same key, so the provider drops a repeat.
+      expect(mine[0]!.idempotencyKey).toBe(`order-confirmation-${orderId}`);
+      expect(mine[0]!.text).toContain(`orders/${orderId}?key=`);
+    });
+
+    it("takes over a send that was abandoned partway, but not one in progress", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationClaimedAt: new Date() },
+      });
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(0);
+
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationClaimedAt: new Date(Date.now() - 11 * 60_000) },
+      });
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("stops retrying after a few failed attempts", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+      t.mailFailures.remaining = MAX_CONFIRMATION_ATTEMPTS;
+      for (let i = 0; i <= MAX_CONFIRMATION_ATTEMPTS; i++) await shop.view(orderId, key);
+      expect(t.mailFailures.remaining).toBe(0);
+      expect(mailTo(email)).toHaveLength(0);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order).toMatchObject({
+        confirmationSentAt: null,
+        confirmationAttempts: MAX_CONFIRMATION_ATTEMPTS,
+        emailViewKey: null,
+      });
     });
 
     it("sends nothing for an order that was never paid and drops its key", async () => {

@@ -31,6 +31,8 @@ export interface AppDeps {
   magicLinkPerIpPerMinute?: number;
   /** Checkouts started per client IP per minute (default 30). */
   checkoutPerIpPerMinute?: number;
+  /** How often to retry confirmation emails that didn't go out; off when left out. */
+  confirmationRetryMs?: number;
 }
 
 export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}) {
@@ -82,7 +84,18 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
   await app.register(publicEventRoutes, { prisma: deps.prisma, payments: deps.payments });
-  const confirm = orderConfirmations({ prisma: deps.prisma, mailer, webBaseUrl, log: app.log });
+  const confirmations = orderConfirmations({
+    prisma: deps.prisma,
+    mailer,
+    webBaseUrl,
+    log: app.log,
+  });
+  const confirm = confirmations.confirm;
+  if (deps.confirmationRetryMs) {
+    const timer = setInterval(() => void confirmations.retry(), deps.confirmationRetryMs);
+    timer.unref();
+    app.addHook("onClose", async () => clearInterval(timer));
+  }
   await app.register(checkoutRoutes, {
     prisma: deps.prisma,
     payments: deps.payments,

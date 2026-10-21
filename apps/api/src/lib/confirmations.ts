@@ -4,12 +4,27 @@ import type { FastifyBaseLogger } from "fastify";
 import QRCode from "qrcode";
 import type { InlineImage, Mailer, MailMessage } from "./mailer";
 
-/**
- * Emails a paid order's tickets to the buyer, once. Never throws: a failed send is logged and
- * left for the next attempt (the buyer opening their order, or a later settlement) to retry.
- * `viewKey` is the order link's key when the caller has it; otherwise the stored one is used.
- */
-export type ConfirmOrder = (orderId: string, viewKey?: string) => Promise<void>;
+/** A send that hasn't finished in this long was abandoned (say, by a restart) and can be retaken. */
+const CLAIM_MINUTES = 10;
+/** Sends give up after this many attempts, so a bad address doesn't retry forever. */
+export const MAX_CONFIRMATION_ATTEMPTS = 5;
+/** The retry sweep only looks back this far, and only at this many orders per run. */
+const RETRY_DAYS = 7;
+const RETRY_BATCH = 20;
+
+export interface OrderConfirmations {
+  /**
+   * Emails a paid order's tickets to the buyer, once. Never throws: a failed send is logged and
+   * left for `retry` or the buyer's next visit. `viewKey` is the order link's key when the caller
+   * has it; otherwise the stored one is used.
+   */
+  confirm(orderId: string, viewKey?: string): Promise<void>;
+  /** Tries again for recent paid orders whose email hasn't gone out. */
+  retry(now?: Date): Promise<void>;
+}
+
+/** Just the sending half, for routes that confirm orders. */
+export type ConfirmOrder = OrderConfirmations["confirm"];
 
 export function orderConfirmations({
   prisma,
@@ -21,15 +36,28 @@ export function orderConfirmations({
   mailer: Mailer;
   webBaseUrl: string;
   log: FastifyBaseLogger;
-}): ConfirmOrder {
-  return async (orderId, viewKey) => {
-    // Claiming the send first means two requests settling the same order can't both email it.
-    const { count } = await prisma.order.updateMany({
-      where: { id: orderId, status: "PAID", confirmationSentAt: null },
-      data: { confirmationSentAt: new Date() },
-    });
-    if (count === 0) return;
+}): OrderConfirmations {
+  const unsent = (now: Date) => ({
+    status: "PAID" as const,
+    confirmationSentAt: null,
+    confirmationAttempts: { lt: MAX_CONFIRMATION_ATTEMPTS },
+    OR: [
+      { confirmationClaimedAt: null },
+      { confirmationClaimedAt: { lt: new Date(now.getTime() - CLAIM_MINUTES * 60_000) } },
+    ],
+  });
+
+  async function confirm(orderId: string, viewKey?: string) {
+    const now = new Date();
+    let claimed = false;
     try {
+      // Claiming first means two requests settling the same order can't both email it.
+      const { count } = await prisma.order.updateMany({
+        where: { id: orderId, ...unsent(now) },
+        data: { confirmationClaimedAt: now, confirmationAttempts: { increment: 1 } },
+      });
+      if (count === 0) return;
+      claimed = true;
       const order = await prisma.order.findUniqueOrThrow({
         where: { id: orderId },
         select: {
@@ -37,6 +65,7 @@ export function orderConfirmations({
           buyerEmail: true,
           totalCents: true,
           emailViewKey: true,
+          confirmationAttempts: true,
           event: {
             select: {
               name: true,
@@ -63,15 +92,54 @@ export function orderConfirmations({
       const orderUrl = key
         ? `${webBaseUrl}/e/${encodeURIComponent(event.organization.slug)}/${encodeURIComponent(event.slug)}/orders/${orderId}?key=${encodeURIComponent(key)}`
         : null;
-      await mailer.send(await confirmationEmail({ ...order, orderUrl }));
-      await prisma.order.update({ where: { id: orderId }, data: { emailViewKey: null } });
+      const message = await confirmationEmail({ ...order, orderUrl });
+      try {
+        // The same key on every attempt, so a retry after an unclear failure isn't delivered twice.
+        await mailer.send({ ...message, idempotencyKey: `order-confirmation-${orderId}` });
+      } catch (err) {
+        log.error({ err, orderId }, "Couldn't send the order confirmation");
+        const givingUp = order.confirmationAttempts >= MAX_CONFIRMATION_ATTEMPTS;
+        await prisma.order.update({
+          where: { id: orderId },
+          // The key is only kept for the email; once it won't be sent, it goes.
+          data: { confirmationClaimedAt: null, ...(givingUp ? { emailViewKey: null } : {}) },
+        });
+        return;
+      }
+      // Sent. If recording that fails, the claim stays and expires, and the retried send carries
+      // the same idempotency key.
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationSentAt: new Date(), confirmationClaimedAt: null, emailViewKey: null },
+      });
     } catch (err) {
-      log.error({ err, orderId }, "Couldn't send the order confirmation");
-      await prisma.order
-        .update({ where: { id: orderId }, data: { confirmationSentAt: null } })
-        .catch((resetErr) => log.error({ err: resetErr, orderId }, "Couldn't reset the send"));
+      log.error(
+        { err, orderId },
+        claimed
+          ? "Order confirmation failed partway; it will be retried"
+          : "Couldn't claim the order confirmation",
+      );
     }
-  };
+  }
+
+  async function retry(now = new Date()) {
+    try {
+      const orders = await prisma.order.findMany({
+        where: {
+          ...unsent(now),
+          createdAt: { gte: new Date(now.getTime() - RETRY_DAYS * 24 * 60 * 60_000) },
+        },
+        select: { id: true },
+        orderBy: { createdAt: "asc" },
+        take: RETRY_BATCH,
+      });
+      for (const order of orders) await confirm(order.id);
+    } catch (err) {
+      log.error({ err }, "Couldn't look for unsent order confirmations");
+    }
+  }
+
+  return { confirm, retry };
 }
 
 interface ConfirmationOrder {
