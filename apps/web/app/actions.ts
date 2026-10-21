@@ -222,6 +222,7 @@ export async function saveTicketType(
     minGrade: studentsOnly ? grade("minGrade") : null,
     maxGrade: studentsOnly ? grade("maxGrade") : null,
     requiresApproval: formData.get("requiresApproval") === "on",
+    waiverIds: formData.getAll("waiverIds").map(String),
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
 

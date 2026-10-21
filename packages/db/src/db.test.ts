@@ -17,11 +17,11 @@ describe("database schema", () => {
 
     const org = await prisma.organization.findUniqueOrThrow({
       where: { slug: DEMO_ORG_SLUG },
-      include: { events: { include: { ticketTypes: true, waivers: true } } },
+      include: { events: { include: { ticketTypes: { include: { waivers: true } } } } },
     });
     expect(org.events).toHaveLength(1);
     expect(org.events[0]?.ticketTypes).toHaveLength(1);
-    expect(org.events[0]?.waivers).toHaveLength(1);
+    expect(org.events[0]?.ticketTypes[0]?.waivers).toHaveLength(1);
     expect(await prisma.ticket.count({ where: { code: "DEMO-TICKET-0001" } })).toBe(1);
   });
 

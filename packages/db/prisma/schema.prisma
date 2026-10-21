@@ -154,9 +154,9 @@ enum EventStatus {
 }
 
 model Event {
-  id             String        @id @default(uuid(7)) @db.Uuid
-  organizationId String        @db.Uuid
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id             String       @id @default(uuid(7)) @db.Uuid
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   name           String
   slug           String
   description    String?
@@ -164,14 +164,13 @@ model Event {
   startsAt       DateTime
   endsAt         DateTime
   capacity       Int?
-  status         EventStatus   @default(DRAFT)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  status         EventStatus  @default(DRAFT)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
   ticketTypes    TicketType[]
   promoCodes     PromoCode[]
   orders         Order[]
   tickets        Ticket[]
-  waivers        EventWaiver[]
   scans          ScanEvent[]
 
   @@unique([organizationId, slug])
@@ -179,26 +178,28 @@ model Event {
 }
 
 model TicketType {
-  id               String      @id @default(uuid(7)) @db.Uuid
-  eventId          String      @db.Uuid
-  event            Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  id               String             @id @default(uuid(7)) @db.Uuid
+  eventId          String             @db.Uuid
+  event            Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
   name             String
   priceCents       Int
   quantity         Int?
-  maxPerOrder      Int         @default(10)
+  maxPerOrder      Int                @default(10)
   salesStartAt     DateTime?
   salesEndAt       DateTime?
   /// Only students may buy. Checked against the buyer's details at checkout (and the roster, once E6.2 lands).
-  studentsOnly     Boolean     @default(false)
+  studentsOnly     Boolean            @default(false)
   /// Inclusive grade range for students-only tickets; null means no limit on that side.
   minGrade         Int?
   maxGrade         Int?
   /// Guest passes: each purchase waits for staff approval before the ticket is valid.
-  requiresApproval Boolean     @default(false)
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  requiresApproval Boolean            @default(false)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
   tickets          Ticket[]
   promoCodes       PromoCode[]
+  /// Waivers each attendee with this ticket signs at checkout.
+  waivers          TicketTypeWaiver[]
 
   @@index([eventId])
 }
@@ -415,11 +416,11 @@ model WaiverTemplate {
   /// Goes up by one each time the wording or questions change; each is kept in versions.
   version                   Int                     @default(1)
   requiresGuardianForMinors Boolean                 @default(true)
-  /// Archived waivers can't be added to events but stay on the ones already using them.
+  /// Archived waivers can't be added to ticket types but stay on the ones already using them.
   archivedAt                DateTime?
   createdAt                 DateTime                @default(now())
   updatedAt                 DateTime                @updatedAt
-  events                    EventWaiver[]
+  ticketTypes               TicketTypeWaiver[]
   signatures                WaiverSignature[]
   versions                  WaiverTemplateVersion[]
 
@@ -441,13 +442,14 @@ model WaiverTemplateVersion {
   @@unique([waiverTemplateId, version])
 }
 
-model EventWaiver {
-  eventId          String         @db.Uuid
-  event            Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+model TicketTypeWaiver {
+  ticketTypeId     String         @db.Uuid
+  ticketType       TicketType     @relation(fields: [ticketTypeId], references: [id], onDelete: Cascade)
   waiverTemplateId String         @db.Uuid
   waiverTemplate   WaiverTemplate @relation(fields: [waiverTemplateId], references: [id], onDelete: Restrict)
 
-  @@id([eventId, waiverTemplateId])
+  @@id([ticketTypeId, waiverTemplateId])
+  @@index([waiverTemplateId])
 }
 
 enum SignerRole {
@@ -471,6 +473,8 @@ model WaiverSignature {
   ipAddress        String?
   userAgent        String?
   documentHash     String
+  /// The signer's answers to the waiver's questions, keyed by question ID.
+  answers          Json           @default("{}")
   pdfStorageKey    String?
 
   @@unique([ticketId, waiverTemplateId, signerRole])

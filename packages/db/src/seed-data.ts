@@ -78,10 +78,12 @@ export async function seed(prisma: PrismaClient) {
       },
     }));
 
-  await prisma.eventWaiver.upsert({
-    where: { eventId_waiverTemplateId: { eventId: event.id, waiverTemplateId: waiver.id } },
+  await prisma.ticketTypeWaiver.upsert({
+    where: {
+      ticketTypeId_waiverTemplateId: { ticketTypeId: ticketType.id, waiverTemplateId: waiver.id },
+    },
     update: {},
-    create: { eventId: event.id, waiverTemplateId: waiver.id },
+    create: { ticketTypeId: ticketType.id, waiverTemplateId: waiver.id },
   });
 
   const existingTicket = await prisma.ticket.findUnique({ where: { code: "DEMO-TICKET-0001" } });

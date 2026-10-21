@@ -2,15 +2,20 @@ import type { Prisma, PrismaClient } from "@ticketapp/db";
 import {
   STRIPE_MINIMUM_CENTS,
   checkEligibility,
+  checkWaiverAnswers,
   checkoutSchema,
   orderTotal,
+  type Checkout,
   paidTicketCount,
   promoCodeProblem,
   promoDiscountCents,
+  signatureMatches,
   ticketSaleStatus,
+  type WaiverField,
 } from "@ticketapp/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { waiverDocumentHash } from "../lib/canonical";
 import type { ConfirmOrder } from "../lib/confirmations";
 import { HttpError } from "../lib/errors";
 import type { Payments } from "../lib/payments";
@@ -83,6 +88,58 @@ function present({ event, tickets, ...order }: OrderRow) {
       lastName: t.attendee.lastName,
     })),
   };
+}
+
+interface WaiverToSign {
+  id: string;
+  version: number;
+  title: string;
+  body: string;
+  fields: WaiverField[];
+  ticketTypeId: string;
+}
+
+/**
+ * The signatures one attendee gives at checkout: one for each waiver their ticket type asks for,
+ * of the version they read, signed with their own name, every required question answered.
+ */
+function attendeeSignatures(
+  request: FastifyRequest,
+  ticket: Checkout["tickets"][number],
+  waivers: WaiverToSign[],
+) {
+  const signer = `${ticket.firstName} ${ticket.lastName}`;
+  const given = new Map(ticket.waivers.map((w) => [w.waiverId, w]));
+  if (given.size !== ticket.waivers.length || given.size !== waivers.length) {
+    throw new HttpError(400, `Sign each waiver for ${ticket.firstName}`);
+  }
+  return waivers.map((waiver) => {
+    const signed = given.get(waiver.id);
+    if (!signed) throw new HttpError(400, `Sign each waiver for ${ticket.firstName}`);
+    if (signed.version !== waiver.version) {
+      throw new HttpError(
+        409,
+        `“${waiver.title}” was just updated. Reload the page to read the new version`,
+      );
+    }
+    if (!signatureMatches(signed.signature, signer)) {
+      throw new HttpError(400, `Sign “${waiver.title}” by typing ${signer}`);
+    }
+    const checked = checkWaiverAnswers(waiver.fields, signed.answers);
+    if ("problem" in checked) {
+      throw new HttpError(400, `${checked.problem} in “${waiver.title}” (${ticket.firstName})`);
+    }
+    return {
+      waiverTemplate: { connect: { id: waiver.id } },
+      templateVersion: waiver.version,
+      signerRole: "ATTENDEE" as const,
+      signerName: signer,
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"]?.slice(0, 500) ?? null,
+      documentHash: waiverDocumentHash(waiver),
+      answers: checked.answers,
+    };
+  });
 }
 
 /** Buying tickets. No sign-in: the buyer gets a private link to their order instead. */
@@ -230,6 +287,22 @@ export async function checkoutRoutes(
           }
         }
 
+        // Locked, so a waiver can't be reworded between this check and the signatures.
+        const waivers = await tx.$queryRaw<WaiverToSign[]>`
+          SELECT w.id, w.version, w.title, w.body, w.fields, ttw."ticketTypeId"
+          FROM "TicketTypeWaiver" ttw
+          JOIN "WaiverTemplate" w ON w.id = ttw."waiverTemplateId"
+          WHERE ttw."ticketTypeId" = ANY(${typeIds}::uuid[])
+          ORDER BY w.title, w.id
+          FOR SHARE OF w`;
+        const signatures = input.tickets.map((ticket) =>
+          attendeeSignatures(
+            request,
+            ticket,
+            waivers.filter((w) => w.ticketTypeId === ticket.ticketTypeId),
+          ),
+        );
+
         const lines = types.map((t) => ({
           ticketTypeId: t.id,
           unitCents: t.priceCents,
@@ -302,7 +375,7 @@ export async function checkoutRoutes(
             emailViewKey: viewKey,
             holdExpiresAt: free ? null : new Date(now.getTime() + HOLD_MINUTES * 60_000),
             tickets: {
-              create: input.tickets.map((t) => ({
+              create: input.tickets.map((t, i) => ({
                 code: newTicketCode(),
                 status: free ? ("VALID" as const) : ("HELD" as const),
                 event: { connect: { id: event.id } },
@@ -310,6 +383,7 @@ export async function checkoutRoutes(
                 attendee: {
                   create: { firstName: t.firstName, lastName: t.lastName, grade: t.grade ?? null },
                 },
+                signatures: { create: signatures[i]! },
               })),
             },
           },

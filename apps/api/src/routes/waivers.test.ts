@@ -133,12 +133,20 @@ describe("waiver templates", () => {
       },
     });
     const eventId = event.json().event.id as string;
-    await t.prisma.eventWaiver.create({ data: { eventId, waiverTemplateId: waiver.id } });
+    const ticketType = await t.prisma.ticketType.create({
+      data: { eventId, name: "Student", priceCents: 0 },
+    });
+    await t.prisma.ticketTypeWaiver.create({
+      data: { ticketTypeId: ticketType.id, waiverTemplateId: waiver.id },
+    });
     const used = (await call("GET", `/${waiver.id}`)).json().waiver;
-    expect(used).toMatchObject({ eventCount: 1, events: [{ id: eventId, name: "Museum Trip" }] });
+    expect(used).toMatchObject({
+      eventCount: 1,
+      events: [{ id: eventId, name: "Museum Trip", ticketTypes: ["Student"] }],
+    });
     const refused = await call("DELETE", `/${waiver.id}`);
     expect(refused.statusCode).toBe(409);
-    expect(refused.json().error).toBe("Events use this waiver, so archive it instead");
+    expect(refused.json().error).toBe("Tickets use this waiver, so archive it instead");
 
     const spare = (await call("POST", "", draft)).json().waiver;
     expect((await call("DELETE", `/${spare.id}`)).statusCode).toBe(204);

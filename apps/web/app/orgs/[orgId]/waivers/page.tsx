@@ -50,7 +50,9 @@ export default async function WaiversPage({ params }: { params: Promise<{ orgId:
       <p className="eyebrow">{org.name}</p>
       <h1>Waivers</h1>
       {active.length === 0 ? (
-        <p className="muted">No waivers yet. Create one, then add it to the events that need it.</p>
+        <p className="muted">
+          No waivers yet. Create one, then add it to the ticket types that need it.
+        </p>
       ) : (
         <ul className="cards">
           {active.map((w) => (

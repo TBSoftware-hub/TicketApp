@@ -26,6 +26,7 @@ const ticketTypeFields = {
   minGrade: true,
   maxGrade: true,
   requiresApproval: true,
+  waivers: { select: { waiverTemplateId: true }, orderBy: { waiverTemplate: { title: "asc" } } },
   _count: { select: { tickets: { where: { status: "VALID" } } } },
   // Any ticket at all, voided ones included, keeps the type from being deleted.
   tickets: { select: { id: true }, take: 1 },
@@ -33,8 +34,35 @@ const ticketTypeFields = {
 
 type TicketTypeRow = Prisma.TicketTypeGetPayload<{ select: typeof ticketTypeFields }>;
 
-function present({ _count, tickets, ...ticketType }: TicketTypeRow) {
-  return { ...ticketType, sold: _count.tickets, hasTickets: tickets.length > 0 };
+function present({ _count, tickets, waivers, ...ticketType }: TicketTypeRow) {
+  return {
+    ...ticketType,
+    waiverIds: waivers.map((w) => w.waiverTemplateId),
+    sold: _count.tickets,
+    hasTickets: tickets.length > 0,
+  };
+}
+
+/**
+ * Checks that the waivers belong to the organization and aren't archived, unless the ticket type
+ * already had them. Locks them so they can't be edited or deleted until the transaction ends.
+ */
+async function requireWaivers(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  waiverIds: string[],
+  alreadyAttached: string[] = [],
+) {
+  if (waiverIds.length === 0) return;
+  const found = await tx.$queryRaw<{ id: string; archivedAt: Date | null }[]>`
+    SELECT id, "archivedAt" FROM "WaiverTemplate"
+    WHERE id = ANY(${waiverIds}::uuid[]) AND "organizationId" = ${orgId}::uuid
+    FOR SHARE`;
+  if (found.length !== waiverIds.length)
+    throw new HttpError(400, "Pick waivers from this organization");
+  if (found.some((w) => w.archivedAt && !alreadyAttached.includes(w.id))) {
+    throw new HttpError(400, "That waiver is archived. Restore it before adding it to tickets");
+  }
 }
 
 export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
@@ -61,11 +89,19 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
   app.post("/orgs/:orgId/events/:eventId/ticket-types", async (request, reply) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
-    const input = parse(createTicketTypeSchema, request.body);
+    const { waiverIds = [], ...input } = parse(createTicketTypeSchema, request.body);
+    const ids = [...new Set(waiverIds.map((id) => id.toLowerCase()))];
     await requireEvent(orgId, eventId);
-    const ticketType = await prisma.ticketType.create({
-      data: { ...input, eventId },
-      select: ticketTypeFields,
+    const ticketType = await prisma.$transaction(async (tx) => {
+      await requireWaivers(tx, orgId, ids);
+      return tx.ticketType.create({
+        data: {
+          ...input,
+          eventId,
+          waivers: { create: ids.map((id) => ({ waiverTemplateId: id })) },
+        },
+        select: ticketTypeFields,
+      });
     });
     return reply.code(201).send({ ticketType: present(ticketType) });
   });
@@ -73,7 +109,7 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
   app.patch("/orgs/:orgId/events/:eventId/ticket-types/:ticketTypeId", async (request) => {
     const { orgId, eventId, ticketTypeId } = parse(ticketTypeParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
-    const input = parse(updateTicketTypeSchema, request.body);
+    const { waiverIds, ...input } = parse(updateTicketTypeSchema, request.body);
     // Lock the row so a concurrent edit or sale can't slip past the checks below.
     const ticketType = await prisma.$transaction(async (tx) => {
       const [current] = await tx.$queryRaw<
@@ -111,6 +147,24 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
         if (input.quantity < sold) {
           throw new HttpError(409, `${sold} of these tickets are already sold or being bought`);
         }
+      }
+      if (waiverIds !== undefined) {
+        // New buyers sign the new set; people who already bought keep what they signed.
+        const ids = [...new Set(waiverIds.map((id) => id.toLowerCase()))];
+        const attached = await tx.ticketTypeWaiver.findMany({
+          where: { ticketTypeId },
+          select: { waiverTemplateId: true },
+        });
+        await requireWaivers(
+          tx,
+          orgId,
+          ids,
+          attached.map((w) => w.waiverTemplateId),
+        );
+        await tx.ticketTypeWaiver.deleteMany({ where: { ticketTypeId } });
+        await tx.ticketTypeWaiver.createMany({
+          data: ids.map((id) => ({ ticketTypeId, waiverTemplateId: id })),
+        });
       }
       return tx.ticketType.update({
         where: { id: ticketTypeId },

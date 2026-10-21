@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { api } from "../../../../../../../lib/api";
 import type { EventRecord } from "../../../../../../../lib/events";
 import { loadOrg } from "../../../../../../../lib/org";
+import { loadWaiverSummaries, waiverChoices } from "../../../../../../../lib/waivers";
 import { TicketTypeForm } from "../ticket-type-form";
 
 export const metadata: Metadata = { title: "New ticket type · TicketApp" };
@@ -16,10 +17,13 @@ export default async function NewTicketTypePage({
   const { orgId, eventId } = await params;
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "events.manage")) redirect(`/orgs/${orgId}/events`);
-  const { status, data } = await api<{ event: EventRecord }>(
-    `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`,
-    { token },
-  );
+  const [{ status, data }, waivers] = await Promise.all([
+    api<{ event: EventRecord }>(
+      `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`,
+      { token },
+    ),
+    loadWaiverSummaries(orgId, token),
+  ]);
   if (status === 404 || status === 400) notFound();
   if (!("event" in data)) throw new Error(`Couldn't load the event (${status})`);
 
@@ -46,7 +50,9 @@ export default async function NewTicketTypePage({
           minGrade: "",
           maxGrade: "",
           requiresApproval: false,
+          waiverIds: [],
         }}
+        waivers={waiverChoices(waivers)}
       />
     </main>
   );

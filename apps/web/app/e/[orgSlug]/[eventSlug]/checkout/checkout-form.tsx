@@ -8,16 +8,21 @@ import {
   publicEventPath,
   whoCanBuy,
   type PublicTicketType,
+  type PublicWaiver,
 } from "../../../../../lib/public-events";
 import { formatPrice } from "../../../../../lib/ticket-types";
+import { WaiverSigning, type WaiverDraft } from "./waiver-signing";
 
 interface Attendee {
   firstName: string;
   lastName: string;
   grade: string;
+  /** What's been filled in on each of the ticket's waivers, by waiver ID. */
+  waivers: Record<string, WaiverDraft>;
 }
 
-const blank: Attendee = { firstName: "", lastName: "", grade: "" };
+const blank: Attendee = { firstName: "", lastName: "", grade: "", waivers: {} };
+const blankWaiver: WaiverDraft = { answers: {}, signature: "", agreed: false };
 const GRADES = Array.from({ length: MAX_GRADE - MIN_GRADE + 1 }, (_, i) => MIN_GRADE + i);
 
 /**
@@ -27,13 +32,16 @@ export function CheckoutForm({
   orgSlug,
   eventSlug,
   ticketTypes,
+  waivers,
   fees,
 }: {
   orgSlug: string;
   eventSlug: string;
   ticketTypes: PublicTicketType[];
+  waivers: PublicWaiver[];
   fees: FeeSettings;
 }) {
+  const waiverById = new Map(waivers.map((w) => [w.id, w]));
   const router = useRouter();
   // One attendee per ticket, grouped by ticket type.
   const [attendees, setAttendees] = useState<Record<string, Attendee[]>>(() =>
@@ -64,10 +72,24 @@ export function CheckoutForm({
     });
   }
 
-  function setField(id: string, index: number, field: keyof Attendee, value: string) {
+  function setField(
+    id: string,
+    index: number,
+    field: "firstName" | "lastName" | "grade",
+    value: string,
+  ) {
     setAttendees((all) => ({
       ...all,
       [id]: all[id]!.map((a, i) => (i === index ? { ...a, [field]: value } : a)),
+    }));
+  }
+
+  function setWaiver(id: string, index: number, waiverId: string, draft: WaiverDraft) {
+    setAttendees((all) => ({
+      ...all,
+      [id]: all[id]!.map((a, i) =>
+        i === index ? { ...a, waivers: { ...a.waivers, [waiverId]: draft } } : a,
+      ),
     }));
   }
 
@@ -80,6 +102,16 @@ export function CheckoutForm({
         firstName: a.firstName,
         lastName: a.lastName,
         grade: a.grade ? Number(a.grade) : null,
+        waivers: tt.waiverIds.map((waiverId) => {
+          const draft = a.waivers[waiverId] ?? blankWaiver;
+          return {
+            waiverId,
+            version: waiverById.get(waiverId)?.version,
+            answers: draft.answers,
+            signature: draft.signature,
+            agreed: draft.agreed,
+          };
+        }),
       })),
     );
     setSending(true);
@@ -197,6 +229,20 @@ export function CheckoutForm({
                         </label>
                       )}
                     </div>
+                    {tt.waiverIds.map((waiverId) => {
+                      const waiver = waiverById.get(waiverId);
+                      return (
+                        waiver && (
+                          <WaiverSigning
+                            key={waiverId}
+                            waiver={waiver}
+                            signer={`${a.firstName} ${a.lastName}`.trim()}
+                            draft={a.waivers[waiverId] ?? blankWaiver}
+                            onChange={(draft) => setWaiver(tt.id, i, waiverId, draft)}
+                          />
+                        )
+                      );
+                    })}
                   </fieldset>
                 ))}
               </li>

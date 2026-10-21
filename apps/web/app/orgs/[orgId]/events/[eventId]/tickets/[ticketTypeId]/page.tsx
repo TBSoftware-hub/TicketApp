@@ -5,6 +5,7 @@ import { api } from "../../../../../../../lib/api";
 import type { EventRecord } from "../../../../../../../lib/events";
 import { loadOrg } from "../../../../../../../lib/org";
 import { centsToDollarsInput, type TicketTypeRecord } from "../../../../../../../lib/ticket-types";
+import { loadWaiverSummaries, waiverChoices } from "../../../../../../../lib/waivers";
 import { deleteTicketType } from "../../../../../../actions";
 import { TicketTypeForm } from "../ticket-type-form";
 
@@ -22,9 +23,10 @@ export default async function EditTicketTypePage({
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "events.manage")) redirect(`/orgs/${orgId}/events`);
   const base = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
-  const [eventRes, typesRes] = await Promise.all([
+  const [eventRes, typesRes, waivers] = await Promise.all([
     api<{ event: EventRecord }>(base, { token }),
     api<{ ticketTypes: TicketTypeRecord[] }>(`${base}/ticket-types`, { token }),
+    loadWaiverSummaries(orgId, token),
   ]);
   if (eventRes.status === 404 || eventRes.status === 400) notFound();
   if (!("event" in eventRes.data)) throw new Error(`Couldn't load the event (${eventRes.status})`);
@@ -59,9 +61,11 @@ export default async function EditTicketTypePage({
           minGrade: tt.minGrade === null ? "" : String(tt.minGrade),
           maxGrade: tt.maxGrade === null ? "" : String(tt.maxGrade),
           requiresApproval: tt.requiresApproval,
+          waiverIds: tt.waiverIds,
           salesStartAtUtc: tt.salesStartAt,
           salesEndAtUtc: tt.salesEndAt,
         }}
+        waivers={waiverChoices(waivers, tt.waiverIds)}
       />
       {error && (
         <p className="notice error" role="alert">
