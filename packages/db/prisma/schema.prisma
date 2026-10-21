@@ -270,6 +270,8 @@ model Order {
   platformFeeCents         Int           @default(0)
   /// Service fee still to hand back to the school after a refund; retried until Stripe takes it.
   feeReturnDueCents        Int           @default(0)
+  /// When the fee return was last tried, so the retries reach every order in turn.
+  feeReturnTriedAt         DateTime?
   totalCents               Int
   /// SHA-256 of the key in the buyer's order link; the link is the only way to see the order.
   viewKeyHash              String?       @unique

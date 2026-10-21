@@ -97,15 +97,14 @@ export function paidTicketCount(
   const applies = (l: OrderLine) =>
     !!promo && (promo.ticketTypeIds.length === 0 || promo.ticketTypeIds.includes(l.ticketTypeId));
   const eligibleCents = lines.filter(applies).reduce((sum, l) => sum + l.unitCents * l.quantity, 0);
-  const freesEligible =
-    !!promo &&
-    (promo.discountType === "PERCENT"
-      ? promo.discountValue >= 100
-      : promo.discountValue >= eligibleCents);
-  return lines.reduce(
-    (n, l) => n + (l.unitCents > 0 && !(freesEligible && applies(l)) ? l.quantity : 0),
-    0,
-  );
+  // Rounded as promoDiscountCents rounds it, so a line it discounts to nothing counts as free.
+  const free = (l: OrderLine) =>
+    applies(l) &&
+    (promo!.discountType === "PERCENT"
+      ? Math.round((l.unitCents * l.quantity * promo!.discountValue) / 100) >=
+        l.unitCents * l.quantity
+      : promo!.discountValue >= eligibleCents);
+  return lines.reduce((n, l) => n + (l.unitCents > 0 && !free(l) ? l.quantity : 0), 0);
 }
 
 /** "20% off", "$5.00 off". */

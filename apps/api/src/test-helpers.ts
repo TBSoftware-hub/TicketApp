@@ -85,6 +85,8 @@ export function fakePayments() {
   const refunds = new Map<string, { id: string; paymentIntentId: string; status: string }>();
   /** Fees handed back to schools, by order. */
   const returnedFees = new Map<string, number>();
+  /** Orders whose fee return always fails. */
+  const failingFeeReturns = new Set<string>();
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -143,7 +145,7 @@ export function fakePayments() {
       return { id: refund.id, status: refund.status };
     },
     async returnFee({ orderId, cents }) {
-      if (failures.feeReturn) {
+      if (failures.feeReturn || failingFeeReturns.has(orderId)) {
         failures.feeReturn = false;
         throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
       }
@@ -168,6 +170,7 @@ export function fakePayments() {
     failures,
     refunds,
     returnedFees,
+    failingFeeReturns,
     refundOutcome,
     pay,
     expire,

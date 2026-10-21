@@ -343,6 +343,47 @@ describe("orders", () => {
     expect(settled.feeReturnDueCents).toBe(0);
   });
 
+  it("keeps retrying every fee return, even behind ones that keep failing", async () => {
+    const shop = await onSale();
+    const hourAgo = Date.now() - 60 * 60_000;
+    const refunded = (cancelledAt: Date) =>
+      t.prisma.order.create({
+        data: {
+          eventId: shop.eventId,
+          buyerName: "Pat Parent",
+          buyerEmail: buyer(),
+          status: "REFUNDED",
+          paymentMethod: "CARD",
+          subtotalCents: 1000,
+          totalCents: 1075,
+          platformFeeCents: 75,
+          feeReturnDueCents: 75,
+          stripePaymentIntentId: `pi_${randomUUID()}`,
+          cancelledAt,
+        },
+      });
+    const stuck = [];
+    for (let i = 0; i < 20; i++) stuck.push(await refunded(new Date(hourAgo - 60_000)));
+    for (const order of stuck) stripe.failingFeeReturns.add(order.id);
+    const later = await refunded(new Date(hourAgo));
+
+    const fees = feeReturns({ prisma: t.prisma, payments: stripe.payments, log: t.app.log });
+    try {
+      await fees.retry();
+      await fees.retry();
+    } finally {
+      stripe.failingFeeReturns.clear();
+    }
+    expect(stripe.returnedFees.get(later.id)).toBe(75);
+    const settled = await t.prisma.order.findUniqueOrThrow({ where: { id: later.id } });
+    expect(settled.feeReturnDueCents).toBe(0);
+    // Tidied away so they don't crowd later sweeps.
+    await t.prisma.order.updateMany({
+      where: { id: { in: stuck.map((o) => o.id) } },
+      data: { feeReturnDueCents: 0 },
+    });
+  });
+
   it("retries the cancellation email when it couldn't be sent", async () => {
     const shop = await onSale();
     const order = await shop.paid();

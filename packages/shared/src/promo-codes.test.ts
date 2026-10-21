@@ -127,6 +127,15 @@ describe("paidTicketCount", () => {
     expect(paidTicketCount(promo("PERCENT", 100), lines)).toBe(0);
   });
 
+  it("counts a ticket rounding makes free as free", () => {
+    const cheap = [
+      { ticketTypeId: "a", unitCents: 1000, quantity: 1 },
+      { ticketTypeId: "cheap", unitCents: 49, quantity: 1 },
+    ];
+    expect(paidTicketCount(promo("PERCENT", 99, ["cheap"]), cheap)).toBe(1);
+    expect(paidTicketCount(promo("PERCENT", 98, ["cheap"]), cheap)).toBe(2);
+  });
+
   it("still counts tickets a set amount only partly covers", () => {
     expect(paidTicketCount(promo("AMOUNT", 1500, ["a"]), lines)).toBe(3);
   });

@@ -35,6 +35,7 @@ export function feeReturns({
       });
       if (!payments || !order?.stripePaymentIntentId || order.feeReturnDueCents <= 0) return;
       const due = order.feeReturnDueCents;
+      await prisma.order.update({ where: { id: orderId }, data: { feeReturnTriedAt: new Date() } });
       // Stripe only sends what hasn't gone back yet, so two senders at once can't send it twice.
       await payments.returnFee({
         orderId,
@@ -59,7 +60,12 @@ export function feeReturns({
           cancelledAt: { gt: new Date(now.getTime() - RETRY_DAYS * 24 * 60 * 60_000) },
         },
         select: { id: true },
-        orderBy: [{ cancelledAt: "asc" }, { id: "asc" }],
+        // Least recently tried first, so returns that keep failing can't crowd out the rest.
+        orderBy: [
+          { feeReturnTriedAt: { sort: "asc", nulls: "first" } },
+          { cancelledAt: "asc" },
+          { id: "asc" },
+        ],
         take: RETRY_BATCH,
       });
       for (const order of orders) await send(order.id);
