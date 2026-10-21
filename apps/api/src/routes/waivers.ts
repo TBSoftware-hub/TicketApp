@@ -8,6 +8,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
+import { canonical } from "../lib/canonical";
 import { HttpError } from "../lib/errors";
 import { parse } from "../lib/validate";
 
@@ -22,41 +23,62 @@ const summaryFields = {
   fields: true,
   archivedAt: true,
   updatedAt: true,
-  _count: { select: { events: true, signatures: true } },
+  ticketTypes: {
+    select: {
+      ticketType: {
+        select: {
+          name: true,
+          event: { select: { id: true, name: true, startsAt: true, endsAt: true } },
+        },
+      },
+    },
+    orderBy: [
+      { ticketType: { event: { startsAt: "desc" } } },
+      { ticketType: { createdAt: "asc" } },
+    ],
+  },
+  _count: { select: { signatures: true } },
 } as const satisfies Prisma.WaiverTemplateSelect;
 
 const waiverFields = {
   ...summaryFields,
   body: true,
-  events: {
-    select: { event: { select: { id: true, name: true, startsAt: true, endsAt: true } } },
-    orderBy: { event: { startsAt: "desc" } },
-  },
 } as const satisfies Prisma.WaiverTemplateSelect;
 
 type SummaryRow = Prisma.WaiverTemplateGetPayload<{ select: typeof summaryFields }>;
 type WaiverRow = Prisma.WaiverTemplateGetPayload<{ select: typeof waiverFields }>;
 
-function summary({ _count, fields, ...waiver }: SummaryRow) {
+/** The events whose tickets ask for the waiver, each with the ticket types that do. */
+function eventsUsing(ticketTypes: SummaryRow["ticketTypes"]) {
+  const events = new Map<
+    string,
+    { id: string; name: string; startsAt: Date; endsAt: Date; ticketTypes: string[] }
+  >();
+  for (const { ticketType } of ticketTypes) {
+    const { event } = ticketType;
+    const entry = events.get(event.id) ?? { ...event, ticketTypes: [] };
+    entry.ticketTypes.push(ticketType.name);
+    events.set(event.id, entry);
+  }
+  return [...events.values()];
+}
+
+function summary({ _count, fields, ticketTypes, ...waiver }: SummaryRow) {
   return {
     ...waiver,
     fieldCount: Array.isArray(fields) ? fields.length : 0,
-    eventCount: _count.events,
+    eventCount: eventsUsing(ticketTypes).length,
     signatureCount: _count.signatures,
   };
 }
 
-function present({ events, ...waiver }: WaiverRow) {
-  return { ...summary(waiver), fields: waiver.fields, events: events.map((e) => e.event) };
-}
-
-/** JSON with object keys sorted, since Postgres doesn't keep them in the order they were saved. */
-function canonical(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) =>
-    v && typeof v === "object" && !Array.isArray(v)
-      ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)))
-      : v,
-  );
+function present(waiver: WaiverRow) {
+  return {
+    ...summary(waiver),
+    body: waiver.body,
+    fields: waiver.fields,
+    events: eventsUsing(waiver.ticketTypes),
+  };
 }
 
 /** Whether a save changes anything a signer would see. */
@@ -164,16 +186,16 @@ export async function waiverRoutes(app: FastifyInstance, { prisma }: { prisma: P
     return { waiver: present(waiver) };
   });
 
-  // Only a waiver nothing uses can go; one that events use or people have signed is archived.
+  // Only a waiver nothing uses can go; one that tickets use or people have signed is archived.
   app.delete("/orgs/:orgId/waivers/:waiverId", async (request, reply) => {
     const { orgId, waiverId } = parse(waiverParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
     const { count } = await prisma.waiverTemplate
       .deleteMany({ where: { id: waiverId, organizationId: orgId } })
       .catch((err: unknown) => {
-        // Events and signatures keep the waiver they use (onDelete: Restrict).
+        // Ticket types and signatures keep the waiver they use (onDelete: Restrict).
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
-          throw new HttpError(409, "Events use this waiver, so archive it instead");
+          throw new HttpError(409, "Tickets use this waiver, so archive it instead");
         }
         throw err;
       });

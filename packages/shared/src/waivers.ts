@@ -71,3 +71,72 @@ export const updateWaiverTemplateSchema = waiverTemplateSchema.extend({
 });
 
 export const archiveWaiverTemplateSchema = z.object({ archived: z.boolean() });
+
+/** What a signer gives for one question: text for most, true or false for a checkbox. */
+export type WaiverAnswer = string | boolean;
+
+const ANSWER_LIMITS: Record<WaiverFieldType, number> = {
+  TEXT: 500,
+  LONG_TEXT: 5000,
+  DATE: 10,
+  EMAIL: 254,
+  PHONE: 30,
+  CHECKBOX: 0,
+  CHOICE: 100,
+};
+
+/**
+ * Checks a signer's answers against a waiver's questions. Returns the answers to store, trimmed
+ * and limited to the waiver's own questions, or the first problem, which names the question.
+ */
+export function checkWaiverAnswers(
+  fields: readonly WaiverField[],
+  answers: Record<string, unknown>,
+): { answers: Record<string, WaiverAnswer> } | { problem: string } {
+  const kept: Record<string, WaiverAnswer> = {};
+  for (const field of fields) {
+    const raw = answers[field.id];
+    if (field.type === "CHECKBOX") {
+      const ticked = raw === true;
+      if (field.required && !ticked) return { problem: `Tick “${field.label}”` };
+      kept[field.id] = ticked;
+      continue;
+    }
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!value) {
+      if (field.required) return { problem: `Answer “${field.label}”` };
+      continue;
+    }
+    if (value.length > ANSWER_LIMITS[field.type]) {
+      return { problem: `Keep “${field.label}” under ${ANSWER_LIMITS[field.type]} characters` };
+    }
+    if (field.type === "DATE" && !z.iso.date().safeParse(value).success) {
+      return { problem: `Enter a date for “${field.label}”` };
+    }
+    if (field.type === "EMAIL" && !z.email().safeParse(value).success) {
+      return { problem: `Enter a valid email for “${field.label}”` };
+    }
+    if (field.type === "CHOICE" && !field.options?.includes(value)) {
+      return { problem: `Pick one of the choices for “${field.label}”` };
+    }
+    kept[field.id] = value;
+  }
+  return { answers: kept };
+}
+
+/** Whether a typed signature is the signer's name, ignoring case and extra spaces. */
+export function signatureMatches(signature: string, name: string): boolean {
+  const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+  return norm(signature) !== "" && norm(signature) === norm(name);
+}
+
+/** One waiver signed at checkout for one attendee. */
+export const checkoutWaiverSchema = z.object({
+  waiverId: z.string().trim().toLowerCase().pipe(z.uuid()),
+  /** The version the signer read, so a waiver reworded meanwhile isn't signed unseen. */
+  version: z.int().min(1),
+  answers: z.record(z.string(), z.union([z.string().max(5000), z.boolean()])).default({}),
+  signature: z.string().trim().max(170),
+  agreed: z.literal(true, "Agree to each waiver to continue"),
+});
+export type CheckoutWaiver = z.infer<typeof checkoutWaiverSchema>;

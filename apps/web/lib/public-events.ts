@@ -3,6 +3,7 @@ import {
   type EventStatus,
   type FeePayer,
   type SaleStatus,
+  type WaiverField,
 } from "@ticketapp/shared";
 import { notFound } from "next/navigation";
 import { cache } from "react";
@@ -19,7 +20,19 @@ export interface PublicTicketType {
   minGrade: number | null;
   maxGrade: number | null;
   requiresApproval: boolean;
+  /** Waivers each attendee with this ticket signs at checkout. */
+  waiverIds: string[];
   saleStatus: SaleStatus;
+}
+
+/** A waiver as a buyer reads and signs it. */
+export interface PublicWaiver {
+  id: string;
+  version: number;
+  title: string;
+  body: string;
+  fields: WaiverField[];
+  requiresGuardianForMinors: boolean;
 }
 
 export interface PublicEvent {
@@ -56,9 +69,11 @@ export function canBuyOnline(tt: PublicTicketType, event: PublicEvent) {
 
 /** The public event, for pages that share one request per render. 404s when it isn't public. */
 export const loadPublicEvent = cache(async (orgSlug: string, eventSlug: string) => {
-  const { status, data } = await api<{ event: PublicEvent; ticketTypes: PublicTicketType[] }>(
-    `/public/events/${encodeURIComponent(orgSlug)}/${encodeURIComponent(eventSlug)}`,
-  );
+  const { status, data } = await api<{
+    event: PublicEvent;
+    ticketTypes: PublicTicketType[];
+    waivers: PublicWaiver[];
+  }>(`/public/events/${encodeURIComponent(orgSlug)}/${encodeURIComponent(eventSlug)}`);
   if (status === 404 || status === 400) notFound();
   if (!("event" in data)) throw new Error(`Couldn't load the event (${status})`);
   return data;

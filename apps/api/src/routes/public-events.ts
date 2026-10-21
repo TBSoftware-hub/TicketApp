@@ -58,6 +58,21 @@ export async function publicEventRoutes(
             minGrade: true,
             maxGrade: true,
             requiresApproval: true,
+            waivers: {
+              orderBy: { waiverTemplate: { title: "asc" } },
+              select: {
+                waiverTemplate: {
+                  select: {
+                    id: true,
+                    version: true,
+                    title: true,
+                    body: true,
+                    fields: true,
+                    requiresGuardianForMinors: true,
+                  },
+                },
+              },
+            },
             // Seats held for buyers who are paying count too, so the page doesn't oversell.
             _count: { select: { tickets: { where: shownAsTaken(now) } } },
           },
@@ -67,6 +82,10 @@ export async function publicEventRoutes(
     if (!event) throw new HttpError(404, "Event not found");
 
     const { capacity, organization, ticketTypes, ...rest } = event;
+    // Each waiver once, however many ticket types ask for it.
+    const waivers = new Map(
+      ticketTypes.flatMap((tt) => tt.waivers.map((w) => [w.waiverTemplate.id, w.waiverTemplate])),
+    );
     const soldForEvent = ticketTypes.reduce((n, tt) => n + tt._count.tickets, 0);
     const eventRemaining = capacity === null ? null : capacity - soldForEvent;
     const onlinePayments = Boolean(
@@ -85,8 +104,9 @@ export async function publicEventRoutes(
         serviceFeePaidBy: organization.serviceFeePaidBy,
       },
       // Counts stay private; buyers only see whether they can buy.
-      ticketTypes: ticketTypes.map(({ _count, quantity, ...tt }) => ({
+      ticketTypes: ticketTypes.map(({ _count, quantity, waivers, ...tt }) => ({
         ...tt,
+        waiverIds: waivers.map((w) => w.waiverTemplate.id),
         saleStatus:
           event.status === "CANCELLED"
             ? ("ended" as const)
@@ -95,6 +115,7 @@ export async function publicEventRoutes(
                 { sold: _count.tickets, eventEndsAt: event.endsAt, eventRemaining, now },
               ),
       })),
+      waivers: [...waivers.values()],
     };
   });
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_GRADE, MIN_GRADE } from "./ticket-types";
+import { checkoutWaiverSchema } from "./waivers";
 
 export const feePayerSchema = z.enum(["BUYER", "ORGANIZATION"]);
 export type FeePayer = z.infer<typeof feePayerSchema>;
@@ -87,6 +88,8 @@ export const checkoutTicketSchema = z.object({
     .max(MAX_GRADE, `Grades go from ${MIN_GRADE} to ${MAX_GRADE}`)
     .nullable()
     .optional(),
+  /** One entry for each waiver the ticket type asks for. */
+  waivers: z.array(checkoutWaiverSchema).max(10).default([]),
 });
 export type CheckoutTicket = z.infer<typeof checkoutTicketSchema>;
 

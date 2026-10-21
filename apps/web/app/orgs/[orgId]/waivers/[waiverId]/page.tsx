@@ -56,7 +56,9 @@ export default async function EditWaiverPage({
             {waiver.events.map((e) => (
               <li key={e.id}>
                 <a href={`/orgs/${orgId}/events/${e.id}`}>{e.name}</a>{" "}
-                <span className="muted">{formatEventTime(e.startsAt, e.endsAt, org.timezone)}</span>
+                <span className="muted">
+                  {formatEventTime(e.startsAt, e.endsAt, org.timezone)} · {e.ticketTypes.join(", ")}
+                </span>
               </li>
             ))}
           </ul>

@@ -12,6 +12,7 @@ export interface TicketTypeRecord {
   minGrade: number | null;
   maxGrade: number | null;
   requiresApproval: boolean;
+  waiverIds: string[];
   /** Valid tickets only; voided ones don't count. */
   sold: number;
   /** Whether any ticket was ever issued, voided ones included. Such a type can't be deleted. */

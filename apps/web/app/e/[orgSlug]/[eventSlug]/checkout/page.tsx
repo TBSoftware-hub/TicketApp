@@ -45,7 +45,7 @@ export default async function CheckoutPage({
       </main>
     );
   }
-  const { event, ticketTypes } = await loadPublicEvent(orgSlug, eventSlug);
+  const { event, ticketTypes, waivers } = await loadPublicEvent(orgSlug, eventSlug);
   const buyable = ticketTypes.filter((tt) => canBuyOnline(tt, event));
 
   return (
@@ -68,6 +68,7 @@ export default async function CheckoutPage({
           orgSlug={orgSlug}
           eventSlug={eventSlug}
           ticketTypes={buyable}
+          waivers={waivers}
           fees={{
             cardFeePaidBy: event.cardFeePaidBy,
             serviceFeePaidBy: event.serviceFeePaidBy,

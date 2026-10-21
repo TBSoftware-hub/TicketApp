@@ -318,3 +318,19 @@ button.secondary {
   flex: 1;
   min-width: 0;
 }
+
+.waiver {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.waiver-text {
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-line;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}

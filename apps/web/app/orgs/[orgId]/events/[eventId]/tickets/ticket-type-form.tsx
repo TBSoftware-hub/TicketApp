@@ -2,6 +2,7 @@
 
 import { MAX_GRADE, MIN_GRADE } from "@ticketapp/shared";
 import { startTransition, useActionState, useState, type FormEvent } from "react";
+import type { WaiverChoice } from "../../../../../../lib/waivers";
 import { saveTicketType, type FormState } from "../../../../../actions";
 
 export interface TicketTypeFormValues {
@@ -15,6 +16,7 @@ export interface TicketTypeFormValues {
   minGrade: string;
   maxGrade: string;
   requiresApproval: boolean;
+  waiverIds: string[];
   /** Stored instants of an existing ticket type, so unchanged times are saved exactly as they were. */
   salesStartAtUtc?: string | null;
   salesEndAtUtc?: string | null;
@@ -28,12 +30,14 @@ export function TicketTypeForm({
   ticketTypeId,
   timezone,
   initial,
+  waivers,
 }: {
   orgId: string;
   eventId: string;
   ticketTypeId: string | null;
   timezone: string;
   initial: TicketTypeFormValues;
+  waivers: WaiverChoice[];
 }) {
   const [state, formAction, pending] = useActionState<FormState, FormData>(
     saveTicketType.bind(null, orgId, eventId, ticketTypeId, timezone),
@@ -186,6 +190,31 @@ export function TicketTypeForm({
         <p className="muted hint">
           Use approval for guest passes, so staff can check a guest before their ticket is valid.
         </p>
+      </fieldset>
+      <fieldset className="stack-tight">
+        <legend>Waivers</legend>
+        {waivers.length === 0 ? (
+          <p className="muted hint">
+            No waivers yet. <a href={`/orgs/${orgId}/waivers/new`}>Create one</a> to have each
+            attendee sign it at checkout.
+          </p>
+        ) : (
+          <>
+            <p className="muted hint">Each attendee with this ticket signs these at checkout.</p>
+            {waivers.map((w) => (
+              <label key={w.id} className="choice">
+                <input
+                  type="checkbox"
+                  name="waiverIds"
+                  value={w.id}
+                  defaultChecked={initial.waiverIds.includes(w.id)}
+                />
+                {w.title}
+                {w.archived && <span className="muted"> (archived)</span>}
+              </label>
+            ))}
+          </>
+        )}
       </fieldset>
       {state.error && (
         <p className="notice error" role="alert">
