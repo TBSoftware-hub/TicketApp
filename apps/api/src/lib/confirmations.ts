@@ -7,16 +7,18 @@ import type { InlineImage, Mailer, MailMessage } from "./mailer";
 /** A send that hasn't finished in this long was abandoned (say, by a restart) and can be retaken. */
 const CLAIM_MINUTES = 10;
 /**
- * Resend forgets idempotency keys after 24 hours. A claim abandoned longer ago than this may have
- * been delivered with no record of it, so it isn't retaken: a duplicate is worse than a gap the
- * buyer can fill from their order page.
+ * Resend forgets idempotency keys after 24 hours, so every attempt has to fall within this long
+ * of the first. Past it, an earlier attempt may have been delivered with no record of it, and a
+ * duplicate is worse than a gap the buyer can fill from their order page.
  */
-const RETAKE_HOURS = 23;
+const RETRY_HOURS = 23;
 /** Sends give up after this many attempts, so a bad address doesn't retry forever. */
 export const MAX_CONFIRMATION_ATTEMPTS = 5;
-/** The retry sweep only looks back this far, and only at this many orders per run. */
+/** The retry sweep only looks back this far for orders never tried, and at this many per run. */
 const RETRY_DAYS = 7;
 const RETRY_BATCH = 20;
+
+const minutesBefore = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000);
 
 export interface OrderConfirmations {
   /**
@@ -43,17 +45,23 @@ export function orderConfirmations({
   webBaseUrl: string;
   log: FastifyBaseLogger;
 }): OrderConfirmations {
+  /** Orders that still need their email and that no attempt is working on. */
   const unsent = (now: Date) => ({
     status: "PAID" as const,
     confirmationSentAt: null,
     confirmationAttempts: { lt: MAX_CONFIRMATION_ATTEMPTS },
-    OR: [
-      { confirmationClaimedAt: null },
+    AND: [
       {
-        confirmationClaimedAt: {
-          lt: new Date(now.getTime() - CLAIM_MINUTES * 60_000),
-          gt: new Date(now.getTime() - RETAKE_HOURS * 60 * 60_000),
-        },
+        OR: [
+          { confirmationClaimedAt: null },
+          { confirmationClaimedAt: { lt: minutesBefore(now, CLAIM_MINUTES) } },
+        ],
+      },
+      {
+        OR: [
+          { confirmationFirstTriedAt: null },
+          { confirmationFirstTriedAt: { gt: minutesBefore(now, RETRY_HOURS * 60) } },
+        ],
       },
     ],
   });
@@ -62,11 +70,21 @@ export function orderConfirmations({
     const now = new Date();
     let claimed = false;
     try {
-      // Claiming first means two requests settling the same order can't both email it.
-      const { count } = await prisma.order.updateMany({
-        where: { id: orderId, ...unsent(now) },
-        data: { confirmationClaimedAt: now, confirmationAttempts: { increment: 1 } },
-      });
+      // Claiming first means two requests settling the same order can't both email it. The first
+      // claim also fixes when retries have to stop, whatever later attempts do.
+      const claimExpired = minutesBefore(now, CLAIM_MINUTES);
+      const retriesEnd = minutesBefore(now, RETRY_HOURS * 60);
+      const count = await prisma.$executeRaw`
+        UPDATE "Order" SET
+          "confirmationClaimedAt" = ${now},
+          "confirmationAttempts" = "confirmationAttempts" + 1,
+          "confirmationFirstTriedAt" = COALESCE("confirmationFirstTriedAt", ${now})
+        WHERE id = ${orderId}::uuid
+          AND status = 'PAID'
+          AND "confirmationSentAt" IS NULL
+          AND "confirmationAttempts" < ${MAX_CONFIRMATION_ATTEMPTS}
+          AND ("confirmationClaimedAt" IS NULL OR "confirmationClaimedAt" < ${claimExpired})
+          AND ("confirmationFirstTriedAt" IS NULL OR "confirmationFirstTriedAt" > ${retriesEnd})`;
       if (count === 0) return;
       claimed = true;
       const order = await prisma.order.findUniqueOrThrow({
@@ -136,26 +154,24 @@ export function orderConfirmations({
 
   async function retry(now = new Date()) {
     try {
-      // Orders that will never be emailed now (out of attempts, or a claim too old to retake)
-      // don't keep the order key, however their last attempt ended.
+      // Orders that will never be emailed now (out of attempts or past the retry window) don't
+      // keep the order key, however their last attempt ended.
       await prisma.order.updateMany({
         where: {
           status: "PAID",
           confirmationSentAt: null,
           emailViewKey: { not: null },
-          OR: [
-            { confirmationAttempts: { gte: MAX_CONFIRMATION_ATTEMPTS } },
-            {
-              confirmationClaimedAt: { lte: new Date(now.getTime() - RETAKE_HOURS * 60 * 60_000) },
-            },
-          ],
           AND: [
             {
               OR: [
+                { confirmationAttempts: { gte: MAX_CONFIRMATION_ATTEMPTS } },
+                { confirmationFirstTriedAt: { lte: minutesBefore(now, RETRY_HOURS * 60) } },
+              ],
+            },
+            {
+              OR: [
                 { confirmationClaimedAt: null },
-                {
-                  confirmationClaimedAt: { lt: new Date(now.getTime() - CLAIM_MINUTES * 60_000) },
-                },
+                { confirmationClaimedAt: { lt: minutesBefore(now, CLAIM_MINUTES) } },
               ],
             },
           ],
@@ -165,7 +181,7 @@ export function orderConfirmations({
       const orders = await prisma.order.findMany({
         where: {
           ...unsent(now),
-          createdAt: { gte: new Date(now.getTime() - RETRY_DAYS * 24 * 60 * 60_000) },
+          createdAt: { gte: minutesBefore(now, RETRY_DAYS * 24 * 60) },
         },
         select: { id: true },
         orderBy: { createdAt: "asc" },

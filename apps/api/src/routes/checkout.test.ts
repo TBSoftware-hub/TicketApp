@@ -597,28 +597,48 @@ describe("checkout", () => {
       expect(mailTo(email)).toHaveLength(1);
     });
 
-    it("doesn't retake a claim older than the provider remembers, and drops its key", async () => {
+    it("stops retrying a day after the first attempt, however later attempts went", async () => {
       const shop = await onSale({ ready: false });
       const free = await shop.addTicket({ priceCents: 0 });
       const email = buyer();
+      // The first attempt's response is lost: the provider may have delivered it.
       t.mailFailures.remaining = 1;
       const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
-      // An attempt that stopped a day ago may have been delivered already.
+      const first = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(first.confirmationFirstTriedAt).not.toBeNull();
+      expect(first.confirmationClaimedAt).toBeNull();
+
+      // A day of downtime later, its idempotency key has been forgotten, so nothing is resent.
       await t.prisma.order.update({
         where: { id: orderId },
-        data: { confirmationClaimedAt: new Date(Date.now() - 25 * 60 * 60_000) },
+        data: { confirmationFirstTriedAt: new Date(Date.now() - 25 * 60 * 60_000) },
       });
       await shop.view(orderId, key);
-      expect(mailTo(email)).toHaveLength(0);
-
-      await orderConfirmations({
+      const sweep = orderConfirmations({
         prisma: t.prisma,
         mailer: { send: async () => {} },
         webBaseUrl: "https://dashboard.test",
         log: t.app.log,
-      }).retry();
+      });
+      await sweep.retry();
+      expect(mailTo(email)).toHaveLength(0);
       const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      expect(order.emailViewKey).toBeNull();
+      expect(order).toMatchObject({ confirmationSentAt: null, emailViewKey: null });
+      // Taking over abandoned claims doesn't move the deadline either.
+      expect(order.confirmationAttempts).toBe(1);
+    });
+
+    it("keeps the first attempt's time when later attempts take over", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 2;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      const before = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      await shop.view(orderId, key);
+      const after = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(after.confirmationAttempts).toBe(2);
+      expect(after.confirmationFirstTriedAt).toEqual(before.confirmationFirstTriedAt);
     });
 
     it("stops retrying after a few failed attempts", async () => {

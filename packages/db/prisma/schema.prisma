@@ -272,6 +272,8 @@ model Order {
   confirmationSentAt      DateTime?
   /// Set while a send is in progress; a claim older than a few minutes was abandoned and can be retaken.
   confirmationClaimedAt   DateTime?
+  /// The first attempt. Retries stop a day later, while the provider still remembers it.
+  confirmationFirstTriedAt DateTime?
   /// Send attempts so far; retries stop after a few.
   confirmationAttempts    Int           @default(0)
   /// The order link's key, kept only until the confirmation email carries it to the buyer.

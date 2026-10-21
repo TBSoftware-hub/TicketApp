@@ -1,6 +1,7 @@
 -- AlterTable
 ALTER TABLE "Order" ADD COLUMN     "confirmationAttempts" INTEGER NOT NULL DEFAULT 0,
 ADD COLUMN     "confirmationClaimedAt" TIMESTAMP(3),
+ADD COLUMN     "confirmationFirstTriedAt" TIMESTAMP(3),
 ADD COLUMN     "confirmationSentAt" TIMESTAMP(3),
 ADD COLUMN     "emailViewKey" TEXT;
 
