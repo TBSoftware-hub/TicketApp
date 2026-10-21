@@ -6,6 +6,7 @@ import { requireOrgPermission } from "../lib/auth";
 import { HttpError } from "../lib/errors";
 import { cancellationEmail, type CancellationNotices } from "../lib/cancellations";
 import { notSendingConfirmation } from "../lib/confirmations";
+import { sendingGuardianRequest } from "../lib/guardian-requests";
 import type { FeeReturns } from "../lib/fee-returns";
 import type { Payments, RefundResult } from "../lib/payments";
 import { parse } from "../lib/validate";
@@ -15,6 +16,8 @@ const orderParamsSchema = eventParamsSchema.extend({ orderId: z.uuid() });
 
 const SENDING_CONFIRMATION =
   "The confirmation email for this order is going out right now. Try again in a minute.";
+const SENDING_GUARDIAN_LINK =
+  "A guardian's signing link for this order is going out right now. Try again in a minute.";
 
 /** How many orders the dashboard lists at once; a search narrows it down. */
 const ORDER_PAGE = 100;
@@ -128,6 +131,11 @@ export async function orderRoutes(
       where: { id: orderId, NOT: notSendingConfirmation() },
     });
     if (busy > 0) throw new HttpError(409, SENDING_CONFIRMATION);
+    if (
+      (await prisma.guardianSignatureRequest.count({ where: sendingGuardianRequest(orderId) })) > 0
+    ) {
+      throw new HttpError(409, SENDING_GUARDIAN_LINK);
+    }
 
     let refund: RefundResult | null = null;
     if (order.paymentMethod === "CARD" && order.totalCents > 0) {
@@ -154,6 +162,14 @@ export async function orderRoutes(
         })
       : null;
     const outcome = await prisma.$transaction(async (tx) => {
+      // Waits for a guardian link being claimed, then checks no send is under way, so a link can't
+      // go out for tickets this voids.
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId}::uuid FOR UPDATE`;
+      if (
+        (await tx.guardianSignatureRequest.count({ where: sendingGuardianRequest(orderId) })) > 0
+      ) {
+        return "sendingGuardianLink" as const;
+      }
       const { count } = await tx.order.updateMany({
         where: { id: orderId, status: "PAID", ...notSendingConfirmation() },
         data: {
@@ -185,6 +201,7 @@ export async function orderRoutes(
     });
     // A refund already made is found again by the next attempt, so trying again is safe.
     if (outcome === "busy") throw new HttpError(409, SENDING_CONFIRMATION);
+    if (outcome === "sendingGuardianLink") throw new HttpError(409, SENDING_GUARDIAN_LINK);
     if (outcome === "cancelled") {
       await notices.send(orderId);
       await fees.send(orderId);

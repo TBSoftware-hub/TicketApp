@@ -23,6 +23,7 @@ const requestFields = {
       event: {
         select: {
           name: true,
+          status: true,
           startsAt: true,
           endsAt: true,
           venue: true,
@@ -58,6 +59,12 @@ async function findRequest(db: Prisma.TransactionClient, token: string, now = ne
   });
   if (!request || request.ticket.status !== "VALID" || request.ticket.order.status !== "PAID") {
     throw new HttpError(404, NOT_FOUND);
+  }
+  if (request.ticket.event.status === "CANCELLED") {
+    throw new HttpError(
+      410,
+      `${request.ticket.event.name} was cancelled, so this link no longer works`,
+    );
   }
   if (request.ticket.event.endsAt <= now) {
     throw new HttpError(410, `${request.ticket.event.name} is over, so this link no longer works`);
@@ -100,14 +107,21 @@ async function waiversToSign(db: Prisma.TransactionClient, request: RequestRow) 
 
 async function present(db: Prisma.TransactionClient, request: RequestRow) {
   const { ticket } = request;
-  const { organization, ...event } = ticket.event;
+  const { name, startsAt, endsAt, venue, organization } = ticket.event;
   const guardianSignature = ticket.signatures.find((s) => s.signerRole === "GUARDIAN");
   return {
     request: {
       guardianName: request.guardian.name,
       buyerName: ticket.order.buyerName,
       attendee: ticket.attendee,
-      event: { ...event, organizationName: organization.name, timezone: organization.timezone },
+      event: {
+        name,
+        startsAt,
+        endsAt,
+        venue,
+        organizationName: organization.name,
+        timezone: organization.timezone,
+      },
       waivers: await waiversToSign(db, request),
       signedAt: request.signedAt,
       signerName: request.signedAt ? (guardianSignature?.signerName ?? null) : null,

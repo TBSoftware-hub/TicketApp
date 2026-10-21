@@ -16,6 +16,18 @@ const RETRY_BATCH = 20;
 
 const minutesBefore = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000);
 
+/**
+ * Requests with a send in progress for an order. Cancelling waits for them, so a guardian isn't
+ * sent a link for tickets that were just voided.
+ */
+export const sendingGuardianRequest = (
+  orderId: string,
+  now = new Date(),
+): Prisma.GuardianSignatureRequestWhereInput => ({
+  ticket: { orderId },
+  sendClaimedAt: { gte: minutesBefore(now, CLAIM_MINUTES) },
+});
+
 /** The messages carrying a guardian's signing link, stored until they're sent. */
 export interface GuardianMessages {
   /** What the request was about, for the notification log; the link stays out of it. */
@@ -49,7 +61,17 @@ export function guardianRequests({
       const claimExpired = minutesBefore(now, CLAIM_MINUTES);
       const retriesEnd = minutesBefore(now, RETRY_HOURS * 60);
       // Claiming first means two requests settling the same order can't both send the link.
-      const count = await prisma.$executeRaw`
+      const count = await prisma.$transaction(async (tx) => {
+        // Shares the lock cancelling takes, so the order can't be cancelled between this check and
+        // the claim; cancelling then waits for the claim to be released.
+        const [order] = await tx.$queryRaw<{ id: string }[]>`
+          SELECT o.id FROM "GuardianSignatureRequest" r
+          JOIN "Ticket" t ON t.id = r."ticketId"
+          JOIN "Order" o ON o.id = t."orderId"
+          WHERE r.id = ${requestId}::uuid
+          FOR SHARE OF o`;
+        if (!order) return 0;
+        return tx.$executeRaw`
         UPDATE "GuardianSignatureRequest" r SET
           "sendClaimedAt" = ${now},
           "sendAttempts" = r."sendAttempts" + 1,
@@ -59,6 +81,7 @@ export function guardianRequests({
         JOIN "Event" e ON e.id = t."eventId"
         WHERE r.id = ${requestId}::uuid
           AND e."endsAt" > ${now}
+          AND e.status <> 'CANCELLED'
           AND t.id = r."ticketId"
           AND o.status = 'PAID'
           AND t.status = 'VALID'
@@ -67,6 +90,7 @@ export function guardianRequests({
           AND r."sendAttempts" < ${MAX_GUARDIAN_REQUEST_ATTEMPTS}
           AND (r."sendClaimedAt" IS NULL OR r."sendClaimedAt" < ${claimExpired})
           AND (r."sendFirstTriedAt" IS NULL OR r."sendFirstTriedAt" > ${retriesEnd})`;
+      });
       if (count === 0) return;
       claimed = true;
       const request = await prisma.guardianSignatureRequest.findUniqueOrThrow({
@@ -170,6 +194,7 @@ export function guardianRequests({
                 { ticket: { status: "VOID" } },
                 // Once the event is over the link no longer works, so there's no point sending it.
                 { ticket: { event: { endsAt: { lte: now } } } },
+                { ticket: { event: { status: "CANCELLED" } } },
                 { ticket: { order: { status: { in: ["CANCELLED", "REFUNDED"] } } } },
               ],
             },
@@ -188,7 +213,11 @@ export function guardianRequests({
           pendingMessages: { not: Prisma.DbNull },
           signedAt: null,
           sendAttempts: { lt: MAX_GUARDIAN_REQUEST_ATTEMPTS },
-          ticket: { status: "VALID", order: { status: "PAID" }, event: { endsAt: { gt: now } } },
+          ticket: {
+            status: "VALID",
+            order: { status: "PAID" },
+            event: { endsAt: { gt: now }, status: { not: "CANCELLED" } },
+          },
           AND: [
             {
               OR: [

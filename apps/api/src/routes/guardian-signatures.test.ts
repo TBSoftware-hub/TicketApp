@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { localDate } from "@ticketapp/shared";
 import { canonical } from "../lib/canonical";
 import type { TextMessage } from "../lib/texter";
+import { generateToken } from "../lib/tokens";
 import { buildTestApp, uniqueSlug } from "../test-helpers";
 
 describe("guardian signatures for minors", () => {
@@ -321,7 +322,7 @@ describe("guardian signatures for minors", () => {
     expect(t.sent.some((m) => m.to === "sam6@example.com")).toBe(false);
 
     // A link sent earlier shows nothing about the attendee any more.
-    const token = "x".repeat(43);
+    const token = generateToken();
     await t.prisma.guardianSignatureRequest.update({
       where: { id: request.id },
       data: { tokenHash: createHash("sha256").update(token).digest("hex") },
@@ -330,6 +331,55 @@ describe("guardian signatures for minors", () => {
     expect(shown.statusCode).toBe(410);
     expect(shown.json()).toEqual({ error: "Museum Trip is over, so this link no longer works" });
     expect((await sign(token)).statusCode).toBe(410);
+  });
+
+  it("shuts the link, and stops sending it, when the event is cancelled", async () => {
+    const s = await trip();
+    t.mailFailures.to.add("sam7@example.com");
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam7@example.com" } }),
+    ]);
+    t.mailFailures.to.delete("sam7@example.com");
+    const { orderId, key } = res.json();
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { orderId } });
+    await t.prisma.event.update({ where: { id: ticket.eventId }, data: { status: "CANCELLED" } });
+
+    await t.app.inject({ method: "POST", url: `/public/orders/${orderId}`, payload: { key } });
+    expect(t.sent.some((m) => m.to === "sam7@example.com")).toBe(false);
+
+    const token = generateToken();
+    await t.prisma.guardianSignatureRequest.updateMany({
+      where: { ticketId: ticket.id },
+      data: { tokenHash: createHash("sha256").update(token).digest("hex") },
+    });
+    const shown = await view(token);
+    expect(shown.statusCode).toBe(410);
+    expect(shown.json().error).toBe("Museum Trip was cancelled, so this link no longer works");
+    expect((await sign(token)).statusCode).toBe(410);
+  });
+
+  it("holds off cancelling an order while a guardian's link is going out", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam8@example.com" } }),
+    ]);
+    const { orderId } = res.json();
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { orderId } });
+    await t.prisma.guardianSignatureRequest.updateMany({
+      where: { ticketId: ticket.id },
+      data: { sendClaimedAt: new Date() },
+    });
+    const url = `/orgs/${s.orgId}/events/${ticket.eventId}/orders/${orderId}/cancel`;
+    const busy = await s.call("POST", url, {});
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json().error).toBe(
+      "A guardian's signing link for this order is going out right now. Try again in a minute.",
+    );
+    await t.prisma.guardianSignatureRequest.updateMany({
+      where: { ticketId: ticket.id },
+      data: { sendClaimedAt: null },
+    });
+    expect((await s.call("POST", url, {})).statusCode).toBe(200);
   });
 
   it("refuses a link that doesn't match a paid ticket", async () => {
