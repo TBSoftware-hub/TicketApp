@@ -7,6 +7,8 @@ export type FeePayer = z.infer<typeof feePayerSchema>;
 /** Stripe's standard US card pricing: 2.9% (29 per thousand) plus 30¢ per payment. */
 export const CARD_FEE_PER_THOUSAND = 29;
 export const CARD_FEE_FIXED_CENTS = 30;
+/** The smallest card payment Stripe accepts in US dollars. */
+export const STRIPE_MINIMUM_CENTS = 50;
 
 export interface OrderTotal {
   /** Added to what the buyer pays; zero when the organization covers the fee. */

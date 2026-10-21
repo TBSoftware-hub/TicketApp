@@ -107,7 +107,7 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
       if (problem) throw new HttpError(400, problem);
       if (input.quantity != null) {
         // Seats held for buyers who are paying can't be taken back either.
-        const sold = await tx.ticket.count({ where: { ticketTypeId, ...takesSeat() } });
+        const sold = await tx.ticket.count({ where: { ticketTypeId, ...takesSeat } });
         if (input.quantity < sold) {
           throw new HttpError(409, `${sold} of these tickets are already sold or being bought`);
         }

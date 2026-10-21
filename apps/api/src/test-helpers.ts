@@ -107,6 +107,12 @@ export function fakePayments() {
     async checkoutState(sessionId) {
       return checkouts.get(sessionId)!.state;
     },
+    async expireCheckout(sessionId) {
+      const checkout = checkouts.get(sessionId)!;
+      if (checkout.state.status === "open")
+        checkout.state = { status: "expired", paymentIntentId: null };
+      return checkout.state;
+    },
   };
   /** As if the buyer finished paying on Stripe's page. */
   const pay = (sessionId: string) => {

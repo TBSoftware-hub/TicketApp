@@ -186,7 +186,13 @@ describe("checkout", () => {
     expect(res.json().error).toBe("This event isn't taking card payments yet");
   });
 
-  it("counts held seats until the hold runs out", async () => {
+  const lapse = (orderId: string) =>
+    t.prisma.order.update({
+      where: { id: orderId },
+      data: { holdExpiresAt: new Date(Date.now() - 1000) },
+    });
+
+  it("holds seats until Stripe confirms the payment page closed unpaid", async () => {
     const shop = await onSale();
     const general = await shop.addTicket({ quantity: 2 });
     const first = (await shop.buy([attendee(general, "A"), attendee(general, "B")])).json();
@@ -195,29 +201,73 @@ describe("checkout", () => {
     expect(blocked.statusCode).toBe(409);
     expect(blocked.json().error).toBe("General tickets are sold out");
 
-    // The first buyer walks away and the hold lapses.
-    await t.prisma.order.update({
-      where: { id: first.orderId },
-      data: { holdExpiresAt: new Date(Date.now() - 1000) },
-    });
+    // The hold lapses but Stripe's page is somehow still open: the seats stay taken.
+    await lapse(first.orderId);
+    expect((await shop.buy([attendee(general, "C")])).statusCode).toBe(409);
+
+    // Once Stripe says the page closed unpaid, the next checkout gets them.
+    stripe.expire(await sessionOf(first.orderId));
     expect((await shop.buy([attendee(general, "C")])).statusCode).toBe(201);
     const lapsed = (await shop.view(first.orderId, first.key)).json().order;
     expect(lapsed.status).toBe("CANCELLED");
     expect(lapsed.tickets.map((tk: { status: string }) => tk.status)).toEqual(["VOID", "VOID"]);
   });
 
-  it("still issues the tickets when payment lands after the hold lapsed", async () => {
+  it("keeps the seats of a buyer who paid but never came back", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket({ quantity: 1 });
+    const { orderId, key } = (await shop.buy([attendee(general)])).json();
+    stripe.pay(await sessionOf(orderId));
+    await lapse(orderId);
+
+    // The next buyer's checkout settles the lapsed order as paid instead of reselling its seat.
+    const next = await shop.buy([attendee(general, "Other")]);
+    expect(next.json().error).toBe("General tickets are sold out");
+    const order = (await shop.view(orderId, key)).json().order;
+    expect(order).toMatchObject({ status: "PAID", tickets: [{ status: "VALID" }] });
+  });
+
+  it("gives the seats back when the buyer backs out of Stripe's page", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket({ quantity: 1 });
+    const { orderId, key } = (await shop.buy([attendee(general)])).json();
+    const session = await sessionOf(orderId);
+    expect(stripe.checkouts.get(session)!.cancelUrl).toBe(
+      `https://dashboard.test/e/${shop.orgSlug}/${shop.eventSlug}/checkout?cancelled=${orderId}&key=${key}`,
+    );
+
+    const cancel = (k = key) =>
+      t.app.inject({
+        method: "POST",
+        url: `/public/orders/${orderId}/cancel`,
+        payload: { key: k },
+      });
+    expect((await cancel("wrong-key")).statusCode).toBe(404);
+    expect((await cancel()).json().order.status).toBe("CANCELLED");
+    expect(stripe.checkouts.get(session)!.state.status).toBe("expired");
+    expect((await shop.buy([attendee(general)])).statusCode).toBe(201);
+  });
+
+  it("doesn't cancel an order that was paid before the buyer backed out", async () => {
     const shop = await onSale();
     const general = await shop.addTicket();
     const { orderId, key } = (await shop.buy([attendee(general)])).json();
-    await t.prisma.order.update({
-      where: { id: orderId },
-      data: { holdExpiresAt: new Date(Date.now() - 1000) },
-    });
-    await shop.buy([attendee(general, "Other")]); // tidies up the lapsed hold
     stripe.pay(await sessionOf(orderId));
-    const order = (await shop.view(orderId, key)).json().order;
-    expect(order).toMatchObject({ status: "PAID", tickets: [{ status: "VALID" }] });
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/public/orders/${orderId}/cancel`,
+      payload: { key },
+    });
+    expect(res.json().order.status).toBe("PAID");
+  });
+
+  it("refuses a card payment below Stripe's minimum", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket();
+    await shop.addPromo({ code: "ALMOST", discountType: "AMOUNT", discountValue: 990 });
+    const res = await shop.buy([attendee(general)], { promoCode: "ALMOST" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Card payments have to be at least $0.50");
   });
 
   it("lets the seats go when Stripe's payment page closes unpaid", async () => {

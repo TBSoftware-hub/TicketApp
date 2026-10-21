@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@ticketapp/db";
 import {
+  STRIPE_MINIMUM_CENTS,
   checkEligibility,
   checkoutSchema,
   orderTotal,
@@ -11,6 +12,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { HttpError } from "../lib/errors";
 import type { Payments } from "../lib/payments";
+import { applyCheckoutState, releaseOrder, settleLapsedHolds } from "../lib/orders";
 import { takesSeat } from "../lib/seats";
 import { generateToken, hashToken } from "../lib/tokens";
 import { parse } from "../lib/validate";
@@ -78,19 +80,6 @@ function present({ event, tickets, ...order }: OrderRow) {
   };
 }
 
-/** Gives up an unpaid order's seats and its promo code use. */
-async function releaseOrders(tx: Prisma.TransactionClient, orderIds: string[]) {
-  if (orderIds.length === 0) return;
-  await tx.ticket.updateMany({
-    where: { orderId: { in: orderIds }, status: "HELD" },
-    data: { status: "VOID" },
-  });
-  await tx.order.updateMany({
-    where: { id: { in: orderIds }, status: "PENDING" },
-    data: { status: "CANCELLED" },
-  });
-}
-
 /** Buying tickets. No sign-in: the buyer gets a private link to their order instead. */
 export async function checkoutRoutes(
   app: FastifyInstance,
@@ -148,6 +137,11 @@ export async function checkoutRoutes(
         counts.set(t.ticketTypeId, (counts.get(t.ticketTypeId) ?? 0) + 1);
       const typeIds = [...counts.keys()];
 
+      // Abandoned checkouts give their seats back first. If Stripe can't be asked, they stay taken.
+      await settleLapsedHolds(prisma, payments, event.id, now).catch((err) =>
+        request.log.warn({ err }, "Couldn't settle lapsed checkouts"),
+      );
+
       const order = await prisma.$transaction(async (tx) => {
         // The same lock comps take, so two buyers can't both get the last seat.
         const [locked] = await tx.$queryRaw<
@@ -156,16 +150,6 @@ export async function checkoutRoutes(
           SELECT capacity, status, "endsAt" FROM "Event" WHERE id = ${event.id}::uuid FOR UPDATE`;
         if (!locked || locked.status !== "PUBLISHED")
           throw new HttpError(409, "Tickets aren't on sale");
-
-        // Holds that ran out give their seats and promo code uses back.
-        const lapsed = await tx.order.findMany({
-          where: { eventId: event.id, status: "PENDING", holdExpiresAt: { lte: now } },
-          select: { id: true },
-        });
-        await releaseOrders(
-          tx,
-          lapsed.map((o) => o.id),
-        );
 
         const types = await tx.$queryRaw<
           {
@@ -192,7 +176,7 @@ export async function checkoutRoutes(
         }
         const byId = new Map(types.map((t) => [t.id, t]));
 
-        const seats = takesSeat(now);
+        const seats = takesSeat;
         const taken = await tx.ticket.count({ where: { eventId: event.id, ...seats } });
         const eventRemaining = locked.capacity === null ? null : locked.capacity - taken;
         for (const type of types) {
@@ -285,6 +269,9 @@ export async function checkoutRoutes(
         if (!free && !accountId) {
           throw new HttpError(409, "This event isn't taking card payments yet");
         }
+        if (!free && totals.totalCents < STRIPE_MINIMUM_CENTS) {
+          throw new HttpError(400, "Card payments have to be at least $0.50");
+        }
         return tx.order.create({
           data: {
             event: { connect: { id: event.id } },
@@ -337,12 +324,13 @@ export async function checkoutRoutes(
           applicationFeeCents: order.processingFeeCents,
           buyerEmail: input.buyerEmail,
           successUrl: `${eventPath}/orders/${order.id}?key=${viewKey}`,
-          cancelUrl: `${eventPath}/checkout?cancelled=1`,
+          // Lets the checkout page close the payment page and give the seats back.
+          cancelUrl: `${eventPath}/checkout?cancelled=${order.id}&key=${viewKey}`,
           expiresAt: new Date(Date.now() + CHECKOUT_MINUTES * 60_000),
         });
       } catch (err) {
         // Without a payment page nobody can pay for the held seats, so let them go now.
-        await prisma.$transaction((tx) => releaseOrders(tx, [order.id]));
+        await prisma.$transaction((tx) => releaseOrder(tx, order.id));
         throw err;
       }
       await prisma.order.update({
@@ -353,44 +341,49 @@ export async function checkoutRoutes(
     },
   );
 
+  async function findOrder(orderId: string, key: string) {
+    const order = await prisma.order.findFirst({
+      where: { id: orderId, viewKeyHash: hashToken(key) },
+      select: { status: true, stripeCheckoutSessionId: true },
+    });
+    if (!order) throw new HttpError(404, "Order not found");
+    return order;
+  }
+
+  const show = async (orderId: string) => ({
+    order: present(
+      await prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: orderFields }),
+    ),
+  });
+
   // Where Stripe sends the buyer back. Also settles the order, until webhooks (E4.6) do it too.
   app.post("/public/orders/:orderId", async (request) => {
     const { orderId } = parse(orderParamsSchema, request.params);
     const { key } = parse(orderBodySchema, request.body);
-    const where = { id: orderId, viewKeyHash: hashToken(key) };
-    const found = await prisma.order.findFirst({
-      where,
-      select: { status: true, stripeCheckoutSessionId: true },
-    });
-    if (!found) throw new HttpError(404, "Order not found");
-
-    // A cancelled order with a payment page may have lapsed while the buyer was still paying.
-    const unsettled = found.status === "PENDING" || found.status === "CANCELLED";
-    const sessionId = found.stripeCheckoutSessionId;
-    const state =
-      unsettled && sessionId && payments ? await payments.checkoutState(sessionId) : null;
-    if (state?.status === "paid") {
-      await prisma.$transaction(async (tx) => {
-        const { count } = await tx.order.updateMany({
-          where: { id: orderId, status: { in: ["PENDING", "CANCELLED"] } },
-          data: {
-            status: "PAID",
-            stripePaymentIntentId: state.paymentIntentId,
-            holdExpiresAt: null,
-          },
-        });
-        // They paid, so they get their tickets even if the hold had run out.
-        if (count > 0) {
-          await tx.ticket.updateMany({
-            where: { orderId, status: { in: ["HELD", "VOID"] } },
-            data: { status: "VALID" },
-          });
-        }
-      });
-    } else if (state?.status === "expired") {
-      await prisma.$transaction((tx) => releaseOrders(tx, [orderId]));
+    const order = await findOrder(orderId, key);
+    if (order.status === "PENDING" && order.stripeCheckoutSessionId && payments) {
+      await applyCheckoutState(
+        prisma,
+        orderId,
+        await payments.checkoutState(order.stripeCheckoutSessionId),
+      );
     }
-    const settled = await prisma.order.findFirstOrThrow({ where, select: orderFields });
-    return { order: present(settled) };
+    return show(orderId);
+  });
+
+  // Where Stripe sends a buyer who backs out. Closes the payment page so the seats can go back
+  // straight away, unless the payment went through after all.
+  app.post("/public/orders/:orderId/cancel", async (request) => {
+    const { orderId } = parse(orderParamsSchema, request.params);
+    const { key } = parse(orderBodySchema, request.body);
+    const order = await findOrder(orderId, key);
+    if (order.status === "PENDING" && order.stripeCheckoutSessionId && payments) {
+      await applyCheckoutState(
+        prisma,
+        orderId,
+        await payments.expireCheckout(order.stripeCheckoutSessionId),
+      );
+    }
+    return show(orderId);
   });
 }

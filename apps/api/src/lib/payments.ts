@@ -49,6 +49,8 @@ export interface Payments {
   /** Starts Stripe's hosted payment page, which also offers Apple Pay and Google Pay. */
   createCheckout(request: CheckoutRequest): Promise<{ id: string; url: string }>;
   checkoutState(sessionId: string): Promise<CheckoutState>;
+  /** Closes the payment page if it's still open, then reports where it ended up. */
+  expireCheckout(sessionId: string): Promise<CheckoutState>;
 }
 
 /** Stripe failures become a 502 people can act on; the original error rides along for the log. */
@@ -61,6 +63,20 @@ async function viaStripe<T>(call: () => Promise<T>): Promise<T> {
     }
     throw err;
   }
+}
+
+function stateOf(session: Stripe.Checkout.Session): CheckoutState {
+  const paymentIntent = session.payment_intent;
+  return {
+    status:
+      session.payment_status === "paid"
+        ? "paid"
+        : session.status === "expired"
+          ? "expired"
+          : "open",
+    paymentIntentId:
+      typeof paymentIntent === "string" ? paymentIntent : (paymentIntent?.id ?? null),
+  };
 }
 
 export function createStripePayments(secretKey: string): Payments {
@@ -137,18 +153,12 @@ export function createStripePayments(secretKey: string): Payments {
       return { id: session.id, url: session.url };
     },
     async checkoutState(sessionId) {
+      return stateOf(await stripe.checkout.sessions.retrieve(sessionId));
+    },
+    async expireCheckout(sessionId) {
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      const paymentIntent = session.payment_intent;
-      return {
-        status:
-          session.payment_status === "paid"
-            ? "paid"
-            : session.status === "expired"
-              ? "expired"
-              : "open",
-        paymentIntentId:
-          typeof paymentIntent === "string" ? paymentIntent : (paymentIntent?.id ?? null),
-      };
+      if (session.status !== "open") return stateOf(session);
+      return stateOf(await stripe.checkout.sessions.expire(sessionId));
     },
   };
   return {
@@ -159,6 +169,7 @@ export function createStripePayments(secretKey: string): Payments {
     dashboardLink: (id) => viaStripe(() => payments.dashboardLink(id)),
     createCheckout: (r) => viaStripe(() => payments.createCheckout(r)),
     checkoutState: (id) => viaStripe(() => payments.checkoutState(id)),
+    expireCheckout: (id) => viaStripe(() => payments.expireCheckout(id)),
   };
 }
 

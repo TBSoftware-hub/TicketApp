@@ -203,7 +203,7 @@ export function CheckoutForm({
 
       <section className="stack">
         <h2>Your details</h2>
-        <p className="muted hint">We&apos;ll email the tickets to you.</p>
+        <p className="muted hint">So the school can reach you about your order.</p>
         <label>
           Your name
           <input name="buyerName" autoComplete="name" required maxLength={80} />

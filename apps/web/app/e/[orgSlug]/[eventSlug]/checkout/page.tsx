@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
+import { api } from "../../../../../lib/api";
 import { formatEventTime } from "../../../../../lib/events";
 import { canBuyOnline, loadPublicEvent, publicEventPath } from "../../../../../lib/public-events";
 import { CheckoutForm } from "./checkout-form";
@@ -16,12 +18,24 @@ export default async function CheckoutPage({
   searchParams,
 }: {
   params: Params;
-  searchParams: Promise<{ cancelled?: string }>;
+  searchParams: Promise<{ cancelled?: string; key?: string }>;
 }) {
   const { orgSlug, eventSlug } = await params;
-  const { cancelled } = await searchParams;
+  const { cancelled, key } = await searchParams;
   const { event, ticketTypes } = await loadPublicEvent(orgSlug, eventSlug);
   const eventPath = publicEventPath(orgSlug, eventSlug);
+  if (cancelled && key) {
+    // Stripe sent the buyer back without paying: close its page so their seats go back now.
+    const { data } = await api<{ order: { status: string } }>(
+      `/public/orders/${encodeURIComponent(cancelled)}/cancel`,
+      { method: "POST", body: { key } },
+    );
+    if ("order" in data && data.order.status === "PAID") {
+      redirect(
+        `${eventPath}/orders/${encodeURIComponent(cancelled)}?key=${encodeURIComponent(key)}`,
+      );
+    }
+  }
   const buyable = ticketTypes.filter((tt) => canBuyOnline(tt, event));
 
   return (

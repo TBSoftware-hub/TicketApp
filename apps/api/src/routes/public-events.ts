@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { HttpError } from "../lib/errors";
 import type { Payments } from "../lib/payments";
-import { takesSeat } from "../lib/seats";
+import { shownAsTaken } from "../lib/seats";
 import { parse } from "../lib/validate";
 
 const slug = z.string().min(1).max(80);
@@ -58,7 +58,7 @@ export async function publicEventRoutes(
             maxGrade: true,
             requiresApproval: true,
             // Seats held for buyers who are paying count too, so the page doesn't oversell.
-            _count: { select: { tickets: { where: takesSeat(now) } } },
+            _count: { select: { tickets: { where: shownAsTaken(now) } } },
           },
         },
       },

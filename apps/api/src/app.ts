@@ -88,7 +88,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     checkoutPerIpPerMinute: deps.checkoutPerIpPerMinute ?? 30,
   });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
-  await app.register(compRoutes, { prisma: deps.prisma });
+  await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments });
   await app.register(paymentRoutes, { prisma: deps.prisma, payments: deps.payments, webBaseUrl });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 
