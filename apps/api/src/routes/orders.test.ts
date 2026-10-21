@@ -197,7 +197,10 @@ describe("orders", () => {
     const shop = await onSale();
     const order = await shop.paid();
     const [a, b] = await Promise.all([shop.cancel(order.orderId), shop.cancel(order.orderId)]);
-    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 200].sort());
+    // Whichever finishes second either saw the order still paid (200) or already refunded (409).
+    const codes = [a.statusCode, b.statusCode].sort();
+    expect(codes[0]).toBe(200);
+    expect([200, 409]).toContain(codes[1]);
     expect(stripe.refunds.has(order.orderId)).toBe(true);
     expect(mailTo(order.buyerEmail).filter((m) => m.subject.includes("refunded"))).toHaveLength(1);
 
