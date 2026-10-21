@@ -278,6 +278,9 @@ model Order {
   confirmationAttempts    Int           @default(0)
   /// The order link's key, kept only until the confirmation email carries it to the buyer.
   emailViewKey            String?
+  /// The confirmation email as first rendered, so every retry sends the same message under the
+  /// same idempotency key even if the event changes. Cleared with the key.
+  confirmationEmail       Json?
   createdAt               DateTime      @default(now())
   updatedAt               DateTime      @updatedAt
   tickets                 Ticket[]

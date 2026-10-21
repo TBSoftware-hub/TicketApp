@@ -533,6 +533,51 @@ describe("checkout", () => {
       expect(mailTo(email)).toHaveLength(1);
     });
 
+    it("resends the first attempt's email unchanged, even after the event is edited", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      const { eventId } = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const { name } = await t.prisma.event.update({
+        where: { id: eventId },
+        data: { name: "Renamed Night" },
+        select: { name: true },
+      });
+      expect(name).toBe("Renamed Night");
+
+      // The provider would reject a different message under the same idempotency key.
+      await shop.view(orderId, key);
+      const [sent] = mailTo(email);
+      expect(sent!.subject).not.toContain("Renamed Night");
+      expect(sent!.inlineImages!.map((i) => i.contentId)).toEqual(["ticket-1"]);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.confirmationEmail).toBeNull();
+    });
+
+    it("retries a failed email on an order more than a week old", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { createdAt: new Date(Date.now() - 8 * 24 * 60 * 60_000) },
+      });
+
+      const sent: MailMessage[] = [];
+      const sweep = orderConfirmations({
+        prisma: t.prisma,
+        mailer: { send: async (m) => void sent.push(m) },
+        webBaseUrl: "https://dashboard.test",
+        log: t.app.log,
+      });
+      await sweep.retry();
+      expect(sent.filter((m) => m.to === email)).toHaveLength(1);
+    });
+
     it("still issues free tickets when the email can't be sent", async () => {
       const shop = await onSale({ ready: false });
       const free = await shop.addTicket({ priceCents: 0 });
@@ -623,7 +668,11 @@ describe("checkout", () => {
       await sweep.retry();
       expect(mailTo(email)).toHaveLength(0);
       const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      expect(order).toMatchObject({ confirmationSentAt: null, emailViewKey: null });
+      expect(order).toMatchObject({
+        confirmationSentAt: null,
+        emailViewKey: null,
+        confirmationEmail: null,
+      });
       // Taking over abandoned claims doesn't move the deadline either.
       expect(order.confirmationAttempts).toBe(1);
     });
@@ -656,6 +705,7 @@ describe("checkout", () => {
         confirmationSentAt: null,
         confirmationAttempts: MAX_CONFIRMATION_ATTEMPTS,
         emailViewKey: null,
+        confirmationEmail: null,
       });
     });
 

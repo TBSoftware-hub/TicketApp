@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@ticketapp/db";
+import { Prisma, type PrismaClient } from "@ticketapp/db";
 import { formatCents, formatEventTime } from "@ticketapp/shared";
 import type { FastifyBaseLogger } from "fastify";
 import QRCode from "qrcode";
@@ -94,6 +94,7 @@ export function orderConfirmations({
           buyerEmail: true,
           totalCents: true,
           emailViewKey: true,
+          confirmationEmail: true,
           confirmationAttempts: true,
           event: {
             select: {
@@ -116,12 +117,23 @@ export function orderConfirmations({
           },
         },
       });
-      const key = viewKey ?? order.emailViewKey;
-      const { event } = order;
-      const orderUrl = key
-        ? `${webBaseUrl}/e/${encodeURIComponent(event.organization.slug)}/${encodeURIComponent(event.slug)}/orders/${orderId}?key=${encodeURIComponent(key)}`
-        : null;
-      const message = await confirmationEmail({ ...order, orderUrl });
+      // A retry replays the first attempt's email: the provider rejects a reused idempotency key
+      // with a different message, which an edit to the event in between would cause.
+      let snapshot = order.confirmationEmail as EmailSnapshot | null;
+      if (!snapshot) {
+        const key = viewKey ?? order.emailViewKey;
+        const { event } = order;
+        const orderUrl = key
+          ? `${webBaseUrl}/e/${encodeURIComponent(event.organization.slug)}/${encodeURIComponent(event.slug)}/orders/${orderId}?key=${encodeURIComponent(key)}`
+          : null;
+        snapshot = renderConfirmation({ ...order, orderUrl });
+        await prisma.order.updateMany({
+          where: { id: orderId, confirmationClaimedAt: now },
+          data: { confirmationEmail: snapshot as unknown as Prisma.InputJsonObject },
+        });
+      }
+      const { codes, ...rendered } = snapshot;
+      const message: MailMessage = { ...rendered, inlineImages: await qrImages(codes) };
       try {
         // The same key on every attempt, so a retry after an unclear failure isn't delivered twice.
         await mailer.send({ ...message, idempotencyKey: `order-confirmation-${orderId}` });
@@ -132,7 +144,10 @@ export function orderConfirmations({
         await prisma.order.updateMany({
           where: { id: orderId, confirmationClaimedAt: now },
           // The key is only kept for the email; once it won't be sent, it goes.
-          data: { confirmationClaimedAt: null, ...(givingUp ? { emailViewKey: null } : {}) },
+          data: {
+            confirmationClaimedAt: null,
+            ...(givingUp ? { emailViewKey: null, confirmationEmail: Prisma.DbNull } : {}),
+          },
         });
         return;
       }
@@ -140,7 +155,12 @@ export function orderConfirmations({
       // the same idempotency key.
       await prisma.order.update({
         where: { id: orderId },
-        data: { confirmationSentAt: new Date(), confirmationClaimedAt: null, emailViewKey: null },
+        data: {
+          confirmationSentAt: new Date(),
+          confirmationClaimedAt: null,
+          emailViewKey: null,
+          confirmationEmail: Prisma.DbNull,
+        },
       });
     } catch (err) {
       log.error(
@@ -160,7 +180,7 @@ export function orderConfirmations({
         where: {
           status: "PAID",
           confirmationSentAt: null,
-          emailViewKey: { not: null },
+          OR: [{ emailViewKey: { not: null } }, { confirmationEmail: { not: Prisma.DbNull } }],
           AND: [
             {
               OR: [
@@ -176,12 +196,16 @@ export function orderConfirmations({
             },
           ],
         },
-        data: { emailViewKey: null },
+        data: { emailViewKey: null, confirmationEmail: Prisma.DbNull },
       });
       const orders = await prisma.order.findMany({
         where: {
           ...unsent(now),
-          createdAt: { gte: minutesBefore(now, RETRY_DAYS * 24 * 60) },
+          // The age limit is for orders never tried; one already started gets its full retry window.
+          OR: [
+            { confirmationFirstTriedAt: { not: null } },
+            { createdAt: { gte: minutesBefore(now, RETRY_DAYS * 24 * 60) } },
+          ],
         },
         select: { id: true },
         orderBy: { createdAt: "asc" },
@@ -221,19 +245,37 @@ const escape = (s: string) =>
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
 
-/** The confirmation email: one QR code per ticket, shown inline so it works offline at the door. */
-export async function confirmationEmail(order: ConfirmationOrder): Promise<MailMessage> {
-  const { event, tickets } = order;
-  const when = formatEventTime(event.startsAt, event.endsAt, event.organization.timezone);
-  const plural = tickets.length === 1 ? "ticket" : "tickets";
-  const images: InlineImage[] = await Promise.all(
-    tickets.map(async (ticket, i) => ({
+/** A rendered confirmation, stored so retries send it unchanged. The QR images are redrawn from `codes`. */
+interface EmailSnapshot {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  codes: string[];
+}
+
+/** One QR code image per ticket, referenced from the email's HTML as `cid:ticket-N`. */
+function qrImages(codes: string[]): Promise<InlineImage[]> {
+  return Promise.all(
+    codes.map(async (code, i) => ({
       filename: `ticket-${i + 1}.png`,
-      content: await QRCode.toBuffer(ticket.code, { type: "png", width: 240, margin: 2 }),
+      content: await QRCode.toBuffer(code, { type: "png", width: 240, margin: 2 }),
       contentType: "image/png",
       contentId: `ticket-${i + 1}`,
     })),
   );
+}
+
+/** The confirmation email: one QR code per ticket, shown inline so it works offline at the door. */
+export async function confirmationEmail(order: ConfirmationOrder): Promise<MailMessage> {
+  const { codes, ...rendered } = renderConfirmation(order);
+  return { ...rendered, inlineImages: await qrImages(codes) };
+}
+
+function renderConfirmation(order: ConfirmationOrder): EmailSnapshot {
+  const { event, tickets } = order;
+  const when = formatEventTime(event.startsAt, event.endsAt, event.organization.timezone);
+  const plural = tickets.length === 1 ? "ticket" : "tickets";
   const holder = (t: (typeof tickets)[number]) => `${t.attendee.firstName} ${t.attendee.lastName}`;
   const total = order.totalCents > 0 ? `Total paid: ${formatCents(order.totalCents)}` : null;
 
@@ -281,6 +323,6 @@ export async function confirmationEmail(order: ConfirmationOrder): Promise<MailM
     subject: `Your ${plural} for ${event.name}`,
     text,
     html,
-    inlineImages: images,
+    codes: tickets.map((t) => t.code),
   };
 }
