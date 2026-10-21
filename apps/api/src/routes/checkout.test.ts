@@ -205,8 +205,9 @@ describe("checkout", () => {
     await lapse(first.orderId);
     expect((await shop.buy([attendee(general, "C")])).statusCode).toBe(409);
 
-    // Once Stripe says the page closed unpaid, the next checkout gets them.
+    // Once Stripe says the page closed unpaid, the next checkout after the retry gets them.
     stripe.expire(await sessionOf(first.orderId));
+    await lapse(first.orderId);
     expect((await shop.buy([attendee(general, "C")])).statusCode).toBe(201);
     const lapsed = (await shop.view(first.orderId, first.key)).json().order;
     expect(lapsed.status).toBe("CANCELLED");
@@ -235,6 +236,41 @@ describe("checkout", () => {
       [lost.orderId]: "PENDING",
       [abandoned.orderId]: "CANCELLED",
     });
+  });
+
+  it("moves orders Stripe can't settle out of the way of later ones", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket({ quantity: 13 });
+    const lost: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const { orderId } = (await shop.buy([attendee(general, `Lost${i}`)])).json();
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: {
+          stripeCheckoutSessionId: `cs_test_missing_${orderId}`,
+          holdExpiresAt: new Date(Date.now() - 60_000),
+        },
+      });
+      lost.push(orderId);
+    }
+    const abandoned = (await shop.buy([attendee(general, "B")])).json();
+    await lapse(abandoned.orderId);
+    stripe.expire(await sessionOf(abandoned.orderId));
+
+    // The first checkout only reaches the ten oldest, which Stripe can't find; the next one
+    // gets past them to the abandoned order.
+    expect((await shop.buy([attendee(general, "C")])).statusCode).toBe(201);
+    expect((await shop.buy([attendee(general, "D")])).statusCode).toBe(201);
+    const orders = await t.prisma.order.findMany({
+      where: { id: { in: [...lost, abandoned.orderId] } },
+      select: { id: true, status: true, holdExpiresAt: true },
+    });
+    const byId = new Map(orders.map((o) => [o.id, o]));
+    expect(byId.get(abandoned.orderId)!.status).toBe("CANCELLED");
+    for (const id of lost) {
+      expect(byId.get(id)!.status).toBe("PENDING");
+      expect(byId.get(id)!.holdExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    }
   });
 
   it("keeps the seats of a buyer who paid but never came back", async () => {

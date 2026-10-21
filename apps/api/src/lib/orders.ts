@@ -45,12 +45,14 @@ export async function applyCheckoutState(
 
 /** How many lapsed orders one checkout settles, so a backlog can't hold up a buyer for long. */
 const SETTLE_BATCH = 10;
+/** How long an order Stripe couldn't settle waits before it's tried again. */
+const SETTLE_RETRY_MINUTES = 5;
 
 /**
  * Settles up to a batch of an event's unpaid orders whose hold has run out, oldest first, asking
  * Stripe about each so a payment that came in without the buyer returning still gets its
- * tickets. Each checkout takes the next batch. An order Stripe can't tell us about keeps its
- * seats; the rest are still settled, then the failures are thrown.
+ * tickets. An order Stripe can't settle yet keeps its seats and is pushed back for a retry, so it
+ * can't stop later orders from reaching the front of the queue. Failures are thrown at the end.
  */
 export async function settleLapsedHolds(
   prisma: PrismaClient,
@@ -64,21 +66,32 @@ export async function settleLapsedHolds(
     orderBy: { holdExpiresAt: "asc" },
     take: SETTLE_BATCH,
   });
-  const results = await Promise.allSettled(
+  const retryAt = new Date(now.getTime() + SETTLE_RETRY_MINUTES * 60_000);
+  const deferred: string[] = [];
+  const failures: unknown[] = [];
+  await Promise.all(
     lapsed.map(async (order) => {
-      if (!order.stripeCheckoutSessionId) {
-        // The payment page never opened, so nobody could have paid.
-        await prisma.$transaction((tx) => releaseOrder(tx, order.id));
-      } else if (payments) {
-        await applyCheckoutState(
-          prisma,
-          order.id,
-          await payments.checkoutState(order.stripeCheckoutSessionId),
-        );
+      try {
+        if (!order.stripeCheckoutSessionId) {
+          // The payment page never opened, so nobody could have paid.
+          await prisma.$transaction((tx) => releaseOrder(tx, order.id));
+        } else if (payments) {
+          const state = await payments.checkoutState(order.stripeCheckoutSessionId);
+          await applyCheckoutState(prisma, order.id, state);
+          if (state.status === "open") deferred.push(order.id);
+        }
+      } catch (err) {
+        failures.push(err);
+        deferred.push(order.id);
       }
     }),
   );
-  const failures = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+  if (deferred.length > 0) {
+    await prisma.order.updateMany({
+      where: { id: { in: deferred }, status: "PENDING" },
+      data: { holdExpiresAt: retryAt },
+    });
+  }
   if (failures.length > 0) {
     throw new AggregateError(failures, `Couldn't settle ${failures.length} lapsed orders`);
   }
