@@ -4,6 +4,7 @@ import type { FastifyServerOptions } from "fastify";
 import { randomUUID } from "node:crypto";
 import { buildApp, type AppDeps } from "./app";
 import type { MailMessage } from "./lib/mailer";
+import { HttpError } from "./lib/errors";
 import type {
   CheckoutRequest,
   CheckoutState,
@@ -77,7 +78,9 @@ export function fakePayments() {
   /** Set to hold status reads until the test releases them; `entered` fires when one starts. */
   const gate: { wait?: Promise<void>; entered?: () => void } = {};
   /** Set to make the next payment page fail to open. */
-  const failures = { checkout: false };
+  const failures = { checkout: false, refund: false };
+  /** Refunds made, by order; asking again for the same order returns the same one, as Stripe does. */
+  const refunds = new Map<string, { id: string; paymentIntentId: string }>();
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -124,6 +127,17 @@ export function fakePayments() {
         checkout.state = { status: "expired", paymentIntentId: null };
       return checkout.state;
     },
+    async refund({ orderId, paymentIntentId }) {
+      if (failures.refund) {
+        failures.refund = false;
+        throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
+      }
+      const existing = refunds.get(orderId);
+      if (existing) return { id: existing.id };
+      const id = `re_${randomUUID()}`;
+      refunds.set(orderId, { id, paymentIntentId });
+      return { id };
+    },
   };
   /** As if the buyer finished paying on Stripe's page. */
   const pay = (sessionId: string) => {
@@ -133,5 +147,5 @@ export function fakePayments() {
   const expire = (sessionId: string) => {
     checkouts.get(sessionId)!.state = { status: "expired", paymentIntentId: null };
   };
-  return { payments, created, statuses, checkouts, gate, failures, pay, expire };
+  return { payments, created, statuses, checkouts, gate, failures, refunds, pay, expire };
 }

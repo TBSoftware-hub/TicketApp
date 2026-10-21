@@ -5,6 +5,7 @@ export * from "./events";
 export * from "./health";
 export * from "./invitations";
 export * from "./money";
+export * from "./orders";
 export * from "./orgs";
 export * from "./promo-codes";
 export * from "./roles";

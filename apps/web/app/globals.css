@@ -308,3 +308,13 @@ button.secondary {
 .struck {
   text-decoration: line-through;
 }
+
+.search-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.search-bar input {
+  flex: 1;
+  min-width: 0;
+}

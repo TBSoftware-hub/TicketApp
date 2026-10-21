@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@ticketapp/db";
+import { Prisma, type PrismaClient } from "@ticketapp/db";
 import { createCompSchema } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
@@ -130,11 +130,17 @@ export async function compRoutes(
 
   app.post("/orgs/:orgId/events/:eventId/comps/:orderId/void", async (request) => {
     const { orgId, eventId, orderId } = parse(compParamsSchema, request.params);
-    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    const { user } = await requireOrgPermission(prisma, request, orgId, "events.manage");
     const comp = await prisma.$transaction(async (tx) => {
       const { count } = await tx.order.updateMany({
         where: { id: orderId, eventId, paymentMethod: "COMP", event: { organizationId: orgId } },
-        data: { status: "CANCELLED" },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: new Date(),
+          cancelledById: user.id,
+          emailViewKey: null,
+          confirmationEmail: Prisma.DbNull,
+        },
       });
       if (count === 0) throw new HttpError(404, "Comp ticket not found");
       await tx.ticket.updateMany({ where: { orderId }, data: { status: "VOID" } });
