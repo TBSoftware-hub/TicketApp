@@ -20,6 +20,7 @@
     "@ticketapp/shared": "workspace:*",
     "fastify": "^5.12.7",
     "nodemailer": "^10.1.7",
+    "pdf-lib": "1.17.1",
     "pg": "^8.23.1",
     "qrcode": "^1.5.4",
     "stripe": "^23.0.0",

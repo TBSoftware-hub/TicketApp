@@ -41,6 +41,7 @@ const orderFields = {
       status: true,
       ticketType: { select: { name: true } },
       attendee: { select: { firstName: true, lastName: true } },
+      _count: { select: { signatures: true } },
     },
   },
 } as const satisfies Prisma.OrderSelect;

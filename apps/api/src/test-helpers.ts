@@ -2,6 +2,7 @@ import "dotenv/config";
 import { createPrismaClient } from "@ticketapp/db";
 import type { FastifyServerOptions } from "fastify";
 import { randomUUID } from "node:crypto";
+import { inflateSync } from "node:zlib";
 import { buildApp, type AppDeps } from "./app";
 import type { MailMessage } from "./lib/mailer";
 import { HttpError } from "./lib/errors";
@@ -179,4 +180,22 @@ export function fakePayments() {
     pay,
     expire,
   };
+}
+
+/** The text drawn on a PDF's pages, one line per drawn line, for checking what it says. */
+export function pdfText(pdf: Uint8Array | Buffer) {
+  const raw = Buffer.from(pdf).toString("latin1");
+  const lines: string[] = [];
+  for (const [, stream] of raw.matchAll(/stream\r?\n([\s\S]*?)endstream/g)) {
+    let content: string;
+    try {
+      content = inflateSync(Buffer.from(stream!, "latin1")).toString("latin1");
+    } catch {
+      continue;
+    }
+    for (const [, hex] of content.matchAll(/<([0-9A-Fa-f]*)> Tj/g)) {
+      lines.push(Buffer.from(hex!, "hex").toString("latin1"));
+    }
+  }
+  return lines.join("\n");
 }

@@ -27,6 +27,7 @@ interface OrderRecord {
     status: "HELD" | "VALID" | "VOID";
     ticketType: { name: string };
     attendee: { firstName: string; lastName: string };
+    _count: { signatures: number };
   }[];
 }
 
@@ -117,6 +118,12 @@ export default async function OrdersPage({
                   {o.tickets.map((t) => (
                     <span key={t.id}>
                       {t.attendee.firstName} {t.attendee.lastName} · {t.ticketType.name}
+                      {t._count.signatures > 0 && (
+                        <>
+                          {" · "}
+                          <a href={`${base}/orders/waivers/${encodeURIComponent(t.id)}`}>Waivers</a>
+                        </>
+                      )}
                     </span>
                   ))}
                   <span className="muted">

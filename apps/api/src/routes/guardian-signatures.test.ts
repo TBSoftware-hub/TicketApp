@@ -4,7 +4,7 @@ import { localDate } from "@ticketapp/shared";
 import { canonical } from "../lib/canonical";
 import type { TextMessage } from "../lib/texter";
 import { generateToken } from "../lib/tokens";
-import { buildTestApp, uniqueSlug } from "../test-helpers";
+import { buildTestApp, pdfText, uniqueSlug } from "../test-helpers";
 
 describe("guardian signatures for minors", () => {
   let t: Awaited<ReturnType<typeof buildTestApp>>;
@@ -93,7 +93,7 @@ describe("guardian signatures for minors", () => {
       ...extra,
     });
     const timezone = org.json().organization.timezone as string;
-    return { orgId, timezone, waiver: created, call, checkout, attendee };
+    return { orgId, base, owner, timezone, waiver: created, call, checkout, attendee };
   }
 
   /** The signing link's token, from the last message sent to `to`. */
@@ -380,6 +380,74 @@ describe("guardian signatures for minors", () => {
       data: { sendClaimedAt: null },
     });
     expect((await s.call("POST", url, {})).statusCode).toBe(200);
+  });
+
+  it("gives staff, the buyer and the guardian the signed waivers as a PDF", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({
+        dateOfBirth: minor,
+        guardian: { name: "Sam Park", email: "sam@example.com" },
+      }),
+    ]);
+    const { orderId, key } = res.json() as { orderId: string; key: string };
+    const token = tokenSentTo("sam@example.com");
+    await sign(token);
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { orderId } });
+
+    const staffUrl = `${s.base}/tickets/${ticket.id}/waivers.pdf`;
+    const staff = await t.app.inject({ method: "GET", url: staffUrl, headers: s.owner.headers });
+    expect(staff.statusCode).toBe(200);
+    expect(staff.headers["content-type"]).toBe("application/pdf");
+    expect(staff.headers["content-disposition"]).toBe('attachment; filename="Jo-Park-waivers.pdf"');
+    const text = await pdfText(staff.rawPayload);
+    for (const expected of [
+      "Signed waivers",
+      "Jo Park · Student",
+      "Field Trip Waiver",
+      "I understand the risks of the trip.",
+      "T-shirt size: M",
+      "Signed by Jo Park (attendee)",
+      "Signed by Sam Park (parent or guardian)",
+      "Audit trail",
+      "Browser: Guardian Browser",
+      "Sent to: sam@example.com",
+      "Wording check: matches the stored waiver",
+    ]) {
+      expect(text).toContain(expected);
+    }
+    const signatures = await t.prisma.waiverSignature.findMany({ where: { ticketId: ticket.id } });
+    for (const sig of signatures) expect(text).toContain(`Signature ID: ${sig.id}`);
+
+    const buyerUrl = `/public/orders/${orderId}/tickets/${ticket.id}/waivers.pdf`;
+    const buyer = await t.app.inject({ method: "POST", url: buyerUrl, payload: { key } });
+    expect(buyer.statusCode).toBe(200);
+    expect(await pdfText(buyer.rawPayload)).toContain("Signed by Sam Park (parent or guardian)");
+    const guardian = await t.app.inject({
+      method: "POST",
+      url: "/public/guardian-signatures/waivers.pdf",
+      payload: { token },
+    });
+    expect(guardian.statusCode).toBe(200);
+
+    // Only with the order's own key, or as staff of the event's organization.
+    expect(
+      (await t.app.inject({ method: "POST", url: buyerUrl, payload: { key: "wrong" } })).statusCode,
+    ).toBe(404);
+    const stranger = await t.signIn();
+    expect(
+      (await t.app.inject({ method: "GET", url: staffUrl, headers: stranger.headers })).statusCode,
+    ).toBe(404);
+
+    // Wording changed behind the app's back shows up as a mismatch.
+    await t.prisma.waiverTemplateVersion.update({
+      where: { waiverTemplateId_version: { waiverTemplateId: s.waiver.id, version: 1 } },
+      data: { body: "I waive everything." },
+    });
+    const tampered = await t.app.inject({ method: "GET", url: staffUrl, headers: s.owner.headers });
+    expect(await pdfText(tampered.rawPayload)).toContain(
+      "Wording check: DOES NOT MATCH the stored waiver",
+    );
   });
 
   it("refuses a link that doesn't match a paid ticket", async () => {

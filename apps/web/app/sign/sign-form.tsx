@@ -23,7 +23,8 @@ export function GuardianSignForm({ token, initial }: { token: string; initial: G
           timeZone: request.event.timezone,
           dateStyle: "long",
         }).format(new Date(request.signedAt))}
-        . Thank you. There&apos;s nothing else to do.
+        . Thank you. There&apos;s nothing else to do.{" "}
+        <a href={`/sign/waivers?${new URLSearchParams({ token })}`}>Download a signed copy</a>
       </p>
     );
   }
