@@ -34,6 +34,7 @@ describe("payout setup", () => {
       available: true,
       connected: false,
       cardFeePaidBy: "ORGANIZATION",
+      serviceFeePaidBy: "BUYER",
     });
 
     const first = await call("POST", "/onboarding");
@@ -100,6 +101,7 @@ describe("payout setup", () => {
       available: true,
       connected: false,
       cardFeePaidBy: "ORGANIZATION",
+      serviceFeePaidBy: "BUYER",
     });
     const stale = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(stale.stripeChargesEnabled).toBe(false);

@@ -19,7 +19,7 @@ export interface CheckoutRequest {
   orderId: string;
   /** Shown on Stripe's payment page; our page has already shown the breakdown. */
   lines: { name: string; amountCents: number }[];
-  /** Kept by the platform to cover Stripe's fee. */
+  /** Kept by the platform to cover Stripe's fee and the service fee. */
   applicationFeeCents: number;
   buyerEmail: string;
   successUrl: string;
@@ -58,10 +58,15 @@ export interface Payments {
   /** Closes the payment page if it's still open, then reports where it ended up. */
   expireCheckout(sessionId: string): Promise<CheckoutState>;
   /**
-   * Gives a paid order's money back in full, taking it back from the school's account. Asking
-   * again for the same order returns the refund already made rather than making another.
+   * Gives a paid order's money back in full, taking it back from the school's account, and hands
+   * the school back `returnFeeCents` of what the platform kept. Asking again for the same order
+   * returns the refund already made rather than making another.
    */
-  refund(request: { orderId: string; paymentIntentId: string }): Promise<RefundResult>;
+  refund(request: {
+    orderId: string;
+    paymentIntentId: string;
+    returnFeeCents: number;
+  }): Promise<RefundResult>;
 }
 
 /** Stripe failures become a 502 people can act on; the original error rides along for the log. */
@@ -174,30 +179,57 @@ export function createStripePayments(secretKey: string): Payments {
       if (session.status !== "open") return stateOf(session);
       return stateOf(await stripe.checkout.sessions.expire(sessionId));
     },
-    async refund({ orderId, paymentIntentId }) {
-      try {
-        const refund = await stripe.refunds.create(
-          {
-            payment_intent: paymentIntentId,
-            // The school got the money, so it gives it back. Stripe doesn't return its own fee on
-            // a refund, so the fee we kept to pay it stays with us.
-            reverse_transfer: true,
-            refund_application_fee: false,
-            metadata: { orderId },
-          },
-          { idempotencyKey: `order-refund-${orderId}` },
-        );
-        return { id: refund.id, status: refund.status ?? "pending" };
-      } catch (err) {
-        // Stripe forgets idempotency keys after a day; a retry after that finds the refund instead.
-        if (err instanceof Stripe.errors.StripeError && err.code === "charge_already_refunded") {
-          const { data } = await stripe.refunds.list({ payment_intent: paymentIntentId, limit: 1 });
-          if (data[0]) return { id: data[0].id, status: data[0].status ?? "pending" };
-        }
-        throw err;
+    async refund({ orderId, paymentIntentId, returnFeeCents }) {
+      const refund = await refundPayment(orderId, paymentIntentId);
+      if (returnFeeCents > 0 && refund.status !== "failed" && refund.status !== "canceled") {
+        await returnFee(orderId, paymentIntentId, returnFeeCents);
       }
+      return refund;
     },
   };
+
+  async function refundPayment(orderId: string, paymentIntentId: string): Promise<RefundResult> {
+    try {
+      const refund = await stripe.refunds.create(
+        {
+          payment_intent: paymentIntentId,
+          // The school got the money, so it gives it back. Stripe doesn't return its own fee on
+          // a refund, so the fee we kept to pay it stays with us. The service fee goes back below.
+          reverse_transfer: true,
+          refund_application_fee: false,
+          metadata: { orderId },
+        },
+        { idempotencyKey: `order-refund-${orderId}` },
+      );
+      return { id: refund.id, status: refund.status ?? "pending" };
+    } catch (err) {
+      // Stripe forgets idempotency keys after a day; a retry after that finds the refund instead.
+      if (err instanceof Stripe.errors.StripeError && err.code === "charge_already_refunded") {
+        const { data } = await stripe.refunds.list({ payment_intent: paymentIntentId, limit: 1 });
+        if (data[0]) return { id: data[0].id, status: data[0].status ?? "pending" };
+      }
+      throw err;
+    }
+  }
+
+  // The service fee is only earned on tickets that are kept, so a refund hands it back to the
+  // school. Only what hasn't been returned yet is sent, so asking again sends nothing more.
+  async function returnFee(orderId: string, paymentIntentId: string, cents: number) {
+    const intent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+      expand: ["latest_charge.application_fee"],
+    });
+    const charge = intent.latest_charge;
+    const fee = typeof charge === "object" ? charge?.application_fee : null;
+    if (!fee || typeof fee !== "object") return;
+    const owed = Math.min(cents, fee.amount) - fee.amount_refunded;
+    if (owed <= 0) return;
+    await stripe.applicationFees.createRefund(
+      fee.id,
+      { amount: owed, metadata: { orderId } },
+      { idempotencyKey: `order-fee-return-${orderId}` },
+    );
+  }
+
   return {
     livemode: secretKey.startsWith("sk_live_") || secretKey.startsWith("rk_live_"),
     createAccount: (org) => viaStripe(() => payments.createAccount(org)),

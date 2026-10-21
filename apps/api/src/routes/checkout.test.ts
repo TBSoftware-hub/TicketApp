@@ -88,12 +88,12 @@ describe("checkout", () => {
       });
     const view = (orderId: string, key: string) =>
       t.app.inject({ method: "POST", url: `/public/orders/${orderId}`, payload: { key } });
-    const settings = (cardFeePaidBy: string, headers = owner.headers) =>
+    const settings = (cardFeePaidBy: string, serviceFeePaidBy = "BUYER", headers = owner.headers) =>
       t.app.inject({
         method: "PUT",
         url: `/orgs/${orgId}/payments/settings`,
         headers,
-        payload: { cardFeePaidBy },
+        payload: { cardFeePaidBy, serviceFeePaidBy },
       });
     return { orgId, accountId, eventSlug, orgSlug, addTicket, addPromo, buy, view, settings };
   }
@@ -118,21 +118,29 @@ describe("checkout", () => {
 
     const session = await sessionOf(orderId);
     const request = stripe.checkouts.get(session)!;
-    // The school covers the fee by default: the buyer pays face value and the school gets it,
-    // less what Stripe will keep.
+    // By default the buyer pays the service fee and the school covers the card fee, which comes
+    // out of what it gets along with the service fee.
     expect(request).toMatchObject({
       accountId: shop.accountId,
       orderId,
       buyerEmail: "pat@example.com",
-      applicationFeeCents: 88,
-      lines: [{ name: "After Prom: 2 tickets", amountCents: 2000 }],
+      applicationFeeCents: 92 + 150,
+      lines: [
+        { name: "After Prom: 2 tickets", amountCents: 2000 },
+        { name: "Service fee", amountCents: 150 },
+      ],
     });
     expect(request.successUrl).toBe(
       `https://dashboard.test/e/${shop.orgSlug}/${shop.eventSlug}/orders/${orderId}?key=${key}`,
     );
 
     const pending = (await shop.view(orderId, key)).json().order;
-    expect(pending).toMatchObject({ status: "PENDING", totalCents: 2000, feeCents: 0 });
+    expect(pending).toMatchObject({
+      status: "PENDING",
+      totalCents: 2150,
+      serviceFeeCents: 150,
+      feeCents: 0,
+    });
     expect(pending.tickets.map((tk: { status: string }) => tk.status)).toEqual(["HELD", "HELD"]);
 
     stripe.pay(session);
@@ -155,21 +163,43 @@ describe("checkout", () => {
     expect((await shop.settings("BUYER")).statusCode).toBe(200);
     const { orderId, key } = (await shop.buy([attendee(general)])).json();
     const order = (await shop.view(orderId, key)).json().order;
-    expect(order).toMatchObject({ subtotalCents: 1000, feeCents: 61, totalCents: 1061 });
+    expect(order).toMatchObject({
+      subtotalCents: 1000,
+      serviceFeeCents: 75,
+      feeCents: 64,
+      totalCents: 1139,
+    });
     expect(stripe.checkouts.get(await sessionOf(orderId))).toMatchObject({
-      applicationFeeCents: 61,
+      applicationFeeCents: 64 + 75,
       lines: [
         { name: "After Prom: 1 ticket", amountCents: 1000 },
-        { name: "Card processing fee", amountCents: 61 },
+        { name: "Service fee", amountCents: 75 },
+        { name: "Card processing fee", amountCents: 64 },
       ],
     });
   });
 
-  it("lets only owners choose who pays the card fee", async () => {
+  it("keeps the service fee out of the price when the organization covers it", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket();
+    const free = await shop.addTicket({ name: "Chaperone", priceCents: 0 });
+    expect((await shop.settings("ORGANIZATION", "ORGANIZATION")).statusCode).toBe(200);
+    const { orderId, key } = (await shop.buy([attendee(general), attendee(free, "Alex")])).json();
+    const order = (await shop.view(orderId, key)).json().order;
+    expect(order).toMatchObject({ totalCents: 1000, serviceFeeCents: 0, feeCents: 0 });
+    // The free ticket carries no service fee.
+    expect(stripe.checkouts.get(await sessionOf(orderId))).toMatchObject({
+      applicationFeeCents: 59 + 75,
+      lines: [{ name: "After Prom: 2 tickets", amountCents: 1000 }],
+    });
+  });
+
+  it("lets only owners choose who pays the fees", async () => {
     const shop = await onSale();
     const stranger = await t.signIn();
-    expect((await shop.settings("BUYER", stranger.headers)).statusCode).toBe(404);
+    expect((await shop.settings("BUYER", "BUYER", stranger.headers)).statusCode).toBe(404);
     expect((await shop.settings("SOMEONE")).statusCode).toBe(400);
+    expect((await shop.settings("BUYER", "SOMEONE")).statusCode).toBe(400);
   });
 
   it("issues free tickets straight away, even before Stripe is set up", async () => {
@@ -328,6 +358,7 @@ describe("checkout", () => {
   it("refuses a card payment below Stripe's minimum", async () => {
     const shop = await onSale();
     const general = await shop.addTicket();
+    await shop.settings("ORGANIZATION", "ORGANIZATION");
     await shop.addPromo({ code: "ALMOST", discountType: "AMOUNT", discountValue: 990 });
     const res = await shop.buy([attendee(general)], { promoCode: "ALMOST" });
     expect(res.statusCode).toBe(400);
@@ -358,7 +389,7 @@ describe("checkout", () => {
     await shop.addPromo({ code: "EARLY", discountType: "PERCENT", discountValue: 25, maxUses: 1 });
     const { orderId, key } = (await shop.buy([attendee(general)], { promoCode: "early" })).json();
     const order = (await shop.view(orderId, key)).json().order;
-    expect(order).toMatchObject({ subtotalCents: 1000, discountCents: 250, totalCents: 750 });
+    expect(order).toMatchObject({ subtotalCents: 1000, discountCents: 250, totalCents: 825 });
 
     const again = await shop.buy([attendee(general)], { promoCode: "EARLY" });
     expect(again.statusCode).toBe(400);
@@ -433,6 +464,7 @@ describe("checkout", () => {
     expect((await page(ready)).json().event).toMatchObject({
       onlinePayments: true,
       cardFeePaidBy: "ORGANIZATION",
+      serviceFeePaidBy: "BUYER",
     });
     expect((await page(notReady)).json().event.onlinePayments).toBe(false);
   });
@@ -495,7 +527,7 @@ describe("checkout", () => {
       const mails = mailTo(email);
       expect(mails).toHaveLength(1);
       expect(mails[0]!.subject).toBe("Your ticket for After Prom");
-      expect(mails[0]!.text).toContain("Total paid: $10.00");
+      expect(mails[0]!.text).toContain("Total paid: $10.75");
       expect(mails[0]!.text).toContain(`orders/${orderId}?key=${key}`);
       // The key is only kept until the email carries it.
       const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });

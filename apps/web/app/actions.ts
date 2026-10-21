@@ -439,7 +439,7 @@ export async function openStripe(formData: FormData) {
   redirect(data.url);
 }
 
-export async function saveCardFeeSetting(formData: FormData) {
+export async function saveFeeSettings(formData: FormData) {
   const token = await getSessionToken();
   if (!token) redirect("/sign-in");
   const orgId = String(formData.get("orgId") ?? "");
@@ -447,7 +447,10 @@ export async function saveCardFeeSetting(formData: FormData) {
   const { status, data } = await api(`/orgs/${encodeURIComponent(orgId)}/payments/settings`, {
     method: "PUT",
     token,
-    body: { cardFeePaidBy: formData.get("cardFeePaidBy") },
+    body: {
+      cardFeePaidBy: formData.get("cardFeePaidBy"),
+      serviceFeePaidBy: formData.get("serviceFeePaidBy"),
+    },
   });
   if (status === 401) redirect("/sign-in");
   if (status !== 200) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);

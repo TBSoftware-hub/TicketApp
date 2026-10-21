@@ -8,7 +8,10 @@ import type { PaymentAccountStatus, Payments } from "../lib/payments";
 import { parse } from "../lib/validate";
 
 const orgParamsSchema = z.object({ orgId: z.uuid() });
-const settingsSchema = z.object({ cardFeePaidBy: feePayerSchema });
+const settingsSchema = z.object({
+  cardFeePaidBy: feePayerSchema,
+  serviceFeePaidBy: feePayerSchema,
+});
 
 const NOT_CONNECTED: PaymentAccountStatus = {
   chargesEnabled: false,
@@ -62,6 +65,7 @@ export async function paymentRoutes(
         stripeLivemode: true,
         stripeDetailsSubmitted: true,
         cardFeePaidBy: true,
+        serviceFeePaidBy: true,
       },
     });
     const usable = org.stripeAccountId && org.stripeLivemode === stripe.livemode;
@@ -73,20 +77,22 @@ export async function paymentRoutes(
     await requireOrgPermission(prisma, request, orgId, "org.manage");
     if (!payments) return { payments: { available: false, connected: false } };
     const { org, accountId } = await currentAccount(orgId, payments);
-    const { cardFeePaidBy } = org;
+    const { cardFeePaidBy, serviceFeePaidBy } = org;
     if (!accountId) {
       // A test-mode account left over after switching to a live key can't take payments.
       if (org.stripeAccountId) await saveStatus(org, NOT_CONNECTED);
-      return { payments: { available: true, connected: false, cardFeePaidBy } };
+      return { payments: { available: true, connected: false, cardFeePaidBy, serviceFeePaidBy } };
     }
     // Read live so the page is right straight after returning from Stripe, and keep the cached
     // flags checkout relies on in step.
     const status = await payments.accountStatus(accountId);
     await saveStatus(org, status);
-    return { payments: { available: true, connected: true, cardFeePaidBy, ...status } };
+    return {
+      payments: { available: true, connected: true, cardFeePaidBy, serviceFeePaidBy, ...status },
+    };
   });
 
-  // Who covers the card fee on new orders; orders already placed keep what they were charged.
+  // Who covers the card and service fees on new orders; orders already placed keep what they were charged.
   app.put("/orgs/:orgId/payments/settings", async (request) => {
     const { orgId } = parse(orgParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "org.manage");

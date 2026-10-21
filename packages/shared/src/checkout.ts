@@ -10,30 +10,67 @@ export const CARD_FEE_FIXED_CENTS = 30;
 /** The smallest card payment Stripe accepts in US dollars. */
 export const STRIPE_MINIMUM_CENTS = 50;
 
+/** The platform's fee on each paid ticket. Free and comp tickets carry none. */
+export const SERVICE_FEE_CENTS = 75;
+
+/** Who covers each fee, as the organization has chosen. */
+export interface FeeSettings {
+  cardFeePaidBy: FeePayer;
+  serviceFeePaidBy: FeePayer;
+}
+
 export interface OrderTotal {
-  /** Added to what the buyer pays; zero when the organization covers the fee. */
+  /** Card fee added to what the buyer pays; zero when the organization covers it. */
   feeCents: number;
+  /** Service fee added to what the buyer pays; zero when the organization covers it. */
+  serviceFeeCents: number;
   /** What Stripe is expected to keep, recovered from the organization's share. */
   processingFeeCents: number;
+  /** The service fee the platform keeps, whoever pays it. */
+  platformFeeCents: number;
   totalCents: number;
 }
 
 /**
- * The buyer's total for an order worth `amountCents` after discounts. When the buyer covers the
+ * The buyer's total for an order worth `amountCents` after discounts, with `paidTickets` tickets
+ * that cost something. Fees the buyer covers are added to the total; when the buyer covers the
  * card fee it's grossed up so the organization still receives the full amount.
  */
-export function orderTotal(amountCents: number, paidBy: FeePayer): OrderTotal {
-  if (amountCents <= 0) return { feeCents: 0, processingFeeCents: 0, totalCents: 0 };
-  if (paidBy === "BUYER") {
-    // Integer maths so the rounding can't drift a cent.
-    const totalCents = Math.ceil(
-      ((amountCents + CARD_FEE_FIXED_CENTS) * 1000) / (1000 - CARD_FEE_PER_THOUSAND),
-    );
-    const feeCents = totalCents - amountCents;
-    return { feeCents, processingFeeCents: feeCents, totalCents };
+export function orderTotal(
+  amountCents: number,
+  paidTickets: number,
+  { cardFeePaidBy, serviceFeePaidBy }: FeeSettings,
+): OrderTotal {
+  if (amountCents <= 0) {
+    return {
+      feeCents: 0,
+      serviceFeeCents: 0,
+      processingFeeCents: 0,
+      platformFeeCents: 0,
+      totalCents: 0,
+    };
   }
-  const fee = Math.round((amountCents * CARD_FEE_PER_THOUSAND) / 1000) + CARD_FEE_FIXED_CENTS;
-  return { feeCents: 0, processingFeeCents: Math.min(fee, amountCents), totalCents: amountCents };
+  const serviceFee = paidTickets * SERVICE_FEE_CENTS;
+  const serviceFeeCents = serviceFeePaidBy === "BUYER" ? serviceFee : 0;
+  // Stripe's fee is charged on everything the buyer pays, service fee included.
+  const baseCents = amountCents + serviceFeeCents;
+  let feeCents = 0;
+  let totalCents = baseCents;
+  let processingFeeCents: number;
+  if (cardFeePaidBy === "BUYER") {
+    // Integer maths so the rounding can't drift a cent.
+    totalCents = Math.ceil(
+      ((baseCents + CARD_FEE_FIXED_CENTS) * 1000) / (1000 - CARD_FEE_PER_THOUSAND),
+    );
+    feeCents = totalCents - baseCents;
+    processingFeeCents = feeCents;
+  } else {
+    const fee = Math.round((baseCents * CARD_FEE_PER_THOUSAND) / 1000) + CARD_FEE_FIXED_CENTS;
+    processingFeeCents = Math.min(fee, baseCents);
+  }
+  // Never keeps back more than the payment, so a tiny order the organization covers still works.
+  const platformFeeCents = Math.min(serviceFee, totalCents - processingFeeCents);
+  return { feeCents, serviceFeeCents, processingFeeCents, platformFeeCents, totalCents };
 }
 
 const name = (label: string) =>

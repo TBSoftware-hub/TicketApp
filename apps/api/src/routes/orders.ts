@@ -103,6 +103,7 @@ export async function orderRoutes(
         status: true,
         paymentMethod: true,
         totalCents: true,
+        platformFeeCents: true,
         stripePaymentIntentId: true,
         buyerName: true,
         buyerEmail: true,
@@ -128,7 +129,12 @@ export async function orderRoutes(
       }
       // Refunding first means a failure leaves the order as it was, ready to try again. The same
       // order always gets the same refund, so two clicks can't refund it twice.
-      refund = await payments.refund({ orderId, paymentIntentId: order.stripePaymentIntentId });
+      refund = await payments.refund({
+        orderId,
+        paymentIntentId: order.stripePaymentIntentId,
+        // The school isn't left paying the service fee on tickets it gave the money back for.
+        returnFeeCents: order.platformFeeCents,
+      });
       if (refund.status === "failed" || refund.status === "canceled") {
         throw new HttpError(502, "Stripe couldn't refund this payment. Check it in Stripe.");
       }

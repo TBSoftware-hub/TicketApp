@@ -82,7 +82,10 @@ export function fakePayments() {
   /** The status Stripe gives the next refund it makes. */
   const refundOutcome = { status: "succeeded" };
   /** Refunds made, by order; asking again for the same order returns the same one, as Stripe does. */
-  const refunds = new Map<string, { id: string; paymentIntentId: string; status: string }>();
+  const refunds = new Map<
+    string,
+    { id: string; paymentIntentId: string; status: string; returnedFeeCents: number }
+  >();
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -129,14 +132,17 @@ export function fakePayments() {
         checkout.state = { status: "expired", paymentIntentId: null };
       return checkout.state;
     },
-    async refund({ orderId, paymentIntentId }) {
+    async refund({ orderId, paymentIntentId, returnFeeCents }) {
       if (failures.refund) {
         failures.refund = false;
         throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
       }
       const existing = refunds.get(orderId);
       if (existing) return { id: existing.id, status: existing.status };
-      const refund = { id: `re_${randomUUID()}`, paymentIntentId, status: refundOutcome.status };
+      const { status } = refundOutcome;
+      const failed = status === "failed" || status === "canceled";
+      const returnedFeeCents = failed ? 0 : returnFeeCents;
+      const refund = { id: `re_${randomUUID()}`, paymentIntentId, status, returnedFeeCents };
       refunds.set(orderId, refund);
       return { id: refund.id, status: refund.status };
     },

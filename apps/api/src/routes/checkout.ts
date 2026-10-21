@@ -37,6 +37,7 @@ const orderFields = {
   subtotalCents: true,
   discountCents: true,
   feeCents: true,
+  serviceFeeCents: true,
   totalCents: true,
   refundedCents: true,
   cancelledAt: true,
@@ -121,6 +122,7 @@ export async function checkoutRoutes(
               stripeChargesEnabled: true,
               stripeLivemode: true,
               cardFeePaidBy: true,
+              serviceFeePaidBy: true,
             },
           },
         },
@@ -270,7 +272,9 @@ export async function checkoutRoutes(
           promoCodeId = promo.id;
         }
 
-        const totals = orderTotal(subtotalCents - discountCents, org.cardFeePaidBy);
+        // Free tickets carry no service fee.
+        const paidTickets = lines.reduce((n, l) => n + (l.unitCents > 0 ? l.quantity : 0), 0);
+        const totals = orderTotal(subtotalCents - discountCents, paidTickets, org);
         const free = totals.totalCents === 0;
         if (!free && !accountId) {
           throw new HttpError(409, "This event isn't taking card payments yet");
@@ -306,7 +310,14 @@ export async function checkoutRoutes(
               })),
             },
           },
-          select: { id: true, totalCents: true, feeCents: true, processingFeeCents: true },
+          select: {
+            id: true,
+            totalCents: true,
+            feeCents: true,
+            serviceFeeCents: true,
+            processingFeeCents: true,
+            platformFeeCents: true,
+          },
         });
       });
 
@@ -324,13 +335,17 @@ export async function checkoutRoutes(
           lines: [
             {
               name: `${event.name}: ${input.tickets.length} ${input.tickets.length === 1 ? "ticket" : "tickets"}`,
-              amountCents: order.totalCents - order.feeCents,
+              amountCents: order.totalCents - order.feeCents - order.serviceFeeCents,
             },
+            ...(order.serviceFeeCents > 0
+              ? [{ name: "Service fee", amountCents: order.serviceFeeCents }]
+              : []),
             ...(order.feeCents > 0
               ? [{ name: "Card processing fee", amountCents: order.feeCents }]
               : []),
           ],
-          applicationFeeCents: order.processingFeeCents,
+          // Covers Stripe's fee and the service fee; the rest goes to the organization.
+          applicationFeeCents: order.processingFeeCents + order.platformFeeCents,
           buyerEmail: input.buyerEmail,
           successUrl: `${eventPath}/orders/${order.id}?key=${viewKey}`,
           // Lets the checkout page close the payment page and give the seats back.
