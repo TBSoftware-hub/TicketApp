@@ -130,7 +130,6 @@ export async function checkoutRoutes(
           ? org.stripeAccountId
           : null;
 
-      const now = new Date();
       const viewKey = generateToken();
       const counts = new Map<string, number>();
       for (const t of input.tickets)
@@ -138,7 +137,7 @@ export async function checkoutRoutes(
       const typeIds = [...counts.keys()];
 
       // Abandoned checkouts give their seats back first. If Stripe can't be asked, they stay taken.
-      await settleLapsedHolds(prisma, payments, event.id, now).catch((err) =>
+      await settleLapsedHolds(prisma, payments, event.id).catch((err) =>
         request.log.warn({ err }, "Couldn't settle lapsed checkouts"),
       );
 
@@ -150,6 +149,8 @@ export async function checkoutRoutes(
           SELECT capacity, status, "endsAt" FROM "Event" WHERE id = ${event.id}::uuid FOR UPDATE`;
         if (!locked || locked.status !== "PUBLISHED")
           throw new HttpError(409, "Tickets aren't on sale");
+        // Waiting on Stripe and the lock takes time, so judge sale windows and codes from here.
+        const now = new Date();
 
         const types = await tx.$queryRaw<
           {

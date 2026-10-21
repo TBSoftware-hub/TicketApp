@@ -213,6 +213,30 @@ describe("checkout", () => {
     expect(lapsed.tickets.map((tk: { status: string }) => tk.status)).toEqual(["VOID", "VOID"]);
   });
 
+  it("settles the other lapsed orders when Stripe can't find one", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket({ quantity: 2 });
+    const lost = (await shop.buy([attendee(general, "A")])).json();
+    const abandoned = (await shop.buy([attendee(general, "B")])).json();
+    await t.prisma.order.update({
+      where: { id: lost.orderId },
+      data: { stripeCheckoutSessionId: "cs_test_missing" },
+    });
+    await lapse(lost.orderId);
+    await lapse(abandoned.orderId);
+    stripe.expire(await sessionOf(abandoned.orderId));
+
+    expect((await shop.buy([attendee(general, "C")])).statusCode).toBe(201);
+    const statuses = await t.prisma.order.findMany({
+      where: { id: { in: [lost.orderId, abandoned.orderId] } },
+      select: { id: true, status: true },
+    });
+    expect(Object.fromEntries(statuses.map((o) => [o.id, o.status]))).toEqual({
+      [lost.orderId]: "PENDING",
+      [abandoned.orderId]: "CANCELLED",
+    });
+  });
+
   it("keeps the seats of a buyer who paid but never came back", async () => {
     const shop = await onSale();
     const general = await shop.addTicket({ quantity: 1 });

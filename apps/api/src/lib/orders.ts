@@ -45,7 +45,8 @@ export async function applyCheckoutState(
 
 /**
  * Settles an event's unpaid orders whose hold has run out, asking Stripe about each first so a
- * payment that came in without the buyer returning still gets its tickets.
+ * payment that came in without the buyer returning still gets its tickets. An order Stripe can't
+ * tell us about keeps its seats; the rest are still settled, then the failures are thrown.
  */
 export async function settleLapsedHolds(
   prisma: PrismaClient,
@@ -57,16 +58,24 @@ export async function settleLapsedHolds(
     where: { eventId, status: "PENDING", holdExpiresAt: { lte: now } },
     select: { id: true, stripeCheckoutSessionId: true },
   });
+  const failures: unknown[] = [];
   for (const order of lapsed) {
-    if (!order.stripeCheckoutSessionId) {
-      // The payment page never opened, so nobody could have paid.
-      await prisma.$transaction((tx) => releaseOrder(tx, order.id));
-    } else if (payments) {
-      await applyCheckoutState(
-        prisma,
-        order.id,
-        await payments.checkoutState(order.stripeCheckoutSessionId),
-      );
+    try {
+      if (!order.stripeCheckoutSessionId) {
+        // The payment page never opened, so nobody could have paid.
+        await prisma.$transaction((tx) => releaseOrder(tx, order.id));
+      } else if (payments) {
+        await applyCheckoutState(
+          prisma,
+          order.id,
+          await payments.checkoutState(order.stripeCheckoutSessionId),
+        );
+      }
+    } catch (err) {
+      failures.push(err);
     }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `Couldn't settle ${failures.length} lapsed orders`);
   }
 }

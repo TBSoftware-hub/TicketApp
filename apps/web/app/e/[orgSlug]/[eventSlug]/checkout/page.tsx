@@ -22,20 +22,30 @@ export default async function CheckoutPage({
 }) {
   const { orgSlug, eventSlug } = await params;
   const { cancelled, key } = await searchParams;
-  const { event, ticketTypes } = await loadPublicEvent(orgSlug, eventSlug);
   const eventPath = publicEventPath(orgSlug, eventSlug);
   if (cancelled && key) {
     // Stripe sent the buyer back without paying: close its page so their seats go back now.
+    const orderPath = `${eventPath}/orders/${encodeURIComponent(cancelled)}?key=${encodeURIComponent(key)}`;
     const { data } = await api<{ order: { status: string } }>(
       `/public/orders/${encodeURIComponent(cancelled)}/cancel`,
       { method: "POST", body: { key } },
     );
-    if ("order" in data && data.order.status === "PAID") {
-      redirect(
-        `${eventPath}/orders/${encodeURIComponent(cancelled)}?key=${encodeURIComponent(key)}`,
-      );
-    }
+    const status = "order" in data ? data.order.status : null;
+    if (status === "PAID") redirect(orderPath);
+    // A fresh request, so the form counts the seats that just came back.
+    if (status === "CANCELLED") redirect(`${eventPath}/checkout?cancelled=1`);
+    return (
+      <main className="public">
+        <h1>Checking your payment</h1>
+        <p className="notice" role="status">
+          We couldn&apos;t confirm whether your payment went through.{" "}
+          <a href={orderPath}>Check your order</a> before trying again, so you aren&apos;t charged
+          twice.
+        </p>
+      </main>
+    );
   }
+  const { event, ticketTypes } = await loadPublicEvent(orgSlug, eventSlug);
   const buyable = ticketTypes.filter((tt) => canBuyOnline(tt, event));
 
   return (
