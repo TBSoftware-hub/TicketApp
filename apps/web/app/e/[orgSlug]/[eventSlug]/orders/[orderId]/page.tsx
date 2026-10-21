@@ -65,8 +65,9 @@ export default async function OrderPage({
       {order.status === "PAID" ? (
         <p className="notice" role="status">
           {order.tickets.length === 1 ? "Your ticket is" : "Your tickets are"} confirmed for{" "}
-          <strong>{event.name}</strong>. Bookmark this page: its link is how you get back to your
-          tickets.
+          <strong>{event.name}</strong>. Check <strong>{order.buyerEmail}</strong> for{" "}
+          {order.tickets.length === 1 ? "it" : "them"}, with a QR code to show at the door. Bookmark
+          this page too: its link is how you get back to your order.
         </p>
       ) : order.status === "PENDING" ? (
         <p className="notice" role="status">

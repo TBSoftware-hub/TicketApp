@@ -1,4 +1,8 @@
+import { randomUUID } from "node:crypto";
+import QRCode from "qrcode";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { MAX_CONFIRMATION_ATTEMPTS, orderConfirmations } from "../lib/confirmations";
+import type { MailMessage } from "../lib/mailer";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
 describe("checkout", () => {
@@ -431,6 +435,294 @@ describe("checkout", () => {
       cardFeePaidBy: "ORGANIZATION",
     });
     expect((await page(notReady)).json().event.onlinePayments).toBe(false);
+  });
+
+  describe("confirmation email", () => {
+    const buyer = () => `buyer-${randomUUID()}@example.com`;
+    const mailTo = (email: string) => t.sent.filter((m) => m.to === email);
+    const codesOf = async (orderId: string) =>
+      (
+        await t.prisma.ticket.findMany({
+          where: { orderId },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: { code: true },
+        })
+      ).map((tk) => tk.code);
+
+    it("emails free tickets straight away with a QR code each and a working order link", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ name: "Chaperone", priceCents: 0 });
+      const email = buyer();
+      const res = await shop.buy([attendee(free, "Sam"), attendee(free, "Alex")], {
+        buyerEmail: email,
+      });
+      const { orderId } = res.json();
+
+      const [mail, ...rest] = mailTo(email);
+      expect(rest).toHaveLength(0);
+      expect(mail!.subject).toBe("Your tickets for After Prom");
+      expect(mail!.text).toContain("- Sam Lee: Chaperone");
+      expect(mail!.text).toContain("- Alex Lee: Chaperone");
+      expect(mail!.text).not.toContain("Total paid");
+      const codes = await codesOf(orderId);
+      expect(mail!.inlineImages!.map((i) => i.contentId)).toEqual(["ticket-1", "ticket-2"]);
+      expect(mail!.html).toContain('src="cid:ticket-1"');
+      // Each image is the QR code for that ticket's code, in the same order as the names.
+      for (const [i, image] of mail!.inlineImages!.entries()) {
+        const expected = await QRCode.toBuffer(codes[i]!, { type: "png", width: 240, margin: 2 });
+        expect(image.content.equals(expected)).toBe(true);
+      }
+
+      const link = new URL(mail!.text.match(/Your order: (\S+)/)![1]!);
+      expect(link.pathname).toBe(`/e/${shop.orgSlug}/${shop.eventSlug}/orders/${orderId}`);
+      const viewed = await shop.view(orderId, link.searchParams.get("key")!);
+      expect(viewed.statusCode).toBe(200);
+      expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("emails paid tickets once the payment is confirmed, and only once", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      expect(mailTo(email)).toHaveLength(0);
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(0);
+
+      stripe.pay(await sessionOf(orderId));
+      await shop.view(orderId, key);
+      await shop.view(orderId, key);
+      const mails = mailTo(email);
+      expect(mails).toHaveLength(1);
+      expect(mails[0]!.subject).toBe("Your ticket for After Prom");
+      expect(mails[0]!.text).toContain("Total paid: $10.00");
+      expect(mails[0]!.text).toContain(`orders/${orderId}?key=${key}`);
+      // The key is only kept until the email carries it.
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.emailViewKey).toBeNull();
+      expect(order.confirmationSentAt).not.toBeNull();
+    });
+
+    it("emails a buyer who paid but never came back once their order is settled", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket({ quantity: 2 });
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+      await lapse(orderId);
+
+      await shop.buy([attendee(general, "Other")]);
+      const [mail] = mailTo(email);
+      expect(mail!.text).toContain(`orders/${orderId}?key=${key}`);
+    });
+
+    it("tries again when the email couldn't be sent", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+
+      t.mailFailures.remaining = 1;
+      const first = await shop.view(orderId, key);
+      expect(first.statusCode).toBe(200);
+      expect(first.json().order.status).toBe("PAID");
+      expect(mailTo(email)).toHaveLength(0);
+
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("resends the first attempt's email unchanged, even after the event is edited", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      const { eventId } = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const { name } = await t.prisma.event.update({
+        where: { id: eventId },
+        data: { name: "Renamed Night" },
+        select: { name: true },
+      });
+      expect(name).toBe("Renamed Night");
+
+      // The provider would reject a different message under the same idempotency key.
+      await shop.view(orderId, key);
+      const [sent] = mailTo(email);
+      expect(sent!.subject).not.toContain("Renamed Night");
+      expect(sent!.inlineImages!.map((i) => i.contentId)).toEqual(["ticket-1"]);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.confirmationEmail).toBeNull();
+    });
+
+    it("retries a failed email on an order more than a week old", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { createdAt: new Date(Date.now() - 8 * 24 * 60 * 60_000) },
+      });
+
+      const sent: MailMessage[] = [];
+      const sweep = orderConfirmations({
+        prisma: t.prisma,
+        mailer: { send: async (m) => void sent.push(m) },
+        webBaseUrl: "https://dashboard.test",
+        log: t.app.log,
+      });
+      await sweep.retry();
+      expect(sent.filter((m) => m.to === email)).toHaveLength(1);
+    });
+
+    it("still issues free tickets when the email can't be sent", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const res = await shop.buy([attendee(free)], { buyerEmail: email });
+      expect(res.statusCode).toBe(201);
+      const { orderId, key } = res.json();
+      expect(mailTo(email)).toHaveLength(0);
+
+      // The order link's key is kept for the retry, which can come from the background sweep.
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.emailViewKey).toBe(key);
+    });
+
+    it("retries unsent emails in the background, for buyers who never come back", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket({ quantity: 2 });
+      const email = buyer();
+      const { orderId } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+      await lapse(orderId);
+      // The next checkout settles the order as paid, but the email fails.
+      t.mailFailures.remaining = 1;
+      await shop.buy([attendee(general, "Other")]);
+      expect(mailTo(email)).toHaveLength(0);
+
+      const sent: MailMessage[] = [];
+      const sweep = orderConfirmations({
+        prisma: t.prisma,
+        mailer: { send: async (m) => void sent.push(m) },
+        webBaseUrl: "https://dashboard.test",
+        log: t.app.log,
+      });
+      await sweep.retry();
+      const mine = sent.filter((m) => m.to === email);
+      expect(mine).toHaveLength(1);
+      // Every attempt carries the same key, so the provider drops a repeat.
+      expect(mine[0]!.idempotencyKey).toBe(`order-confirmation-${orderId}`);
+      expect(mine[0]!.text).toContain(`orders/${orderId}?key=`);
+    });
+
+    it("takes over a send that was abandoned partway, but not one in progress", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationClaimedAt: new Date() },
+      });
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(0);
+
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationClaimedAt: new Date(Date.now() - 11 * 60_000) },
+      });
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("stops retrying a day after the first attempt, however later attempts went", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      // The first attempt's response is lost: the provider may have delivered it.
+      t.mailFailures.remaining = 1;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      const first = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(first.confirmationFirstTriedAt).not.toBeNull();
+      expect(first.confirmationClaimedAt).toBeNull();
+
+      // A day of downtime later, its idempotency key has been forgotten, so nothing is resent.
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationFirstTriedAt: new Date(Date.now() - 25 * 60 * 60_000) },
+      });
+      await shop.view(orderId, key);
+      const sweep = orderConfirmations({
+        prisma: t.prisma,
+        mailer: { send: async () => {} },
+        webBaseUrl: "https://dashboard.test",
+        log: t.app.log,
+      });
+      await sweep.retry();
+      expect(mailTo(email)).toHaveLength(0);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order).toMatchObject({
+        confirmationSentAt: null,
+        emailViewKey: null,
+        confirmationEmail: null,
+      });
+      // Taking over abandoned claims doesn't move the deadline either.
+      expect(order.confirmationAttempts).toBe(1);
+    });
+
+    it("keeps the first attempt's time when later attempts take over", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 2;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      const before = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      await shop.view(orderId, key);
+      const after = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(after.confirmationAttempts).toBe(2);
+      expect(after.confirmationFirstTriedAt).toEqual(before.confirmationFirstTriedAt);
+    });
+
+    it("stops retrying after a few failed attempts", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      stripe.pay(await sessionOf(orderId));
+      t.mailFailures.remaining = MAX_CONFIRMATION_ATTEMPTS;
+      for (let i = 0; i <= MAX_CONFIRMATION_ATTEMPTS; i++) await shop.view(orderId, key);
+      expect(t.mailFailures.remaining).toBe(0);
+      expect(mailTo(email)).toHaveLength(0);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order).toMatchObject({
+        confirmationSentAt: null,
+        confirmationAttempts: MAX_CONFIRMATION_ATTEMPTS,
+        emailViewKey: null,
+        confirmationEmail: null,
+      });
+    });
+
+    it("sends nothing for an order that was never paid and drops its key", async () => {
+      const shop = await onSale();
+      const general = await shop.addTicket();
+      const email = buyer();
+      const { orderId, key } = (await shop.buy([attendee(general)], { buyerEmail: email })).json();
+      await t.app.inject({
+        method: "POST",
+        url: `/public/orders/${orderId}/cancel`,
+        payload: { key },
+      });
+      expect(mailTo(email)).toHaveLength(0);
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order).toMatchObject({ status: "CANCELLED", emailViewKey: null });
+    });
   });
 });
 

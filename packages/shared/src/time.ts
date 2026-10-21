@@ -56,3 +56,25 @@ export function utcToZonedLocal(instant: Date, timeZone: string): string {
   const shifted = new Date(instant.getTime() + zoneOffsetMs(instant, timeZone));
   return shifted.toISOString().slice(0, 16);
 }
+
+/** "Sat, Nov 14, 2026, 7:00 PM – 10:00 PM" in the organization's time zone. */
+export function formatEventTime(
+  startsAt: string | Date,
+  endsAt: string | Date,
+  timeZone: string,
+): string {
+  const start = new Date(startsAt);
+  const end = new Date(endsAt);
+  const day = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const time = new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", minute: "2-digit" });
+  const sameDay = day.format(start) === day.format(end);
+  return sameDay
+    ? `${day.format(start)}, ${time.format(start)} – ${time.format(end)}`
+    : `${day.format(start)}, ${time.format(start)} – ${day.format(end)}, ${time.format(end)}`;
+}

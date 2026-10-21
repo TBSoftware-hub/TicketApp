@@ -10,6 +10,7 @@ import {
 } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { ConfirmOrder } from "../lib/confirmations";
 import { HttpError } from "../lib/errors";
 import type { Payments } from "../lib/payments";
 import { applyCheckoutState, releaseOrder, settleLapsedHolds } from "../lib/orders";
@@ -88,11 +89,13 @@ export async function checkoutRoutes(
     payments,
     webBaseUrl,
     checkoutPerIpPerMinute,
+    confirm,
   }: {
     prisma: PrismaClient;
     payments?: Payments;
     webBaseUrl: string;
     checkoutPerIpPerMinute: number;
+    confirm: ConfirmOrder;
   },
 ) {
   // Every checkout holds seats for a while, so one client can't be let loose on them. The
@@ -137,7 +140,7 @@ export async function checkoutRoutes(
       const typeIds = [...counts.keys()];
 
       // Abandoned checkouts give their seats back first. If Stripe can't be asked, they stay taken.
-      await settleLapsedHolds(prisma, payments, event.id).catch((err) =>
+      await settleLapsedHolds(prisma, payments, event.id, { onPaid: confirm }).catch((err) =>
         request.log.warn({ err }, "Couldn't settle lapsed checkouts"),
       );
 
@@ -286,6 +289,8 @@ export async function checkoutRoutes(
             ...(promoCodeId ? { promoCode: { connect: { id: promoCodeId } } } : {}),
             ...totals,
             viewKeyHash: hashToken(viewKey),
+            // Kept until the confirmation email carries the link, which may be a later retry.
+            emailViewKey: viewKey,
             holdExpiresAt: free ? null : new Date(now.getTime() + HOLD_MINUTES * 60_000),
             tickets: {
               create: input.tickets.map((t) => ({
@@ -304,6 +309,7 @@ export async function checkoutRoutes(
       });
 
       if (order.totalCents === 0) {
+        await confirm(order.id, viewKey);
         return reply.code(201).send({ orderId: order.id, key: viewKey, paymentUrl: null });
       }
 
@@ -369,6 +375,8 @@ export async function checkoutRoutes(
         await payments.checkoutState(order.stripeCheckoutSessionId),
       );
     }
+    // Sends the tickets once the order is paid, and retries an email that failed before.
+    await confirm(orderId, key);
     return show(orderId);
   });
 
@@ -385,6 +393,7 @@ export async function checkoutRoutes(
         await payments.expireCheckout(order.stripeCheckoutSessionId),
       );
     }
+    await confirm(orderId, key);
     return show(orderId);
   });
 }

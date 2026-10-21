@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
+import type { ConfirmOrder } from "../lib/confirmations";
 import { HttpError } from "../lib/errors";
 import { settleLapsedHolds } from "../lib/orders";
 import type { Payments } from "../lib/payments";
@@ -36,7 +37,11 @@ export const newTicketCode = () => randomBytes(16).toString("base64url");
 
 export async function compRoutes(
   app: FastifyInstance,
-  { prisma, payments }: { prisma: PrismaClient; payments?: Payments },
+  {
+    prisma,
+    payments,
+    confirm,
+  }: { prisma: PrismaClient; payments?: Payments; confirm: ConfirmOrder },
 ) {
   app.get("/orgs/:orgId/events/:eventId/comps", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
@@ -64,7 +69,7 @@ export async function compRoutes(
     });
     if (!owned) throw new HttpError(404, "Event not found");
     // Abandoned checkouts give their seats back first. If Stripe can't be asked, they stay taken.
-    await settleLapsedHolds(prisma, payments, eventId).catch((err) =>
+    await settleLapsedHolds(prisma, payments, eventId, { onPaid: confirm }).catch((err) =>
       request.log.warn({ err }, "Couldn't settle lapsed checkouts"),
     );
     const comp = await prisma.$transaction(async (tx) => {
@@ -119,6 +124,7 @@ export async function compRoutes(
         select: compFields,
       });
     });
+    await confirm(comp.id);
     return reply.code(201).send({ comp });
   });
 

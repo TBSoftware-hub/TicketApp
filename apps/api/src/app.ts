@@ -4,6 +4,7 @@ import type { PrismaClient } from "@ticketapp/db";
 import type { HealthResponse } from "@ticketapp/shared";
 import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
+import { orderConfirmations } from "./lib/confirmations";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import type { Payments } from "./lib/payments";
 import { authRoutes } from "./routes/auth";
@@ -30,6 +31,8 @@ export interface AppDeps {
   magicLinkPerIpPerMinute?: number;
   /** Checkouts started per client IP per minute (default 30). */
   checkoutPerIpPerMinute?: number;
+  /** How often to retry confirmation emails that didn't go out; off when left out. */
+  confirmationRetryMs?: number;
 }
 
 export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}) {
@@ -81,14 +84,27 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
   await app.register(publicEventRoutes, { prisma: deps.prisma, payments: deps.payments });
+  const confirmations = orderConfirmations({
+    prisma: deps.prisma,
+    mailer,
+    webBaseUrl,
+    log: app.log,
+  });
+  const confirm = confirmations.confirm;
+  if (deps.confirmationRetryMs) {
+    const timer = setInterval(() => void confirmations.retry(), deps.confirmationRetryMs);
+    timer.unref();
+    app.addHook("onClose", async () => clearInterval(timer));
+  }
   await app.register(checkoutRoutes, {
     prisma: deps.prisma,
     payments: deps.payments,
     webBaseUrl,
     checkoutPerIpPerMinute: deps.checkoutPerIpPerMinute ?? 30,
+    confirm,
   });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
-  await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments });
+  await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(paymentRoutes, { prisma: deps.prisma, payments: deps.payments, webBaseUrl });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 

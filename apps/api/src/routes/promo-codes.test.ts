@@ -211,6 +211,12 @@ describe("promo codes and comp tickets", () => {
 
       const list = await call("GET", "/comps");
       expect(list.json().comps).toHaveLength(1);
+
+      // The guest gets their ticket by email; comps have no order page to link to.
+      const mail = t.sent.findLast((m) => m.to === "casey1@example.com");
+      expect(mail!.subject).toMatch(/^Your ticket for /);
+      expect(mail!.inlineImages).toHaveLength(1);
+      expect(mail!.text).not.toContain("Your order:");
     });
 
     it("counts comps against the ticket type's quantity and the event's capacity", async () => {
