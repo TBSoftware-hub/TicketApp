@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
 import { HttpError } from "../lib/errors";
+import { takesSeat } from "../lib/seats";
 import { parse } from "../lib/validate";
 
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
@@ -67,14 +68,15 @@ export async function compRoutes(app: FastifyInstance, { prisma }: { prisma: Pri
         FOR UPDATE`;
       if (!ticketType) throw new HttpError(400, "Pick a ticket type from this event");
       // Comps skip eligibility rules, but they still take a seat.
+      const seats = takesSeat();
       if (ticketType.quantity !== null) {
         const sold = await tx.ticket.count({
-          where: { ticketTypeId: input.ticketTypeId, status: "VALID" },
+          where: { ticketTypeId: input.ticketTypeId, ...seats },
         });
         if (sold >= ticketType.quantity) throw new HttpError(409, "That ticket type is sold out");
       }
       if (event.capacity !== null) {
-        const issued = await tx.ticket.count({ where: { eventId, status: "VALID" } });
+        const issued = await tx.ticket.count({ where: { eventId, ...seats } });
         if (issued >= event.capacity) throw new HttpError(409, "The event is at capacity");
       }
       const attendee = await tx.attendee.create({

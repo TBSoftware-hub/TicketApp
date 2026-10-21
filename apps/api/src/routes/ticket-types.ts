@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
 import { HttpError } from "../lib/errors";
+import { takesSeat } from "../lib/seats";
 import { parse } from "../lib/validate";
 
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
@@ -105,9 +106,10 @@ export async function ticketTypeRoutes(app: FastifyInstance, { prisma }: { prism
       });
       if (problem) throw new HttpError(400, problem);
       if (input.quantity != null) {
-        const sold = await tx.ticket.count({ where: { ticketTypeId, status: "VALID" } });
+        // Seats held for buyers who are paying can't be taken back either.
+        const sold = await tx.ticket.count({ where: { ticketTypeId, ...takesSeat() } });
         if (input.quantity < sold) {
-          throw new HttpError(409, `${sold} of these tickets are already sold`);
+          throw new HttpError(409, `${sold} of these tickets are already sold or being bought`);
         }
       }
       return tx.ticketType.update({

@@ -7,6 +7,7 @@ import { HttpError } from "./lib/errors";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import type { Payments } from "./lib/payments";
 import { authRoutes } from "./routes/auth";
+import { checkoutRoutes } from "./routes/checkout";
 import { compRoutes } from "./routes/comps";
 import { eventRoutes } from "./routes/events";
 import { memberRoutes } from "./routes/members";
@@ -27,6 +28,8 @@ export interface AppDeps {
   webBaseUrl?: string;
   /** Sign-in link requests allowed per client IP per minute (default 10). */
   magicLinkPerIpPerMinute?: number;
+  /** Checkouts started per client IP per minute (default 30). */
+  checkoutPerIpPerMinute?: number;
 }
 
 export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}) {
@@ -77,7 +80,13 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(orgRoutes, { prisma: deps.prisma });
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
-  await app.register(publicEventRoutes, { prisma: deps.prisma });
+  await app.register(publicEventRoutes, { prisma: deps.prisma, payments: deps.payments });
+  await app.register(checkoutRoutes, {
+    prisma: deps.prisma,
+    payments: deps.payments,
+    webBaseUrl,
+    checkoutPerIpPerMinute: deps.checkoutPerIpPerMinute ?? 30,
+  });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma });
   await app.register(paymentRoutes, { prisma: deps.prisma, payments: deps.payments, webBaseUrl });

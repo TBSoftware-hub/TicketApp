@@ -20,6 +20,12 @@ model District {
   organizations Organization[]
 }
 
+/// Who covers the card processing fee on online orders.
+enum FeePayer {
+  BUYER
+  ORGANIZATION
+}
+
 enum OrganizationType {
   SCHOOL
   COMMITTEE
@@ -41,6 +47,7 @@ model Organization {
   stripeDetailsSubmitted Boolean          @default(false)
   /// Whether stripeAccountId was made with a live key; a test account is useless once live.
   stripeLivemode         Boolean?
+  cardFeePaidBy          FeePayer         @default(ORGANIZATION)
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
   memberships            Membership[]
@@ -234,28 +241,36 @@ enum PaymentMethod {
 }
 
 model Order {
-  id                    String        @id @default(uuid(7)) @db.Uuid
-  eventId               String        @db.Uuid
-  event                 Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
-  buyerName             String
-  buyerEmail            String
-  buyerPhone            String?
-  status                OrderStatus   @default(PENDING)
-  paymentMethod         PaymentMethod @default(CARD)
-  subtotalCents         Int
-  discountCents         Int           @default(0)
-  promoCodeId           String?       @db.Uuid
-  promoCode             PromoCode?    @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
+  id                      String        @id @default(uuid(7)) @db.Uuid
+  eventId                 String        @db.Uuid
+  event                   Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  buyerName               String
+  buyerEmail              String
+  buyerPhone              String?
+  status                  OrderStatus   @default(PENDING)
+  paymentMethod           PaymentMethod @default(CARD)
+  subtotalCents           Int
+  discountCents           Int           @default(0)
+  promoCodeId             String?       @db.Uuid
+  promoCode               PromoCode?    @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
   /// Who on staff issued a comp order.
-  compedById            String?       @db.Uuid
-  compedBy              User?         @relation(fields: [compedById], references: [id], onDelete: SetNull)
-  note                  String?
-  feeCents              Int           @default(0)
-  totalCents            Int
-  stripePaymentIntentId String?       @unique
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
-  tickets               Ticket[]
+  compedById              String?       @db.Uuid
+  compedBy                User?         @relation(fields: [compedById], references: [id], onDelete: SetNull)
+  note                    String?
+  /// Card fee added to what the buyer pays; zero when the organization covers it.
+  feeCents                Int           @default(0)
+  /// Our estimate of Stripe's fee, kept back from the organization's share when it covers the fee.
+  processingFeeCents      Int           @default(0)
+  totalCents              Int
+  /// SHA-256 of the key in the buyer's order link; the link is the only way to see the order.
+  viewKeyHash             String?       @unique
+  /// Seats stay held for an unpaid order until this time.
+  holdExpiresAt           DateTime?
+  stripeCheckoutSessionId String?       @unique
+  stripePaymentIntentId   String?       @unique
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+  tickets                 Ticket[]
 
   @@index([eventId, status])
   @@index([buyerEmail])
@@ -263,6 +278,8 @@ model Order {
 }
 
 enum TicketStatus {
+  /// Reserved while the buyer pays; takes a seat until the order's hold expires.
+  HELD
   VALID
   VOID
 }

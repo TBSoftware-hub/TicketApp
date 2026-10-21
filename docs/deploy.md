@@ -29,6 +29,12 @@ ticket money goes straight to them; TicketApp is the Connect platform and never 
 
 Without the key, the Payouts page says payments aren't switched on yet.
 
+Buyers pay on Stripe's hosted checkout page. To offer Apple Pay and Google Pay there, turn them on
+under **Settings > Payment methods**. Each charge goes to the organization's account, and
+TicketApp keeps an application fee equal to Stripe's standard 2.9% + 30¢ to cover what Stripe
+charges the platform. Owners choose on **Payouts** whether the buyer pays that fee on top of the
+ticket price or it comes out of what the organization receives.
+
 Test-mode accounts don't exist in live mode. Each saved account remembers which mode made it, so
 after switching to the live key, organizations show as not set up and go through Stripe's setup
 once more to get a live account. Nothing needs clearing by hand.

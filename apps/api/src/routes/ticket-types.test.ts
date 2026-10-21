@@ -215,7 +215,7 @@ describe("ticket types", () => {
       payload: { quantity: 1 },
     });
     expect(tooFew.statusCode).toBe(409);
-    expect(tooFew.json().error).toMatch(/2 of these tickets are already sold/);
+    expect(tooFew.json().error).toMatch(/2 of these tickets are already sold or being bought/);
 
     const exact = await t.app.inject({
       method: "PATCH",
