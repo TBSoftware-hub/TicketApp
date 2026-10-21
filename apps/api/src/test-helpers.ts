@@ -78,14 +78,13 @@ export function fakePayments() {
   /** Set to hold status reads until the test releases them; `entered` fires when one starts. */
   const gate: { wait?: Promise<void>; entered?: () => void } = {};
   /** Set to make the next payment page fail to open. */
-  const failures = { checkout: false, refund: false };
+  const failures = { checkout: false, refund: false, feeReturn: false };
   /** The status Stripe gives the next refund it makes. */
   const refundOutcome = { status: "succeeded" };
   /** Refunds made, by order; asking again for the same order returns the same one, as Stripe does. */
-  const refunds = new Map<
-    string,
-    { id: string; paymentIntentId: string; status: string; returnedFeeCents: number }
-  >();
+  const refunds = new Map<string, { id: string; paymentIntentId: string; status: string }>();
+  /** Fees handed back to schools, by order. */
+  const returnedFees = new Map<string, number>();
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -132,19 +131,24 @@ export function fakePayments() {
         checkout.state = { status: "expired", paymentIntentId: null };
       return checkout.state;
     },
-    async refund({ orderId, paymentIntentId, returnFeeCents }) {
+    async refund({ orderId, paymentIntentId }) {
       if (failures.refund) {
         failures.refund = false;
         throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
       }
       const existing = refunds.get(orderId);
       if (existing) return { id: existing.id, status: existing.status };
-      const { status } = refundOutcome;
-      const failed = status === "failed" || status === "canceled";
-      const returnedFeeCents = failed ? 0 : returnFeeCents;
-      const refund = { id: `re_${randomUUID()}`, paymentIntentId, status, returnedFeeCents };
+      const refund = { id: `re_${randomUUID()}`, paymentIntentId, status: refundOutcome.status };
       refunds.set(orderId, refund);
       return { id: refund.id, status: refund.status };
+    },
+    async returnFee({ orderId, cents }) {
+      if (failures.feeReturn) {
+        failures.feeReturn = false;
+        throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
+      }
+      // As with Stripe, only what hasn't gone back yet is sent.
+      returnedFees.set(orderId, Math.max(cents, returnedFees.get(orderId) ?? 0));
     },
   };
   /** As if the buyer finished paying on Stripe's page. */
@@ -163,6 +167,7 @@ export function fakePayments() {
     gate,
     failures,
     refunds,
+    returnedFees,
     refundOutcome,
     pay,
     expire,

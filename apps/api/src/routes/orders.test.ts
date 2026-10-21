@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancellationNotices, MAX_CANCELLATION_ATTEMPTS } from "../lib/cancellations";
+import { feeReturns } from "../lib/fee-returns";
 import type { MailMessage } from "../lib/mailer";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
@@ -176,11 +177,12 @@ describe("orders", () => {
     });
     expect(stripe.refunds.get(order.orderId)).toMatchObject({
       paymentIntentId: stripePaymentIntentId,
-      // The school gets the service fee back, so it's only out Stripe's fee.
-      returnedFeeCents: 150,
     });
+    // The school gets the service fee back, so it's only out Stripe's fee.
+    expect(stripe.returnedFees.get(order.orderId)).toBe(150);
     const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
     expect(stored.stripeRefundId).toBe(stripe.refunds.get(order.orderId)!.id);
+    expect(stored.feeReturnDueCents).toBe(0);
     // The seats go back on sale.
     expect(await shop.sold()).toBe(0);
 
@@ -283,7 +285,7 @@ describe("orders", () => {
     const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
     expect(stored).toMatchObject({ status: "PAID", cancelledAt: null });
     // Nothing was refunded, so the platform keeps the service fee.
-    expect(stripe.refunds.get(order.orderId)?.returnedFeeCents).toBe(0);
+    expect(stripe.returnedFees.get(order.orderId)).toBeUndefined();
   });
 
   it("records a refund that's still pending at Stripe", async () => {
@@ -321,6 +323,24 @@ describe("orders", () => {
       data: { confirmationClaimedAt: null },
     });
     expect((await shop.cancel(order.orderId)).json().order.status).toBe("CANCELLED");
+  });
+
+  it("cancels the order even when the service fee can't go back yet, and retries it", async () => {
+    const shop = await onSale();
+    const order = await shop.paid();
+    stripe.failures.feeReturn = true;
+    const res = await shop.cancel(order.orderId);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().order).toMatchObject({ status: "REFUNDED", tickets: [{ status: "VOID" }] });
+    expect(mailTo(order.buyerEmail).filter((m) => m.subject.includes("refunded"))).toHaveLength(1);
+    expect(stripe.returnedFees.get(order.orderId)).toBeUndefined();
+    const owed = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(owed.feeReturnDueCents).toBe(75);
+
+    await feeReturns({ prisma: t.prisma, payments: stripe.payments, log: t.app.log }).retry();
+    expect(stripe.returnedFees.get(order.orderId)).toBe(75);
+    const settled = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(settled.feeReturnDueCents).toBe(0);
   });
 
   it("retries the cancellation email when it couldn't be sent", async () => {

@@ -398,6 +398,23 @@ describe("checkout", () => {
     expect(unknown.json().error).toBe("That code doesn't work for this event");
   });
 
+  it("charges no service fee on tickets a code makes free", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket();
+    const guest = await shop.addTicket({ name: "Guest" });
+    await shop.addPromo({
+      code: "GUESTFREE",
+      discountType: "PERCENT",
+      discountValue: 100,
+      ticketTypeIds: [guest],
+    });
+    const res = await shop.buy([attendee(general), attendee(guest, "Alex")], {
+      promoCode: "GUESTFREE",
+    });
+    const order = (await shop.view(res.json().orderId, res.json().key)).json().order;
+    expect(order).toMatchObject({ discountCents: 1000, serviceFeeCents: 75, totalCents: 1075 });
+  });
+
   it("issues the tickets without payment when a code covers the whole order", async () => {
     const shop = await onSale();
     const general = await shop.addTicket();

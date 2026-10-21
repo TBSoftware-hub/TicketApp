@@ -4,6 +4,7 @@ import {
   formatCents,
   formatDiscount,
   promoCodeProblem,
+  paidTicketCount,
   promoDiscountCents,
 } from "./index";
 
@@ -96,5 +97,37 @@ describe("promoCodeProblem", () => {
     expect(formatDiscount({ discountType: "AMOUNT", discountValue: 500 }, formatCents)).toBe(
       "$5.00 off",
     );
+  });
+});
+
+describe("paidTicketCount", () => {
+  const lines = [
+    { ticketTypeId: "a", unitCents: 1000, quantity: 2 },
+    { ticketTypeId: "b", unitCents: 1000, quantity: 1 },
+    { ticketTypeId: "free", unitCents: 0, quantity: 3 },
+  ];
+  const promo = (
+    discountType: "PERCENT" | "AMOUNT",
+    discountValue: number,
+    ticketTypeIds: string[] = [],
+  ) => ({
+    discountType,
+    discountValue,
+    ticketTypeIds,
+  });
+
+  it("counts every ticket that costs something", () => {
+    expect(paidTicketCount(null, lines)).toBe(3);
+    expect(paidTicketCount(promo("PERCENT", 50), lines)).toBe(3);
+  });
+
+  it("leaves out tickets a code makes free", () => {
+    expect(paidTicketCount(promo("PERCENT", 100, ["a"]), lines)).toBe(1);
+    expect(paidTicketCount(promo("AMOUNT", 1000, ["b"]), lines)).toBe(2);
+    expect(paidTicketCount(promo("PERCENT", 100), lines)).toBe(0);
+  });
+
+  it("still counts tickets a set amount only partly covers", () => {
+    expect(paidTicketCount(promo("AMOUNT", 1500, ["a"]), lines)).toBe(3);
   });
 });

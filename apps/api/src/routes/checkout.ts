@@ -4,6 +4,7 @@ import {
   checkEligibility,
   checkoutSchema,
   orderTotal,
+  paidTicketCount,
   promoCodeProblem,
   promoDiscountCents,
   ticketSaleStatus,
@@ -237,6 +238,7 @@ export async function checkoutRoutes(
         const subtotalCents = lines.reduce((sum, l) => sum + l.unitCents * l.quantity, 0);
         let discountCents = 0;
         let promoCodeId: string | null = null;
+        let promoRules: Parameters<typeof paidTicketCount>[0] = null;
         if (input.promoCode) {
           // Locked so two orders can't both take a code's last use.
           const [promo] = await tx.$queryRaw<
@@ -270,10 +272,11 @@ export async function checkoutRoutes(
             throw new HttpError(400, "That code doesn't apply to these tickets");
           }
           promoCodeId = promo.id;
+          promoRules = rules;
         }
 
-        // Free tickets carry no service fee.
-        const paidTickets = lines.reduce((n, l) => n + (l.unitCents > 0 ? l.quantity : 0), 0);
+        // Tickets that are free, or that the code makes free, carry no service fee.
+        const paidTickets = paidTicketCount(promoRules, lines);
         const totals = orderTotal(subtotalCents - discountCents, paidTickets, org);
         const free = totals.totalCents === 0;
         if (!free && !accountId) {
