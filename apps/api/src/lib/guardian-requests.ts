@@ -103,7 +103,12 @@ export function guardianRequests({
           sendAttempts: true,
         },
       });
-      const messages = request.pendingMessages as unknown as GuardianMessages;
+      const messages = request.pendingMessages as unknown as GuardianMessages | null;
+      // Signing in the meantime clears the messages; there's nothing left to send.
+      if (!messages) {
+        await release(requestId, now);
+        return;
+      }
       let emailDone = !messages.email || request.emailSentAt !== null;
       let textDone = !messages.text || request.textSentAt !== null;
       if (!emailDone && messages.email) {
@@ -143,7 +148,17 @@ export function guardianRequests({
           ? "Guardian signature request failed partway; it will be retried"
           : "Couldn't claim the guardian signature request",
       );
+      // A claim left behind would hold up cancelling the order until it expired.
+      if (claimed) await release(requestId, now).catch(() => {});
     }
+  }
+
+  /** Frees this attempt's claim, and only this attempt's: a later attempt may have taken over. */
+  function release(requestId: string, claimedAt: Date) {
+    return prisma.guardianSignatureRequest.updateMany({
+      where: { id: requestId, sendClaimedAt: claimedAt },
+      data: { sendClaimedAt: null },
+    });
   }
 
   /** Records a message that went out, in the request and the notification log. */
