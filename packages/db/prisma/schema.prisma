@@ -405,19 +405,40 @@ model AttendeeGuardian {
 // ─── Waivers ────────────────────────────────────────────────────────────────
 
 model WaiverTemplate {
-  id                        String            @id @default(uuid(7)) @db.Uuid
-  organizationId            String            @db.Uuid
-  organization              Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id                        String                  @id @default(uuid(7)) @db.Uuid
+  organizationId            String                  @db.Uuid
+  organization              Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   title                     String
   body                      String
-  version                   Int               @default(1)
-  requiresGuardianForMinors Boolean           @default(true)
-  createdAt                 DateTime          @default(now())
-  updatedAt                 DateTime          @updatedAt
+  /// Questions the signer answers, beyond their name and signature. See waiverFieldSchema.
+  fields                    Json                    @default("[]")
+  /// Goes up by one each time the wording or questions change; each is kept in versions.
+  version                   Int                     @default(1)
+  requiresGuardianForMinors Boolean                 @default(true)
+  /// Archived waivers can't be added to events but stay on the ones already using them.
+  archivedAt                DateTime?
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
   events                    EventWaiver[]
   signatures                WaiverSignature[]
+  versions                  WaiverTemplateVersion[]
 
   @@index([organizationId])
+}
+
+/// The exact wording and questions of each version, so a signature can always show what was signed.
+model WaiverTemplateVersion {
+  id                        String         @id @default(uuid(7)) @db.Uuid
+  waiverTemplateId          String         @db.Uuid
+  waiverTemplate            WaiverTemplate @relation(fields: [waiverTemplateId], references: [id], onDelete: Cascade)
+  version                   Int
+  title                     String
+  body                      String
+  fields                    Json
+  requiresGuardianForMinors Boolean
+  createdAt                 DateTime       @default(now())
+
+  @@unique([waiverTemplateId, version])
 }
 
 model EventWaiver {

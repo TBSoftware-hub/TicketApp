@@ -10,6 +10,7 @@ import {
   createPromoCodeSchema,
   createTicketTypeSchema,
   parseDollarsToCents,
+  waiverTemplateSchema,
   zonedLocalToUtc,
 } from "@ticketapp/shared";
 import { revalidatePath } from "next/cache";
@@ -498,4 +499,85 @@ export async function saveFeeSettings(formData: FormData) {
   if (status === 401) redirect("/sign-in");
   if (status !== 200) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
   redirect(`${page}?saved=1`);
+}
+
+/** The first problem with a waiver, naming the question it's on. */
+function waiverProblem(issue: { message: string; path: PropertyKey[] } | undefined) {
+  if (!issue) return "Check the form";
+  const [first, index] = issue.path;
+  return first === "fields" && typeof index === "number"
+    ? `Question ${index + 1}: ${issue.message}`
+    : issue.message;
+}
+
+export async function saveWaiver(
+  orgId: string,
+  waiverId: string | null,
+  version: number | null,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+
+  let fields: unknown;
+  try {
+    fields = JSON.parse(String(formData.get("fields") ?? "[]"));
+  } catch {
+    return { error: "Couldn't read the questions. Reload the page and try again" };
+  }
+  const parsed = waiverTemplateSchema.safeParse({
+    title: formData.get("title"),
+    body: formData.get("body"),
+    requiresGuardianForMinors: formData.get("requiresGuardianForMinors") === "on",
+    fields,
+  });
+  if (!parsed.success) return { error: waiverProblem(parsed.error.issues[0]) };
+
+  const base = `/orgs/${encodeURIComponent(orgId)}/waivers`;
+  const { status, data } = await api(waiverId ? `${base}/${encodeURIComponent(waiverId)}` : base, {
+    method: waiverId ? "PUT" : "POST",
+    token,
+    body: waiverId ? { ...parsed.data, version } : parsed.data,
+  });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200 && status !== 201) return { error: errorMessage(data) };
+  revalidatePath(`/orgs/${orgId}/waivers`);
+  redirect(`/orgs/${orgId}/waivers`);
+}
+
+export async function archiveWaiver(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const waiverId = String(formData.get("waiverId") ?? "");
+  const archived = formData.get("archived") === "true";
+  const page = `/orgs/${orgId}/waivers/${waiverId}`;
+  const { status, data } = await api(
+    `/orgs/${encodeURIComponent(orgId)}/waivers/${encodeURIComponent(waiverId)}`,
+    { method: "PATCH", token, body: { archived } },
+  );
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(`/orgs/${orgId}/waivers`);
+  revalidatePath(page);
+  if (status !== 200) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
+  redirect(archived ? `/orgs/${orgId}/waivers` : page);
+}
+
+export async function deleteWaiver(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const waiverId = String(formData.get("waiverId") ?? "");
+  const { status, data } = await api(
+    `/orgs/${encodeURIComponent(orgId)}/waivers/${encodeURIComponent(waiverId)}`,
+    { method: "DELETE", token },
+  );
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(`/orgs/${orgId}/waivers`);
+  // 404 means it's already gone, which the refreshed list shows.
+  if (status !== 204 && status !== 404) {
+    redirect(`/orgs/${orgId}/waivers/${waiverId}?error=${encodeURIComponent(errorMessage(data))}`);
+  }
+  redirect(`/orgs/${orgId}/waivers`);
 }
