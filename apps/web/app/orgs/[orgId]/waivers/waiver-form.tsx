@@ -65,8 +65,11 @@ export function WaiverForm({
   version: number | null;
   initial: WaiverFormValues;
 }) {
+  // The version this draft started from, kept even if the page reloads with a newer one, so
+  // saving a stale draft is still refused rather than overwriting someone else's changes.
+  const [baseVersion] = useState(version);
   const [state, formAction, pending] = useActionState<FormState, FormData>(
-    saveWaiver.bind(null, orgId, waiverId, version),
+    saveWaiver.bind(null, orgId, waiverId, baseVersion),
     {},
   );
   const [title, setTitle] = useState(initial.title);
