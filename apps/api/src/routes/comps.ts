@@ -1,10 +1,10 @@
-import type { PrismaClient } from "@ticketapp/db";
+import { Prisma, type PrismaClient } from "@ticketapp/db";
 import { createCompSchema } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
-import type { ConfirmOrder } from "../lib/confirmations";
+import { notSendingConfirmation, type ConfirmOrder } from "../lib/confirmations";
 import { HttpError } from "../lib/errors";
 import { settleLapsedHolds } from "../lib/orders";
 import type { Payments } from "../lib/payments";
@@ -130,14 +130,35 @@ export async function compRoutes(
 
   app.post("/orgs/:orgId/events/:eventId/comps/:orderId/void", async (request) => {
     const { orgId, eventId, orderId } = parse(compParamsSchema, request.params);
-    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    const { user } = await requireOrgPermission(prisma, request, orgId, "events.manage");
     const comp = await prisma.$transaction(async (tx) => {
+      const comp = {
+        id: orderId,
+        eventId,
+        paymentMethod: "COMP" as const,
+        event: { organizationId: orgId },
+      };
+      // Only the void itself records who did it and when; voiding again changes nothing. It waits
+      // for a confirmation email that's going out, so it can't arrive after the void.
       const { count } = await tx.order.updateMany({
-        where: { id: orderId, eventId, paymentMethod: "COMP", event: { organizationId: orgId } },
-        data: { status: "CANCELLED" },
+        where: { ...comp, status: "PAID", ...notSendingConfirmation() },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: new Date(),
+          cancelledById: user.id,
+          emailViewKey: null,
+          confirmationEmail: Prisma.DbNull,
+        },
       });
-      if (count === 0) throw new HttpError(404, "Comp ticket not found");
-      await tx.ticket.updateMany({ where: { orderId }, data: { status: "VOID" } });
+      if (count === 0) {
+        const current = await tx.order.findFirst({ where: comp, select: { status: true } });
+        if (!current) throw new HttpError(404, "Comp ticket not found");
+        if (current.status === "PAID") {
+          throw new HttpError(409, "Its email is going out right now. Try again in a minute.");
+        }
+      } else {
+        await tx.ticket.updateMany({ where: { orderId }, data: { status: "VOID" } });
+      }
       return tx.order.findUniqueOrThrow({ where: { id: orderId }, select: compFields });
     });
     return { comp };

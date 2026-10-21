@@ -59,16 +59,17 @@ model Organization {
 }
 
 model User {
-  id          String       @id @default(uuid(7)) @db.Uuid
-  email       String       @unique
-  name        String
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  memberships Membership[]
-  scans       ScanEvent[]
-  sessions    Session[]
-  invitations Invitation[]
-  compOrders  Order[]
+  id              String       @id @default(uuid(7)) @db.Uuid
+  email           String       @unique
+  name            String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  memberships     Membership[]
+  scans           ScanEvent[]
+  sessions        Session[]
+  invitations     Invitation[]
+  compOrders      Order[]      @relation("CompedBy")
+  cancelledOrders Order[]      @relation("CancelledBy")
 }
 
 /// One-time sign-in link. Only the SHA-256 of the token is stored.
@@ -241,49 +242,65 @@ enum PaymentMethod {
 }
 
 model Order {
-  id                      String        @id @default(uuid(7)) @db.Uuid
-  eventId                 String        @db.Uuid
-  event                   Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
-  buyerName               String
-  buyerEmail              String
-  buyerPhone              String?
-  status                  OrderStatus   @default(PENDING)
-  paymentMethod           PaymentMethod @default(CARD)
-  subtotalCents           Int
-  discountCents           Int           @default(0)
-  promoCodeId             String?       @db.Uuid
-  promoCode               PromoCode?    @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
+  id                       String        @id @default(uuid(7)) @db.Uuid
+  eventId                  String        @db.Uuid
+  event                    Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  buyerName                String
+  buyerEmail               String
+  buyerPhone               String?
+  status                   OrderStatus   @default(PENDING)
+  paymentMethod            PaymentMethod @default(CARD)
+  subtotalCents            Int
+  discountCents            Int           @default(0)
+  promoCodeId              String?       @db.Uuid
+  promoCode                PromoCode?    @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
   /// Who on staff issued a comp order.
-  compedById              String?       @db.Uuid
-  compedBy                User?         @relation(fields: [compedById], references: [id], onDelete: SetNull)
-  note                    String?
+  compedById               String?       @db.Uuid
+  compedBy                 User?         @relation("CompedBy", fields: [compedById], references: [id], onDelete: SetNull)
+  note                     String?
   /// Card fee added to what the buyer pays; zero when the organization covers it.
-  feeCents                Int           @default(0)
+  feeCents                 Int           @default(0)
   /// Our estimate of Stripe's fee, kept back from the organization's share when it covers the fee.
-  processingFeeCents      Int           @default(0)
-  totalCents              Int
+  processingFeeCents       Int           @default(0)
+  totalCents               Int
   /// SHA-256 of the key in the buyer's order link; the link is the only way to see the order.
-  viewKeyHash             String?       @unique
+  viewKeyHash              String?       @unique
   /// Seats stay held for an unpaid order until this time.
-  holdExpiresAt           DateTime?
-  stripeCheckoutSessionId String?       @unique
-  stripePaymentIntentId   String?       @unique
+  holdExpiresAt            DateTime?
+  stripeCheckoutSessionId  String?       @unique
+  stripePaymentIntentId    String?       @unique
   /// When the provider accepted the confirmation email with the tickets.
-  confirmationSentAt      DateTime?
+  confirmationSentAt       DateTime?
   /// Set while a send is in progress; a claim older than a few minutes was abandoned and can be retaken.
-  confirmationClaimedAt   DateTime?
+  confirmationClaimedAt    DateTime?
   /// The first attempt. Retries stop a day later, while the provider still remembers it.
   confirmationFirstTriedAt DateTime?
   /// Send attempts so far; retries stop after a few.
-  confirmationAttempts    Int           @default(0)
+  confirmationAttempts     Int           @default(0)
   /// The order link's key, kept only until the confirmation email carries it to the buyer.
-  emailViewKey            String?
+  emailViewKey             String?
   /// The confirmation email as first rendered, so every retry sends the same message under the
   /// same idempotency key even if the event changes. Cleared with the key.
-  confirmationEmail       Json?
-  createdAt               DateTime      @default(now())
-  updatedAt               DateTime      @updatedAt
-  tickets                 Ticket[]
+  confirmationEmail        Json?
+  /// When staff cancelled the order from the dashboard, refunding it if it was paid for.
+  cancelledAt              DateTime?
+  cancelledById            String?       @db.Uuid
+  cancelledBy              User?         @relation("CancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  /// What went back to the buyer's card.
+  refundedCents            Int           @default(0)
+  stripeRefundId           String?       @unique
+  /// Stripe's status for the refund when it was made. Card refunds can stay pending for a while;
+  /// webhooks (E4.6) will follow the ones that do.
+  stripeRefundStatus       String?
+  /// The cancellation email, kept until the provider accepts it so a failed send can be retried.
+  cancellationEmail        Json?
+  /// Set while a cancellation email is being sent; one older than a few minutes was abandoned.
+  cancellationClaimedAt    DateTime?
+  /// Cancellation email attempts so far; retries stop after a few.
+  cancellationAttempts     Int           @default(0)
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+  tickets                  Ticket[]
 
   @@index([eventId, status])
   @@index([buyerEmail])

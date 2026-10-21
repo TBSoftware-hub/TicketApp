@@ -16,6 +16,9 @@ interface PublicOrder {
   discountCents: number;
   feeCents: number;
   totalCents: number;
+  refundedCents: number;
+  /** Set when the organizers cancelled it, rather than the buyer never paying. */
+  cancelledAt: string | null;
   event: {
     name: string;
     startsAt: string;
@@ -73,14 +76,20 @@ export default async function OrderPage({
         <p className="notice" role="status">
           We&apos;re waiting for Stripe to confirm your payment. <a href={here}>Check again</a>
         </p>
-      ) : order.status === "CANCELLED" ? (
+      ) : order.status === "REFUNDED" ? (
+        <p className="notice error" role="alert">
+          {event.organizationName} cancelled this order and refunded{" "}
+          {formatPrice(order.refundedCents)} to your card. It can take 5 to 10 business days to show
+          up. The tickets no longer work at the door.
+        </p>
+      ) : order.cancelledAt ? (
+        <p className="notice error" role="alert">
+          {event.organizationName} cancelled this order. The tickets no longer work at the door.
+        </p>
+      ) : (
         <p className="notice error" role="alert">
           This order wasn&apos;t completed, so nothing was charged.{" "}
           <a href={`${eventPath}/checkout`}>Start again</a>
-        </p>
-      ) : (
-        <p className="notice" role="status">
-          This order was refunded.
         </p>
       )}
 

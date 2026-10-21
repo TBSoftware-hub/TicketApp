@@ -38,6 +38,8 @@ const orderFields = {
   discountCents: true,
   feeCents: true,
   totalCents: true,
+  refundedCents: true,
+  cancelledAt: true,
   event: {
     select: {
       name: true,

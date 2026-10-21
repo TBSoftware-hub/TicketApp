@@ -400,6 +400,28 @@ export async function voidComp(formData: FormData) {
   redirect(page);
 }
 
+/** Cancels an order from the dashboard, refunding the card if it was paid for. */
+export async function cancelOrder(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const eventId = String(formData.get("eventId") ?? "");
+  const orderId = String(formData.get("orderId") ?? "");
+  const q = String(formData.get("q") ?? "");
+  const page = `/orgs/${orgId}/events/${eventId}/orders`;
+  const back = (params: Record<string, string>) => {
+    const query = new URLSearchParams({ ...(q ? { q } : {}), ...params }).toString();
+    return query ? `${page}?${query}` : page;
+  };
+  const path = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/orders/${encodeURIComponent(orderId)}/cancel`;
+  const { status, data } = await api(path, { method: "POST", token });
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(page);
+  revalidatePath(`/orgs/${orgId}/events/${eventId}`);
+  if (status !== 200) redirect(back({ error: errorMessage(data) }));
+  redirect(back({}));
+}
+
 /** Sends an owner to Stripe's hosted setup (or their Stripe dashboard) for the organization. */
 export async function openStripe(formData: FormData) {
   const token = await getSessionToken();
