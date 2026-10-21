@@ -59,6 +59,8 @@ export function orderConfirmations({
   /** Orders that still need their email and that no attempt is working on. */
   const unsent = (now: Date) => ({
     status: "PAID" as const,
+    // A door sale with no email has nowhere to go.
+    buyerEmail: { not: null },
     confirmationSentAt: null,
     confirmationAttempts: { lt: MAX_CONFIRMATION_ATTEMPTS },
     AND: [
@@ -92,6 +94,7 @@ export function orderConfirmations({
           "confirmationFirstTriedAt" = COALESCE("confirmationFirstTriedAt", ${now})
         WHERE id = ${orderId}::uuid
           AND status = 'PAID'
+          AND "buyerEmail" IS NOT NULL
           AND "confirmationSentAt" IS NULL
           AND "confirmationAttempts" < ${MAX_CONFIRMATION_ATTEMPTS}
           AND ("confirmationClaimedAt" IS NULL OR "confirmationClaimedAt" < ${claimExpired})
@@ -137,7 +140,8 @@ export function orderConfirmations({
         const orderUrl = key
           ? `${webBaseUrl}/e/${encodeURIComponent(event.organization.slug)}/${encodeURIComponent(event.slug)}/orders/${orderId}?key=${encodeURIComponent(key)}`
           : null;
-        snapshot = renderConfirmation({ ...order, orderUrl });
+        // The claim only takes orders with an email.
+        snapshot = renderConfirmation({ ...order, buyerEmail: order.buyerEmail ?? "", orderUrl });
         await prisma.order.updateMany({
           where: { id: orderId, confirmationClaimedAt: now },
           data: { confirmationEmail: snapshot as unknown as Prisma.InputJsonObject },

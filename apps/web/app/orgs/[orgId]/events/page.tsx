@@ -15,6 +15,7 @@ export default async function EventsPage({ params }: { params: Promise<{ orgId: 
   );
   if (!("events" in data)) throw new Error(`Couldn't load events (${status})`);
   const canManage = roleCan(role, "events.manage");
+  const canSell = roleCan(role, "checkin.scan");
 
   return (
     <main className="wide">
@@ -47,6 +48,9 @@ export default async function EventsPage({ params }: { params: Promise<{ orgId: 
                 {STATUS_LABELS[e.status]}
                 {e.capacity !== null && ` · ${e.capacity} capacity`}
               </span>
+              {canSell && e.status === "PUBLISHED" && (
+                <a href={`/orgs/${orgId}/events/${e.id}/door`}>Door sales</a>
+              )}
             </li>
           ))}
         </ul>

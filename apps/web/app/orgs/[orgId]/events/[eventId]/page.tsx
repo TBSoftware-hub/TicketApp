@@ -143,6 +143,7 @@ export default async function EditEventPage({
             <a href={`/orgs/${orgId}/events/${eventId}/orders`}>Orders</a>
             <a href={`/orgs/${orgId}/events/${eventId}/promo-codes`}>Promo codes</a>
             <a href={`/orgs/${orgId}/events/${eventId}/comps`}>Comp tickets</a>
+            <a href={`/orgs/${orgId}/events/${eventId}/door`}>Door sales</a>
           </p>
         )}
       </section>

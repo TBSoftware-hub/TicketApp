@@ -72,6 +72,7 @@ model User {
   invitations     Invitation[]
   compOrders      Order[]      @relation("CompedBy")
   cancelledOrders Order[]      @relation("CancelledBy")
+  doorSales       Order[]      @relation("SoldBy")
 }
 
 /// One-time sign-in link. Only the SHA-256 of the token is stored.
@@ -248,7 +249,8 @@ model Order {
   eventId                  String        @db.Uuid
   event                    Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
   buyerName                String
-  buyerEmail               String
+  /// Null for a door sale where the buyer gave no email; nothing is emailed then.
+  buyerEmail               String?
   buyerPhone               String?
   status                   OrderStatus   @default(PENDING)
   paymentMethod            PaymentMethod @default(CARD)
@@ -259,6 +261,11 @@ model Order {
   /// Who on staff issued a comp order.
   compedById               String?       @db.Uuid
   compedBy                 User?         @relation("CompedBy", fields: [compedById], references: [id], onDelete: SetNull)
+  /// Who on staff took the cash for a door sale.
+  soldById                 String?       @db.Uuid
+  soldBy                   User?         @relation("SoldBy", fields: [soldById], references: [id], onDelete: SetNull)
+  /// Sent with each door sale so a retried request returns the first sale instead of selling twice.
+  doorSaleKey              String?       @unique @db.Uuid
   note                     String?
   /// Card fee added to what the buyer pays; zero when the organization covers it.
   feeCents                 Int           @default(0)

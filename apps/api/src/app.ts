@@ -12,6 +12,7 @@ import type { Payments } from "./lib/payments";
 import { authRoutes } from "./routes/auth";
 import { checkoutRoutes } from "./routes/checkout";
 import { compRoutes } from "./routes/comps";
+import { doorSaleRoutes } from "./routes/door-sales";
 import { eventRoutes } from "./routes/events";
 import { memberRoutes } from "./routes/members";
 import { orderRoutes } from "./routes/orders";
@@ -117,6 +118,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
+  await app.register(doorSaleRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(orderRoutes, {
     prisma: deps.prisma,
     payments: deps.payments,
