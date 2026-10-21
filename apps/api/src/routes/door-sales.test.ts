@@ -196,6 +196,21 @@ describe("door sales", () => {
     const { cashCents, saleCount } = (await door.report()).json();
     expect({ cashCents, saleCount }).toEqual({ cashCents: 3000, saleCount: 1 });
 
+    // Changed details under the same key aren't a repeat.
+    const changed = await door.sell({ saleKey, quantity: 3, firstName: "Sam" });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().error).toMatch(/different details/);
+
+    // Nor is a sale cancelled before it was sent again.
+    await t.app.inject({
+      method: "POST",
+      url: `${door.base}/orders/${first.json().sale.id}/cancel`,
+      headers: door.owner.headers,
+    });
+    const cancelled = await door.sell({ saleKey, quantity: 2 });
+    expect(cancelled.statusCode).toBe(409);
+    expect(cancelled.json().error).toMatch(/cancelled/);
+
     // A key can't be borrowed for another event.
     const other = await atTheDoor();
     const elsewhere = await other.sell({ saleKey });

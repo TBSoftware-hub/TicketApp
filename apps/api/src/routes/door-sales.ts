@@ -93,11 +93,36 @@ export async function doorSaleRoutes(
       // event wait on the lock above, so a repeat can't slip in between this check and the insert.
       const earlier = await tx.order.findUnique({
         where: { doorSaleKey: input.saleKey },
-        select: { eventId: true },
+        select: {
+          eventId: true,
+          status: true,
+          buyerName: true,
+          buyerEmail: true,
+          tickets: { select: { ticketTypeId: true } },
+        },
       });
       if (earlier) {
         if (earlier.eventId !== eventId) {
           throw new HttpError(409, "That sale was for another event");
+        }
+        // Only the very same sale counts as a repeat. Anything else would report a sale that
+        // wasn't recorded, so staff check the list before selling again.
+        const same =
+          earlier.buyerName === `${input.firstName} ${input.lastName}` &&
+          earlier.buyerEmail === (input.email ?? null) &&
+          earlier.tickets.length === input.quantity &&
+          earlier.tickets.every((tk) => tk.ticketTypeId === input.ticketTypeId);
+        if (!same) {
+          throw new HttpError(
+            409,
+            "That sale was already recorded with different details. Check the sales list before selling again",
+          );
+        }
+        if (earlier.status !== "PAID") {
+          throw new HttpError(
+            409,
+            "That sale has since been cancelled. Check the sales list before selling again",
+          );
         }
         const sale = await tx.order.findUniqueOrThrow({
           where: { doorSaleKey: input.saleKey },
