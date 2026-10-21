@@ -250,6 +250,17 @@ describe("orders", () => {
     });
     const compId = comp.json().comp.id as string;
     expect((await shop.cancel(compId)).json().order).toMatchObject({ status: "CANCELLED" });
+
+    // A comp voided before cancellations were recorded still shows up.
+    const old = await t.app.inject({
+      method: "POST",
+      url: `${shop.base}/comps`,
+      headers: shop.owner.headers,
+      payload: { ticketTypeId: shop.general, firstName: "Old", lastName: "Comp", email: buyer() },
+    });
+    const oldId = old.json().comp.id as string;
+    await t.prisma.order.update({ where: { id: oldId }, data: { status: "CANCELLED" } });
+    expect((await shop.list()).json().orders.map((o: { id: string }) => o.id)).toContain(oldId);
   });
 
   it("won't record a refund Stripe says failed", async () => {

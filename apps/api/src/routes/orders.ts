@@ -72,6 +72,8 @@ export async function orderRoutes(
         OR: [
           { status: { in: ["PAID", "REFUNDED"] } },
           { status: "CANCELLED", cancelledAt: { not: null } },
+          // Comps voided before cancellations were recorded have no time, but were still issued.
+          { status: "CANCELLED", paymentMethod: "COMP" },
         ],
         // Every word has to match somewhere, so "Sam Lee" finds Sam Lee's ticket.
         AND: (q?.split(/\s+/) ?? []).map((word) => ({
