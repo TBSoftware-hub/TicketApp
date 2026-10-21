@@ -444,7 +444,7 @@ describe("checkout", () => {
       (
         await t.prisma.ticket.findMany({
           where: { orderId },
-          orderBy: { createdAt: "asc" },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           select: { code: true },
         })
       ).map((tk) => tk.code);
@@ -595,6 +595,30 @@ describe("checkout", () => {
       });
       await shop.view(orderId, key);
       expect(mailTo(email)).toHaveLength(1);
+    });
+
+    it("doesn't retake a claim older than the provider remembers, and drops its key", async () => {
+      const shop = await onSale({ ready: false });
+      const free = await shop.addTicket({ priceCents: 0 });
+      const email = buyer();
+      t.mailFailures.remaining = 1;
+      const { orderId, key } = (await shop.buy([attendee(free)], { buyerEmail: email })).json();
+      // An attempt that stopped a day ago may have been delivered already.
+      await t.prisma.order.update({
+        where: { id: orderId },
+        data: { confirmationClaimedAt: new Date(Date.now() - 25 * 60 * 60_000) },
+      });
+      await shop.view(orderId, key);
+      expect(mailTo(email)).toHaveLength(0);
+
+      await orderConfirmations({
+        prisma: t.prisma,
+        mailer: { send: async () => {} },
+        webBaseUrl: "https://dashboard.test",
+        log: t.app.log,
+      }).retry();
+      const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      expect(order.emailViewKey).toBeNull();
     });
 
     it("stops retrying after a few failed attempts", async () => {

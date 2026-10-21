@@ -6,6 +6,12 @@ import type { InlineImage, Mailer, MailMessage } from "./mailer";
 
 /** A send that hasn't finished in this long was abandoned (say, by a restart) and can be retaken. */
 const CLAIM_MINUTES = 10;
+/**
+ * Resend forgets idempotency keys after 24 hours. A claim abandoned longer ago than this may have
+ * been delivered with no record of it, so it isn't retaken: a duplicate is worse than a gap the
+ * buyer can fill from their order page.
+ */
+const RETAKE_HOURS = 23;
 /** Sends give up after this many attempts, so a bad address doesn't retry forever. */
 export const MAX_CONFIRMATION_ATTEMPTS = 5;
 /** The retry sweep only looks back this far, and only at this many orders per run. */
@@ -43,7 +49,12 @@ export function orderConfirmations({
     confirmationAttempts: { lt: MAX_CONFIRMATION_ATTEMPTS },
     OR: [
       { confirmationClaimedAt: null },
-      { confirmationClaimedAt: { lt: new Date(now.getTime() - CLAIM_MINUTES * 60_000) } },
+      {
+        confirmationClaimedAt: {
+          lt: new Date(now.getTime() - CLAIM_MINUTES * 60_000),
+          gt: new Date(now.getTime() - RETAKE_HOURS * 60 * 60_000),
+        },
+      },
     ],
   });
 
@@ -78,7 +89,7 @@ export function orderConfirmations({
           },
           tickets: {
             where: { status: "VALID" },
-            orderBy: { createdAt: "asc" },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             select: {
               code: true,
               ticketType: { select: { name: true } },
@@ -99,8 +110,9 @@ export function orderConfirmations({
       } catch (err) {
         log.error({ err, orderId }, "Couldn't send the order confirmation");
         const givingUp = order.confirmationAttempts >= MAX_CONFIRMATION_ATTEMPTS;
-        await prisma.order.update({
-          where: { id: orderId },
+        // Only release our own claim: a slow attempt mustn't free one a later attempt took over.
+        await prisma.order.updateMany({
+          where: { id: orderId, confirmationClaimedAt: now },
           // The key is only kept for the email; once it won't be sent, it goes.
           data: { confirmationClaimedAt: null, ...(givingUp ? { emailViewKey: null } : {}) },
         });
@@ -124,6 +136,32 @@ export function orderConfirmations({
 
   async function retry(now = new Date()) {
     try {
+      // Orders that will never be emailed now (out of attempts, or a claim too old to retake)
+      // don't keep the order key, however their last attempt ended.
+      await prisma.order.updateMany({
+        where: {
+          status: "PAID",
+          confirmationSentAt: null,
+          emailViewKey: { not: null },
+          OR: [
+            { confirmationAttempts: { gte: MAX_CONFIRMATION_ATTEMPTS } },
+            {
+              confirmationClaimedAt: { lte: new Date(now.getTime() - RETAKE_HOURS * 60 * 60_000) },
+            },
+          ],
+          AND: [
+            {
+              OR: [
+                { confirmationClaimedAt: null },
+                {
+                  confirmationClaimedAt: { lt: new Date(now.getTime() - CLAIM_MINUTES * 60_000) },
+                },
+              ],
+            },
+          ],
+        },
+        data: { emailViewKey: null },
+      });
       const orders = await prisma.order.findMany({
         where: {
           ...unsent(now),
