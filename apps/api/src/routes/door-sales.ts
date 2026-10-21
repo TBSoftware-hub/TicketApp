@@ -91,14 +91,13 @@ export async function doorSaleRoutes(
       if (!event) throw new HttpError(404, "Event not found");
       // A sale sent again (say, after its response was lost) comes back as it was. Sales for the
       // event wait on the lock above, so a repeat can't slip in between this check and the insert.
+      // One read, so the status checked below is the status of the sale sent back.
       const earlier = await tx.order.findUnique({
         where: { doorSaleKey: input.saleKey },
         select: {
+          ...saleFields,
           eventId: true,
-          status: true,
-          buyerName: true,
-          buyerEmail: true,
-          tickets: { select: { ticketTypeId: true } },
+          tickets: { select: { ticketTypeId: true, ticketType: { select: { name: true } } } },
         },
       });
       if (earlier) {
@@ -125,11 +124,7 @@ export async function doorSaleRoutes(
             "That sale has since been cancelled. Check the sales list before selling again",
           );
         }
-        const sale = await tx.order.findUniqueOrThrow({
-          where: { doorSaleKey: input.saleKey },
-          select: saleFields,
-        });
-        return { sale, repeat: true };
+        return { sale: earlier, repeat: true };
       }
       if (event.status === "CANCELLED") throw new HttpError(409, "This event is cancelled");
       if (event.status !== "PUBLISHED") {

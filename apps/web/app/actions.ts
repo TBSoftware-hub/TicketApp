@@ -413,7 +413,11 @@ export async function recordDoorSale(
   if (status !== 201 && status !== 200) return { error: errorMessage(data) };
   revalidatePath(page);
   revalidatePath(`/orgs/${orgId}/events/${eventId}`);
-  const { sale } = data as { sale: { id: string; totalCents: number } };
+  const { sale } = data as { sale: { id: string; status: string; totalCents: number } };
+  // Never ask staff to collect cash for a sale that has been cancelled.
+  if (sale.status !== "PAID") {
+    return { error: "That sale has been cancelled. Check the sales list before selling again" };
+  }
   const { quantity, firstName, lastName } = parsed.data;
   return {
     done: {
