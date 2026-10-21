@@ -1,32 +1,20 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
-import { cache } from "react";
-import { api } from "../../../../lib/api";
 import { formatEventTime } from "../../../../lib/events";
 import {
+  canBuyOnline,
+  loadPublicEvent,
+  publicEventPath,
   saleStatusLabel,
   whoCanBuy,
-  type PublicEvent,
-  type PublicTicketType,
 } from "../../../../lib/public-events";
 import { formatPrice } from "../../../../lib/ticket-types";
 import { ShareButton } from "./share-button";
 
 type Params = Promise<{ orgSlug: string; eventSlug: string }>;
 
-// generateMetadata and the page share one request.
-const loadEvent = cache(async (orgSlug: string, eventSlug: string) => {
-  const { status, data } = await api<{ event: PublicEvent; ticketTypes: PublicTicketType[] }>(
-    `/public/events/${encodeURIComponent(orgSlug)}/${encodeURIComponent(eventSlug)}`,
-  );
-  if (status === 404 || status === 400) notFound();
-  if (!("event" in data)) throw new Error(`Couldn't load the event (${status})`);
-  return data;
-});
-
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
   const { orgSlug, eventSlug } = await params;
-  const { event } = await loadEvent(orgSlug, eventSlug);
+  const { event } = await loadPublicEvent(orgSlug, eventSlug);
   const when = formatEventTime(event.startsAt, event.endsAt, event.timezone);
   const description = [when, event.venue].filter(Boolean).join(" · ");
   const title = `${event.name} · ${event.organizationName}`;
@@ -40,7 +28,8 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
 
 export default async function PublicEventPage({ params }: { params: Params }) {
   const { orgSlug, eventSlug } = await params;
-  const { event, ticketTypes } = await loadEvent(orgSlug, eventSlug);
+  const { event, ticketTypes } = await loadPublicEvent(orgSlug, eventSlug);
+  const buyable = ticketTypes.some((tt) => canBuyOnline(tt, event));
   const cancelled = event.status === "CANCELLED";
   const zoneName = event.timezone.split("/").pop()?.replace(/_/g, " ");
 
@@ -94,8 +83,17 @@ export default async function PublicEventPage({ params }: { params: Params }) {
             })}
           </ul>
         )}
-        {!cancelled && ticketTypes.some((tt) => tt.saleStatus === "onSale") && (
-          <p className="muted hint">Online checkout is opening soon.</p>
+        {buyable ? (
+          <p>
+            <a className="button" href={`${publicEventPath(orgSlug, eventSlug)}/checkout`}>
+              Buy tickets
+            </a>
+          </p>
+        ) : (
+          !cancelled &&
+          ticketTypes.some((tt) => tt.saleStatus === "onSale") && (
+            <p className="muted hint">Online checkout is opening soon.</p>
+          )
         )}
       </section>
     </main>

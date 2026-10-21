@@ -3,6 +3,8 @@ import { ticketSaleStatus } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { HttpError } from "../lib/errors";
+import type { Payments } from "../lib/payments";
+import { shownAsTaken } from "../lib/seats";
 import { parse } from "../lib/validate";
 
 const slug = z.string().min(1).max(80);
@@ -11,10 +13,11 @@ const paramsSchema = z.object({ orgSlug: slug, eventSlug: slug });
 /** What anyone with the link can see. No sign-in; drafts stay hidden. */
 export async function publicEventRoutes(
   app: FastifyInstance,
-  { prisma }: { prisma: PrismaClient },
+  { prisma, payments }: { prisma: PrismaClient; payments?: Payments },
 ) {
   app.get("/public/events/:orgSlug/:eventSlug", async (request) => {
     const { orgSlug, eventSlug } = parse(paramsSchema, request.params);
+    const now = new Date();
     const event = await prisma.event.findFirst({
       where: {
         slug: eventSlug,
@@ -30,7 +33,16 @@ export async function publicEventRoutes(
         endsAt: true,
         capacity: true,
         status: true,
-        organization: { select: { name: true, timezone: true } },
+        organization: {
+          select: {
+            name: true,
+            timezone: true,
+            stripeAccountId: true,
+            stripeChargesEnabled: true,
+            stripeLivemode: true,
+            cardFeePaidBy: true,
+          },
+        },
         ticketTypes: {
           orderBy: { createdAt: "asc" },
           select: {
@@ -45,7 +57,8 @@ export async function publicEventRoutes(
             minGrade: true,
             maxGrade: true,
             requiresApproval: true,
-            _count: { select: { tickets: { where: { status: "VALID" } } } },
+            // Seats held for buyers who are paying count too, so the page doesn't oversell.
+            _count: { select: { tickets: { where: shownAsTaken(now) } } },
           },
         },
       },
@@ -55,9 +68,20 @@ export async function publicEventRoutes(
     const { capacity, organization, ticketTypes, ...rest } = event;
     const soldForEvent = ticketTypes.reduce((n, tt) => n + tt._count.tickets, 0);
     const eventRemaining = capacity === null ? null : capacity - soldForEvent;
-    const now = new Date();
+    const onlinePayments = Boolean(
+      payments &&
+      organization.stripeAccountId &&
+      organization.stripeChargesEnabled &&
+      organization.stripeLivemode === payments.livemode,
+    );
     return {
-      event: { ...rest, organizationName: organization.name, timezone: organization.timezone },
+      event: {
+        ...rest,
+        organizationName: organization.name,
+        timezone: organization.timezone,
+        onlinePayments,
+        cardFeePaidBy: organization.cardFeePaidBy,
+      },
       // Counts stay private; buyers only see whether they can buy.
       ticketTypes: ticketTypes.map(({ _count, quantity, ...tt }) => ({
         ...tt,

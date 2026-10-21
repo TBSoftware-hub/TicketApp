@@ -1,45 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { PaymentAccountStatus, Payments } from "../lib/payments";
-import { buildTestApp, uniqueSlug } from "../test-helpers";
-
-/** Stands in for Stripe: hands out account ids and reports whatever status a test sets. */
-function fakePayments() {
-  const created: string[] = [];
-  const statuses = new Map<string, PaymentAccountStatus>();
-  /** Set to hold status reads until the test releases them; `entered` fires when one starts. */
-  const gate: { wait?: Promise<void>; entered?: () => void } = {};
-  const payments: Payments = {
-    livemode: false,
-    async createAccount() {
-      const id = `acct_${randomUUID()}`;
-      created.push(id);
-      return id;
-    },
-    async onboardingLink(accountId, { refreshUrl, returnUrl }) {
-      const params = new URLSearchParams({ refresh: refreshUrl, return: returnUrl });
-      return `https://connect.stripe.test/setup/${accountId}?${params}`;
-    },
-    async accountStatus(accountId) {
-      gate.entered?.();
-      await gate.wait;
-      return (
-        statuses.get(accountId) ?? {
-          chargesEnabled: false,
-          payoutsEnabled: false,
-          detailsSubmitted: false,
-          requirementsDue: 5,
-          pendingVerification: false,
-          disabledReason: "requirements.past_due",
-        }
-      );
-    },
-    async dashboardLink(accountId) {
-      return `https://connect.stripe.test/express/${accountId}`;
-    },
-  };
-  return { payments, created, statuses, gate };
-}
+import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
 describe("payout setup", () => {
   const stripe = fakePayments();
@@ -69,7 +30,11 @@ describe("payout setup", () => {
 
   it("creates one connected account and sends the owner to Stripe to finish setup", async () => {
     const { orgId, call } = await orgWithOwner();
-    expect((await call("GET")).json().payments).toEqual({ available: true, connected: false });
+    expect((await call("GET")).json().payments).toEqual({
+      available: true,
+      connected: false,
+      cardFeePaidBy: "ORGANIZATION",
+    });
 
     const first = await call("POST", "/onboarding");
     expect(first.statusCode).toBe(200);
@@ -131,7 +96,11 @@ describe("payout setup", () => {
       },
     });
 
-    expect((await call("GET")).json().payments).toEqual({ available: true, connected: false });
+    expect((await call("GET")).json().payments).toEqual({
+      available: true,
+      connected: false,
+      cardFeePaidBy: "ORGANIZATION",
+    });
     const stale = await t.prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(stale.stripeChargesEnabled).toBe(false);
     expect((await call("POST", "/dashboard")).statusCode).toBe(409);

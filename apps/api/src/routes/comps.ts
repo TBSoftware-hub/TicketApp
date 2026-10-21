@@ -5,6 +5,9 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
 import { HttpError } from "../lib/errors";
+import { settleLapsedHolds } from "../lib/orders";
+import type { Payments } from "../lib/payments";
+import { takesSeat } from "../lib/seats";
 import { parse } from "../lib/validate";
 
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
@@ -31,7 +34,10 @@ const compFields = {
 /** What the QR code encodes: 128 random bits, so it can't be guessed. */
 export const newTicketCode = () => randomBytes(16).toString("base64url");
 
-export async function compRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
+export async function compRoutes(
+  app: FastifyInstance,
+  { prisma, payments }: { prisma: PrismaClient; payments?: Payments },
+) {
   app.get("/orgs/:orgId/events/:eventId/comps", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
@@ -52,6 +58,15 @@ export async function compRoutes(app: FastifyInstance, { prisma }: { prisma: Pri
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     const { user } = await requireOrgPermission(prisma, request, orgId, "events.manage");
     const input = parse(createCompSchema, request.body);
+    const owned = await prisma.event.findFirst({
+      where: { id: eventId, organizationId: orgId },
+      select: { id: true },
+    });
+    if (!owned) throw new HttpError(404, "Event not found");
+    // Abandoned checkouts give their seats back first. If Stripe can't be asked, they stay taken.
+    await settleLapsedHolds(prisma, payments, eventId).catch((err) =>
+      request.log.warn({ err }, "Couldn't settle lapsed checkouts"),
+    );
     const comp = await prisma.$transaction(async (tx) => {
       // Every ticket issued for the event takes this lock, so two can't both take the last seat.
       const [event] = await tx.$queryRaw<{ capacity: number | null; status: string }[]>`
@@ -67,14 +82,15 @@ export async function compRoutes(app: FastifyInstance, { prisma }: { prisma: Pri
         FOR UPDATE`;
       if (!ticketType) throw new HttpError(400, "Pick a ticket type from this event");
       // Comps skip eligibility rules, but they still take a seat.
+      const seats = takesSeat;
       if (ticketType.quantity !== null) {
         const sold = await tx.ticket.count({
-          where: { ticketTypeId: input.ticketTypeId, status: "VALID" },
+          where: { ticketTypeId: input.ticketTypeId, ...seats },
         });
         if (sold >= ticketType.quantity) throw new HttpError(409, "That ticket type is sold out");
       }
       if (event.capacity !== null) {
-        const issued = await tx.ticket.count({ where: { eventId, status: "VALID" } });
+        const issued = await tx.ticket.count({ where: { eventId, ...seats } });
         if (issued >= event.capacity) throw new HttpError(409, "The event is at capacity");
       }
       const attendee = await tx.attendee.create({

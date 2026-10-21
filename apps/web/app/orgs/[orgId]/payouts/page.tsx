@@ -1,17 +1,23 @@
-import { roleCan } from "@ticketapp/shared";
+import {
+  CARD_FEE_FIXED_CENTS,
+  CARD_FEE_PER_THOUSAND,
+  roleCan,
+  type FeePayer,
+} from "@ticketapp/shared";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { api, errorMessage } from "../../../../lib/api";
 import { loadOrg } from "../../../../lib/org";
-import { openStripe } from "../../../actions";
+import { openStripe, saveCardFeeSetting } from "../../../actions";
 
 export const metadata: Metadata = { title: "Payouts · TicketApp" };
 
 type PaymentsStatus =
-  | { available: boolean; connected: false }
+  | { available: boolean; connected: false; cardFeePaidBy?: FeePayer }
   | {
       available: true;
       connected: true;
+      cardFeePaidBy: FeePayer;
       chargesEnabled: boolean;
       payoutsEnabled: boolean;
       detailsSubmitted: boolean;
@@ -25,10 +31,10 @@ export default async function PayoutsPage({
   searchParams,
 }: {
   params: Promise<{ orgId: string }>;
-  searchParams: Promise<{ error?: string; expired?: string }>;
+  searchParams: Promise<{ error?: string; expired?: string; saved?: string }>;
 }) {
   const { orgId } = await params;
-  const { error, expired } = await searchParams;
+  const { error, expired, saved } = await searchParams;
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "org.manage")) redirect(`/orgs/${orgId}/events`);
   const { status, data } = await api<{ payments: PaymentsStatus }>(
@@ -62,6 +68,11 @@ export default async function PayoutsPage({
       {error && (
         <p className="notice error" role="alert">
           {error}
+        </p>
+      )}
+      {saved && (
+        <p className="notice" role="status">
+          Saved. New orders use this setting.
         </p>
       )}
       {expired && (
@@ -127,6 +138,41 @@ export default async function PayoutsPage({
           </>
         )}
       </section>
+
+      {p?.available && p.cardFeePaidBy && (
+        <section>
+          <h2>Card fee</h2>
+          <p className="muted">
+            Stripe charges {CARD_FEE_PER_THOUSAND / 10}% + {CARD_FEE_FIXED_CENTS}¢ on each card
+            payment. Free tickets cost nothing.
+          </p>
+          <form action={saveCardFeeSetting} className="stack">
+            <input type="hidden" name="orgId" value={orgId} />
+            <fieldset className="stack-tight">
+              <legend>Who pays it?</legend>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name="cardFeePaidBy"
+                  value="ORGANIZATION"
+                  defaultChecked={p.cardFeePaidBy === "ORGANIZATION"}
+                />
+                {org.name}. Buyers pay the ticket price and the fee comes out of what you receive.
+              </label>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name="cardFeePaidBy"
+                  value="BUYER"
+                  defaultChecked={p.cardFeePaidBy === "BUYER"}
+                />
+                The buyer. It&apos;s added at checkout, so you receive the full ticket price.
+              </label>
+            </fieldset>
+            <button type="submit">Save</button>
+          </form>
+        </section>
+      )}
     </main>
   );
 }
