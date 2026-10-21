@@ -20,6 +20,17 @@ const RETRY_BATCH = 20;
 
 const minutesBefore = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000);
 
+/**
+ * Orders with no confirmation email being sent right now. Cancelling waits for one in progress,
+ * so a buyer can't get working-looking tickets after being told they were cancelled.
+ */
+export const notSendingConfirmation = (now = new Date()): Prisma.OrderWhereInput => ({
+  OR: [
+    { confirmationClaimedAt: null },
+    { confirmationClaimedAt: { lt: minutesBefore(now, CLAIM_MINUTES) } },
+  ],
+});
+
 export interface OrderConfirmations {
   /**
    * Emails a paid order's tickets to the buyer, once. Never throws: a failed send is logged and

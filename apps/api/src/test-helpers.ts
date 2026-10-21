@@ -79,8 +79,10 @@ export function fakePayments() {
   const gate: { wait?: Promise<void>; entered?: () => void } = {};
   /** Set to make the next payment page fail to open. */
   const failures = { checkout: false, refund: false };
+  /** The status Stripe gives the next refund it makes. */
+  const refundOutcome = { status: "succeeded" };
   /** Refunds made, by order; asking again for the same order returns the same one, as Stripe does. */
-  const refunds = new Map<string, { id: string; paymentIntentId: string }>();
+  const refunds = new Map<string, { id: string; paymentIntentId: string; status: string }>();
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -133,10 +135,10 @@ export function fakePayments() {
         throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
       }
       const existing = refunds.get(orderId);
-      if (existing) return { id: existing.id };
-      const id = `re_${randomUUID()}`;
-      refunds.set(orderId, { id, paymentIntentId });
-      return { id };
+      if (existing) return { id: existing.id, status: existing.status };
+      const refund = { id: `re_${randomUUID()}`, paymentIntentId, status: refundOutcome.status };
+      refunds.set(orderId, refund);
+      return { id: refund.id, status: refund.status };
     },
   };
   /** As if the buyer finished paying on Stripe's page. */
@@ -147,5 +149,16 @@ export function fakePayments() {
   const expire = (sessionId: string) => {
     checkouts.get(sessionId)!.state = { status: "expired", paymentIntentId: null };
   };
-  return { payments, created, statuses, checkouts, gate, failures, refunds, pay, expire };
+  return {
+    payments,
+    created,
+    statuses,
+    checkouts,
+    gate,
+    failures,
+    refunds,
+    refundOutcome,
+    pay,
+    expire,
+  };
 }

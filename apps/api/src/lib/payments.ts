@@ -27,6 +27,12 @@ export interface CheckoutRequest {
   expiresAt: Date;
 }
 
+export interface RefundResult {
+  id: string;
+  /** Stripe's refund status: `succeeded` or `pending` mean it's on its way; `failed` or `canceled` mean it isn't. */
+  status: string;
+}
+
 export interface CheckoutState {
   status: "open" | "paid" | "expired";
   paymentIntentId: string | null;
@@ -55,7 +61,7 @@ export interface Payments {
    * Gives a paid order's money back in full, taking it back from the school's account. Asking
    * again for the same order returns the refund already made rather than making another.
    */
-  refund(request: { orderId: string; paymentIntentId: string }): Promise<{ id: string }>;
+  refund(request: { orderId: string; paymentIntentId: string }): Promise<RefundResult>;
 }
 
 /** Stripe failures become a 502 people can act on; the original error rides along for the log. */
@@ -181,12 +187,12 @@ export function createStripePayments(secretKey: string): Payments {
           },
           { idempotencyKey: `order-refund-${orderId}` },
         );
-        return { id: refund.id };
+        return { id: refund.id, status: refund.status ?? "pending" };
       } catch (err) {
         // Stripe forgets idempotency keys after a day; a retry after that finds the refund instead.
         if (err instanceof Stripe.errors.StripeError && err.code === "charge_already_refunded") {
           const { data } = await stripe.refunds.list({ payment_intent: paymentIntentId, limit: 1 });
-          if (data[0]) return { id: data[0].id };
+          if (data[0]) return { id: data[0].id, status: data[0].status ?? "pending" };
         }
         throw err;
       }

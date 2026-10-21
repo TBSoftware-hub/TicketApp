@@ -14,7 +14,7 @@ const app = await buildApp(
     mailer: mailerFromEnv(),
     payments: paymentsFromEnv(),
     // Catches confirmation emails that failed, for buyers who don't come back to their order.
-    confirmationRetryMs: 5 * 60_000,
+    emailRetryMs: 5 * 60_000,
   },
   // Number of proxy hops in front of the API. Trusting only those hops means a client can't pick
   // its own IP (and dodge rate limits) by sending a forged X-Forwarded-For.

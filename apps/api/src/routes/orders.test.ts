@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { cancellationNotices } from "../lib/cancellations";
+import type { MailMessage } from "../lib/mailer";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
 describe("orders", () => {
@@ -147,6 +149,10 @@ describe("orders", () => {
     expect(await ids("samANTHA")).toEqual([sam.orderId]);
     expect(await ids(jo.buyerEmail.slice(0, 20))).toEqual([jo.orderId]);
     expect(await ids("pat parent")).toEqual([jo.orderId, sam.orderId]);
+    // A full name matches across first and last names.
+    expect(await ids("  Samantha   LEE ")).toEqual([sam.orderId]);
+    expect(await ids("samantha parent")).toEqual([sam.orderId]);
+    expect(await ids("samantha jo")).toEqual([]);
     expect(await ids("nobody")).toEqual([]);
     expect((await shop.list("x".repeat(101))).statusCode).toBe(400);
   });
@@ -244,6 +250,131 @@ describe("orders", () => {
     });
     const compId = comp.json().comp.id as string;
     expect((await shop.cancel(compId)).json().order).toMatchObject({ status: "CANCELLED" });
+  });
+
+  it("won't record a refund Stripe says failed", async () => {
+    const shop = await onSale();
+    const order = await shop.paid();
+    stripe.refundOutcome.status = "failed";
+    try {
+      const res = await shop.cancel(order.orderId);
+      expect(res.statusCode).toBe(502);
+      expect(res.json().error).toBe("Stripe couldn't refund this payment. Check it in Stripe.");
+    } finally {
+      stripe.refundOutcome.status = "succeeded";
+    }
+    const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(stored).toMatchObject({ status: "PAID", cancelledAt: null });
+  });
+
+  it("records a refund that's still pending at Stripe", async () => {
+    const shop = await onSale();
+    const order = await shop.paid();
+    stripe.refundOutcome.status = "pending";
+    try {
+      expect((await shop.cancel(order.orderId)).json().order.status).toBe("REFUNDED");
+    } finally {
+      stripe.refundOutcome.status = "succeeded";
+    }
+    const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(stored.stripeRefundStatus).toBe("pending");
+  });
+
+  it("waits for a confirmation email that's going out", async () => {
+    const shop = await onSale();
+    const order = await shop.buy(shop.free, ["Jo"]);
+    await t.prisma.order.update({
+      where: { id: order.orderId },
+      data: { confirmationClaimedAt: new Date() },
+    });
+    const res = await shop.cancel(order.orderId);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/going out right now/);
+    const stored = await t.prisma.order.findUniqueOrThrow({
+      where: { id: order.orderId },
+      include: { tickets: true },
+    });
+    expect(stored.status).toBe("PAID");
+    expect(stored.tickets.map((tk) => tk.status)).toEqual(["VALID"]);
+
+    await t.prisma.order.update({
+      where: { id: order.orderId },
+      data: { confirmationClaimedAt: null },
+    });
+    expect((await shop.cancel(order.orderId)).json().order.status).toBe("CANCELLED");
+  });
+
+  it("retries the cancellation email when it couldn't be sent", async () => {
+    const shop = await onSale();
+    const order = await shop.paid();
+    t.mailFailures.remaining = 1;
+    expect((await shop.cancel(order.orderId)).json().order.status).toBe("REFUNDED");
+    const refunded = (m: MailMessage) => m.subject.includes("refunded");
+    expect(mailTo(order.buyerEmail).filter(refunded)).toHaveLength(0);
+    const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(stored.cancellationEmail).not.toBeNull();
+
+    const sent: MailMessage[] = [];
+    const notices = cancellationNotices({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void sent.push(m) },
+      log: t.app.log,
+    });
+    await notices.retry();
+    const mine = sent.filter((m) => m.to === order.buyerEmail);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.idempotencyKey).toBe(`order-cancelled-${order.orderId}`);
+    expect(mine[0]!.text).toContain("$10.00 is on its way back");
+    const after = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(after.cancellationEmail).toBeNull();
+    await notices.retry();
+    expect(sent.filter((m) => m.to === order.buyerEmail)).toHaveLength(1);
+  });
+
+  it("gives up on a cancellation email after a day", async () => {
+    const shop = await onSale();
+    const order = await shop.buy(shop.free, ["Jo"]);
+    t.mailFailures.remaining = 1;
+    await shop.cancel(order.orderId);
+    await t.prisma.order.update({
+      where: { id: order.orderId },
+      data: { cancelledAt: new Date(Date.now() - 24 * 60 * 60_000) },
+    });
+    const sent: MailMessage[] = [];
+    await cancellationNotices({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void sent.push(m) },
+      log: t.app.log,
+    }).retry();
+    expect(sent.filter((m) => m.to === order.buyerEmail)).toHaveLength(0);
+    const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(stored.cancellationEmail).toBeNull();
+  });
+
+  it("keeps who voided a comp and when if it's voided again", async () => {
+    const shop = await onSale();
+    const comp = await t.app.inject({
+      method: "POST",
+      url: `${shop.base}/comps`,
+      headers: shop.owner.headers,
+      payload: { ticketTypeId: shop.general, firstName: "Chap", lastName: "Erone", email: buyer() },
+    });
+    const compId = comp.json().comp.id as string;
+    const voidIt = (headers = shop.owner.headers) =>
+      t.app.inject({ method: "POST", url: `${shop.base}/comps/${compId}/void`, headers });
+    expect((await voidIt()).statusCode).toBe(200);
+    const first = await t.prisma.order.findUniqueOrThrow({ where: { id: compId } });
+
+    const admin = await t.signIn();
+    await t.prisma.membership.create({
+      data: { organizationId: shop.orgId, userId: admin.userId, role: "ADMIN" },
+    });
+    const again = await voidIt(admin.headers);
+    expect(again.statusCode).toBe(200);
+    expect(again.json().comp.status).toBe("CANCELLED");
+    const second = await t.prisma.order.findUniqueOrThrow({ where: { id: compId } });
+    expect(second.cancelledAt).toEqual(first.cancelledAt);
+    expect(second.cancelledById).toBe(shop.owner.userId);
   });
 
   it("won't cancel an order that's still being paid for", async () => {

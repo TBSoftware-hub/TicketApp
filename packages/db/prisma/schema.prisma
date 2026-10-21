@@ -289,6 +289,11 @@ model Order {
   /// What went back to the buyer's card.
   refundedCents            Int           @default(0)
   stripeRefundId           String?       @unique
+  /// Stripe's status for the refund when it was made. Card refunds can stay pending for a while;
+  /// webhooks (E4.6) will follow the ones that do.
+  stripeRefundStatus       String?
+  /// The cancellation email, kept until the provider accepts it so a failed send can be retried.
+  cancellationEmail        Json?
   createdAt                DateTime      @default(now())
   updatedAt                DateTime      @updatedAt
   tickets                  Ticket[]
