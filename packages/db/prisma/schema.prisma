@@ -294,6 +294,10 @@ model Order {
   stripeRefundStatus       String?
   /// The cancellation email, kept until the provider accepts it so a failed send can be retried.
   cancellationEmail        Json?
+  /// Set while a cancellation email is being sent; one older than a few minutes was abandoned.
+  cancellationClaimedAt    DateTime?
+  /// Cancellation email attempts so far; retries stop after a few.
+  cancellationAttempts     Int           @default(0)
   createdAt                DateTime      @default(now())
   updatedAt                DateTime      @updatedAt
   tickets                  Ticket[]

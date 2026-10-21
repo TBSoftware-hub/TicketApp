@@ -1,5 +1,7 @@
 -- AlterTable
-ALTER TABLE "Order" ADD COLUMN     "cancellationEmail" JSONB,
+ALTER TABLE "Order" ADD COLUMN     "cancellationAttempts" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "cancellationClaimedAt" TIMESTAMP(3),
+ADD COLUMN     "cancellationEmail" JSONB,
 ADD COLUMN     "cancelledAt" TIMESTAMP(3),
 ADD COLUMN     "cancelledById" UUID,
 ADD COLUMN     "refundedCents" INTEGER NOT NULL DEFAULT 0,

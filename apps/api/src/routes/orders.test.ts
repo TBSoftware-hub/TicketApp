@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cancellationNotices } from "../lib/cancellations";
+import { cancellationNotices, MAX_CANCELLATION_ATTEMPTS } from "../lib/cancellations";
 import type { MailMessage } from "../lib/mailer";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
@@ -329,6 +329,73 @@ describe("orders", () => {
     expect(after.cancellationEmail).toBeNull();
     await notices.retry();
     expect(sent.filter((m) => m.to === order.buyerEmail)).toHaveLength(1);
+  });
+
+  it("sends a cancellation email once, even with two senders at once", async () => {
+    const shop = await onSale();
+    const order = await shop.buy(shop.free, ["Jo"]);
+    t.mailFailures.remaining = 1;
+    await shop.cancel(order.orderId);
+    const sent: MailMessage[] = [];
+    const notices = cancellationNotices({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void sent.push(m) },
+      log: t.app.log,
+    });
+    await Promise.all([notices.send(order.orderId), notices.send(order.orderId), notices.retry()]);
+    expect(sent.filter((m) => m.to === order.buyerEmail)).toHaveLength(1);
+  });
+
+  it("leaves a cancellation email being sent alone, but takes over an abandoned one", async () => {
+    const shop = await onSale();
+    const order = await shop.buy(shop.free, ["Jo"]);
+    t.mailFailures.remaining = 1;
+    await shop.cancel(order.orderId);
+    const sent: MailMessage[] = [];
+    const notices = cancellationNotices({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void sent.push(m) },
+      log: t.app.log,
+    });
+    await t.prisma.order.update({
+      where: { id: order.orderId },
+      data: { cancellationClaimedAt: new Date() },
+    });
+    await notices.retry();
+    expect(sent.filter((m) => m.to === order.buyerEmail)).toHaveLength(0);
+    await t.prisma.order.update({
+      where: { id: order.orderId },
+      data: { cancellationClaimedAt: new Date(Date.now() - 11 * 60_000) },
+    });
+    await notices.retry();
+    expect(sent.filter((m) => m.to === order.buyerEmail)).toHaveLength(1);
+  });
+
+  it("stops retrying a cancellation email after a few failed attempts", async () => {
+    const shop = await onSale();
+    const order = await shop.buy(shop.free, ["Jo"]);
+    t.mailFailures.remaining = 1;
+    await shop.cancel(order.orderId);
+    let attempts = 1;
+    const notices = cancellationNotices({
+      prisma: t.prisma,
+      mailer: {
+        send: async (m) => {
+          if (m.to !== order.buyerEmail) return;
+          attempts++;
+          throw new Error("Mailbox unavailable");
+        },
+      },
+      log: t.app.log,
+    });
+    for (let i = 0; i <= MAX_CANCELLATION_ATTEMPTS; i++) await notices.send(order.orderId);
+    expect(attempts).toBe(MAX_CANCELLATION_ATTEMPTS);
+    const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(stored).toMatchObject({
+      cancellationEmail: null,
+      cancellationAttempts: MAX_CANCELLATION_ATTEMPTS,
+      cancellationClaimedAt: null,
+    });
   });
 
   it("gives up on a cancellation email after a day", async () => {
