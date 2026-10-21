@@ -35,6 +35,7 @@ export interface PublicEvent {
   /** Whether the organization can take card payments right now. */
   onlinePayments: boolean;
   cardFeePaidBy: FeePayer;
+  serviceFeePaidBy: FeePayer;
 }
 
 /** Path of an event's public page, relative to the site. */

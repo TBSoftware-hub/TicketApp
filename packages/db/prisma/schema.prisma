@@ -48,6 +48,8 @@ model Organization {
   /// Whether stripeAccountId was made with a live key; a test account is useless once live.
   stripeLivemode         Boolean?
   cardFeePaidBy          FeePayer         @default(ORGANIZATION)
+  /// Who covers the platform's per-ticket service fee.
+  serviceFeePaidBy       FeePayer         @default(BUYER)
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
   memberships            Membership[]
@@ -262,6 +264,14 @@ model Order {
   feeCents                 Int           @default(0)
   /// Our estimate of Stripe's fee, kept back from the organization's share when it covers the fee.
   processingFeeCents       Int           @default(0)
+  /// Service fee added to what the buyer pays; zero when the organization covers it.
+  serviceFeeCents          Int           @default(0)
+  /// The service fee the platform keeps from the payment, whoever covers it.
+  platformFeeCents         Int           @default(0)
+  /// Service fee still to hand back to the school after a refund; retried until Stripe takes it.
+  feeReturnDueCents        Int           @default(0)
+  /// When the fee return was last tried, so the retries reach every order in turn.
+  feeReturnTriedAt         DateTime?
   totalCents               Int
   /// SHA-256 of the key in the buyer's order link; the link is the only way to see the order.
   viewKeyHash              String?       @unique

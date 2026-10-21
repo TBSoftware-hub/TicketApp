@@ -78,11 +78,15 @@ export function fakePayments() {
   /** Set to hold status reads until the test releases them; `entered` fires when one starts. */
   const gate: { wait?: Promise<void>; entered?: () => void } = {};
   /** Set to make the next payment page fail to open. */
-  const failures = { checkout: false, refund: false };
+  const failures = { checkout: false, refund: false, feeReturn: false };
   /** The status Stripe gives the next refund it makes. */
   const refundOutcome = { status: "succeeded" };
   /** Refunds made, by order; asking again for the same order returns the same one, as Stripe does. */
   const refunds = new Map<string, { id: string; paymentIntentId: string; status: string }>();
+  /** Fees handed back to schools, by order. */
+  const returnedFees = new Map<string, number>();
+  /** Orders whose fee return always fails. */
+  const failingFeeReturns = new Set<string>();
   const payments: Payments = {
     livemode: false,
     async createAccount() {
@@ -140,6 +144,14 @@ export function fakePayments() {
       refunds.set(orderId, refund);
       return { id: refund.id, status: refund.status };
     },
+    async returnFee({ orderId, cents }) {
+      if (failures.feeReturn || failingFeeReturns.has(orderId)) {
+        failures.feeReturn = false;
+        throw new HttpError(502, "Stripe didn't respond. Try again in a minute.");
+      }
+      // As with Stripe, only what hasn't gone back yet is sent.
+      returnedFees.set(orderId, Math.max(cents, returnedFees.get(orderId) ?? 0));
+    },
   };
   /** As if the buyer finished paying on Stripe's page. */
   const pay = (sessionId: string) => {
@@ -157,6 +169,8 @@ export function fakePayments() {
     gate,
     failures,
     refunds,
+    returnedFees,
+    failingFeeReturns,
     refundOutcome,
     pay,
     expire,

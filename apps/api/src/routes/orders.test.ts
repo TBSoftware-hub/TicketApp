@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancellationNotices, MAX_CANCELLATION_ATTEMPTS } from "../lib/cancellations";
+import { feeReturns } from "../lib/fee-returns";
 import type { MailMessage } from "../lib/mailer";
 import { buildTestApp, fakePayments, uniqueSlug } from "../test-helpers";
 
@@ -126,7 +127,8 @@ describe("orders", () => {
       status: "PAID",
       paymentMethod: "CARD",
       buyerEmail: first.buyerEmail,
-      totalCents: 2000,
+      // Two $10 tickets and the buyer's $0.75 service fee on each.
+      totalCents: 2150,
       refundedCents: 0,
     });
     const tickets = orders[1].tickets as {
@@ -169,27 +171,30 @@ describe("orders", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().order).toMatchObject({
       status: "REFUNDED",
-      refundedCents: 2000,
+      refundedCents: 2150,
       cancelledBy: { name: "Test Staff" },
       tickets: [{ status: "VOID" }, { status: "VOID" }],
     });
     expect(stripe.refunds.get(order.orderId)).toMatchObject({
       paymentIntentId: stripePaymentIntentId,
     });
+    // The school gets the service fee back, so it's only out Stripe's fee.
+    expect(stripe.returnedFees.get(order.orderId)).toBe(150);
     const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
     expect(stored.stripeRefundId).toBe(stripe.refunds.get(order.orderId)!.id);
+    expect(stored.feeReturnDueCents).toBe(0);
     // The seats go back on sale.
     expect(await shop.sold()).toBe(0);
 
     const emails = mailTo(order.buyerEmail).filter((m) => m.subject.includes("refunded"));
     expect(emails).toHaveLength(1);
     expect(emails[0]!.subject).toBe("Your tickets for After Prom were refunded");
-    expect(emails[0]!.text).toContain("$20.00 is on its way back to the card you paid with");
+    expect(emails[0]!.text).toContain("$21.50 is on its way back to the card you paid with");
     expect(emails[0]!.idempotencyKey).toBe(`order-cancelled-${order.orderId}`);
 
     // The buyer's order page says what happened.
     const page = (await shop.view(order.orderId, order.key)).json().order;
-    expect(page).toMatchObject({ status: "REFUNDED", refundedCents: 2000 });
+    expect(page).toMatchObject({ status: "REFUNDED", refundedCents: 2150 });
     expect(page.cancelledAt).not.toBeNull();
   });
 
@@ -279,6 +284,8 @@ describe("orders", () => {
     }
     const stored = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
     expect(stored).toMatchObject({ status: "PAID", cancelledAt: null });
+    // Nothing was refunded, so the platform keeps the service fee.
+    expect(stripe.returnedFees.get(order.orderId)).toBeUndefined();
   });
 
   it("records a refund that's still pending at Stripe", async () => {
@@ -318,6 +325,65 @@ describe("orders", () => {
     expect((await shop.cancel(order.orderId)).json().order.status).toBe("CANCELLED");
   });
 
+  it("cancels the order even when the service fee can't go back yet, and retries it", async () => {
+    const shop = await onSale();
+    const order = await shop.paid();
+    stripe.failures.feeReturn = true;
+    const res = await shop.cancel(order.orderId);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().order).toMatchObject({ status: "REFUNDED", tickets: [{ status: "VOID" }] });
+    expect(mailTo(order.buyerEmail).filter((m) => m.subject.includes("refunded"))).toHaveLength(1);
+    expect(stripe.returnedFees.get(order.orderId)).toBeUndefined();
+    const owed = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(owed.feeReturnDueCents).toBe(75);
+
+    await feeReturns({ prisma: t.prisma, payments: stripe.payments, log: t.app.log }).retry();
+    expect(stripe.returnedFees.get(order.orderId)).toBe(75);
+    const settled = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
+    expect(settled.feeReturnDueCents).toBe(0);
+  });
+
+  it("keeps retrying every fee return, even behind ones that keep failing", async () => {
+    const shop = await onSale();
+    const hourAgo = Date.now() - 60 * 60_000;
+    const refunded = (cancelledAt: Date) =>
+      t.prisma.order.create({
+        data: {
+          eventId: shop.eventId,
+          buyerName: "Pat Parent",
+          buyerEmail: buyer(),
+          status: "REFUNDED",
+          paymentMethod: "CARD",
+          subtotalCents: 1000,
+          totalCents: 1075,
+          platformFeeCents: 75,
+          feeReturnDueCents: 75,
+          stripePaymentIntentId: `pi_${randomUUID()}`,
+          cancelledAt,
+        },
+      });
+    const stuck = [];
+    for (let i = 0; i < 20; i++) stuck.push(await refunded(new Date(hourAgo - 60_000)));
+    for (const order of stuck) stripe.failingFeeReturns.add(order.id);
+    const later = await refunded(new Date(hourAgo));
+
+    const fees = feeReturns({ prisma: t.prisma, payments: stripe.payments, log: t.app.log });
+    try {
+      await fees.retry();
+      await fees.retry();
+    } finally {
+      stripe.failingFeeReturns.clear();
+    }
+    expect(stripe.returnedFees.get(later.id)).toBe(75);
+    const settled = await t.prisma.order.findUniqueOrThrow({ where: { id: later.id } });
+    expect(settled.feeReturnDueCents).toBe(0);
+    // Tidied away so they don't crowd later sweeps.
+    await t.prisma.order.updateMany({
+      where: { id: { in: stuck.map((o) => o.id) } },
+      data: { feeReturnDueCents: 0 },
+    });
+  });
+
   it("retries the cancellation email when it couldn't be sent", async () => {
     const shop = await onSale();
     const order = await shop.paid();
@@ -338,7 +404,7 @@ describe("orders", () => {
     const mine = sent.filter((m) => m.to === order.buyerEmail);
     expect(mine).toHaveLength(1);
     expect(mine[0]!.idempotencyKey).toBe(`order-cancelled-${order.orderId}`);
-    expect(mine[0]!.text).toContain("$10.00 is on its way back");
+    expect(mine[0]!.text).toContain("$10.75 is on its way back");
     const after = await t.prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
     expect(after.cancellationEmail).toBeNull();
     await notices.retry();

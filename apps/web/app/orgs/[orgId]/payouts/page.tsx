@@ -1,6 +1,7 @@
 import {
   CARD_FEE_FIXED_CENTS,
   CARD_FEE_PER_THOUSAND,
+  SERVICE_FEE_CENTS,
   roleCan,
   type FeePayer,
 } from "@ticketapp/shared";
@@ -8,16 +9,17 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { api, errorMessage } from "../../../../lib/api";
 import { loadOrg } from "../../../../lib/org";
-import { openStripe, saveCardFeeSetting } from "../../../actions";
+import { openStripe, saveFeeSettings } from "../../../actions";
 
 export const metadata: Metadata = { title: "Payouts · TicketApp" };
 
 type PaymentsStatus =
-  | { available: boolean; connected: false; cardFeePaidBy?: FeePayer }
+  | { available: boolean; connected: false; cardFeePaidBy?: FeePayer; serviceFeePaidBy?: FeePayer }
   | {
       available: true;
       connected: true;
       cardFeePaidBy: FeePayer;
+      serviceFeePaidBy: FeePayer;
       chargesEnabled: boolean;
       payoutsEnabled: boolean;
       detailsSubmitted: boolean;
@@ -139,17 +141,18 @@ export default async function PayoutsPage({
         )}
       </section>
 
-      {p?.available && p.cardFeePaidBy && (
+      {p?.available && p.cardFeePaidBy && p.serviceFeePaidBy && (
         <section>
-          <h2>Card fee</h2>
+          <h2>Fees</h2>
           <p className="muted">
             Stripe charges {CARD_FEE_PER_THOUSAND / 10}% + {CARD_FEE_FIXED_CENTS}¢ on each card
-            payment. Free tickets cost nothing.
+            payment, and TicketApp charges a {SERVICE_FEE_CENTS}¢ service fee on each paid ticket.
+            Free tickets cost nothing. If you refund an order, the service fee comes back to you.
           </p>
-          <form action={saveCardFeeSetting} className="stack">
+          <form action={saveFeeSettings} className="stack">
             <input type="hidden" name="orgId" value={orgId} />
             <fieldset className="stack-tight">
-              <legend>Who pays it?</legend>
+              <legend>Who pays the card fee?</legend>
               <label className="choice">
                 <input
                   type="radio"
@@ -167,6 +170,27 @@ export default async function PayoutsPage({
                   defaultChecked={p.cardFeePaidBy === "BUYER"}
                 />
                 The buyer. It&apos;s added at checkout, so you receive the full ticket price.
+              </label>
+            </fieldset>
+            <fieldset className="stack-tight">
+              <legend>Who pays the service fee?</legend>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name="serviceFeePaidBy"
+                  value="ORGANIZATION"
+                  defaultChecked={p.serviceFeePaidBy === "ORGANIZATION"}
+                />
+                {org.name}. It comes out of what you receive.
+              </label>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name="serviceFeePaidBy"
+                  value="BUYER"
+                  defaultChecked={p.serviceFeePaidBy === "BUYER"}
+                />
+                The buyer. It&apos;s added at checkout.
               </label>
             </fieldset>
             <button type="submit">Save</button>

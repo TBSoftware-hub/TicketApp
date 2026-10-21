@@ -41,6 +41,7 @@ export async function publicEventRoutes(
             stripeChargesEnabled: true,
             stripeLivemode: true,
             cardFeePaidBy: true,
+            serviceFeePaidBy: true,
           },
         },
         ticketTypes: {
@@ -81,6 +82,7 @@ export async function publicEventRoutes(
         timezone: organization.timezone,
         onlinePayments,
         cardFeePaidBy: organization.cardFeePaidBy,
+        serviceFeePaidBy: organization.serviceFeePaidBy,
       },
       // Counts stay private; buyers only see whether they can buy.
       ticketTypes: ticketTypes.map(({ _count, quantity, ...tt }) => ({

@@ -1,6 +1,6 @@
 "use client";
 
-import { MAX_GRADE, MIN_GRADE, orderTotal, type FeePayer } from "@ticketapp/shared";
+import { MAX_GRADE, MIN_GRADE, orderTotal, type FeeSettings } from "@ticketapp/shared";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { API_URL, errorMessage, UNREACHABLE } from "../../../../../lib/api";
@@ -27,12 +27,12 @@ export function CheckoutForm({
   orgSlug,
   eventSlug,
   ticketTypes,
-  cardFeePaidBy,
+  fees,
 }: {
   orgSlug: string;
   eventSlug: string;
   ticketTypes: PublicTicketType[];
-  cardFeePaidBy: FeePayer;
+  fees: FeeSettings;
 }) {
   const router = useRouter();
   // One attendee per ticket, grouped by ticket type.
@@ -47,7 +47,11 @@ export function CheckoutForm({
     (sum, tt) => sum + tt.priceCents * (attendees[tt.id]?.length ?? 0),
     0,
   );
-  const { feeCents, totalCents } = orderTotal(subtotal, cardFeePaidBy);
+  const paidTickets = ticketTypes.reduce(
+    (n, tt) => n + (tt.priceCents > 0 ? (attendees[tt.id]?.length ?? 0) : 0),
+    0,
+  );
+  const { feeCents, serviceFeeCents, totalCents } = orderTotal(subtotal, paidTickets, fees);
 
   function setQuantity(id: string, quantity: number) {
     setAttendees((all) => {
@@ -229,17 +233,23 @@ export function CheckoutForm({
           </span>
           <span>{formatPrice(subtotal)}</span>
         </span>
+        {serviceFeeCents > 0 && (
+          <span className="ticket-head">
+            <span>Service fee</span>
+            <span>{formatPrice(serviceFeeCents)}</span>
+          </span>
+        )}
         {feeCents > 0 && (
-          <>
-            <span className="ticket-head">
-              <span>Card processing fee</span>
-              <span>{formatPrice(feeCents)}</span>
-            </span>
-            <span className="ticket-head">
-              <strong>Total</strong>
-              <strong>{formatPrice(totalCents)}</strong>
-            </span>
-          </>
+          <span className="ticket-head">
+            <span>Card processing fee</span>
+            <span>{formatPrice(feeCents)}</span>
+          </span>
+        )}
+        {totalCents !== subtotal && (
+          <span className="ticket-head">
+            <strong>Total</strong>
+            <strong>{formatPrice(totalCents)}</strong>
+          </span>
         )}
         <span className="muted hint">
           {count === 0

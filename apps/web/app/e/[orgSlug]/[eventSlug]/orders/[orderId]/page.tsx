@@ -15,6 +15,7 @@ interface PublicOrder {
   subtotalCents: number;
   discountCents: number;
   feeCents: number;
+  serviceFeeCents: number;
   totalCents: number;
   refundedCents: number;
   /** Set when the organizers cancelled it, rather than the buyer never paying. */
@@ -137,6 +138,12 @@ export default async function OrderPage({
           <span className="ticket-head">
             <span>Promo code</span>
             <span>−{formatPrice(order.discountCents)}</span>
+          </span>
+        )}
+        {order.serviceFeeCents > 0 && (
+          <span className="ticket-head">
+            <span>Service fee</span>
+            <span>{formatPrice(order.serviceFeeCents)}</span>
           </span>
         )}
         {order.feeCents > 0 && (

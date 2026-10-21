@@ -4,6 +4,7 @@ import {
   checkEligibility,
   checkoutSchema,
   orderTotal,
+  paidTicketCount,
   promoCodeProblem,
   promoDiscountCents,
   ticketSaleStatus,
@@ -37,6 +38,7 @@ const orderFields = {
   subtotalCents: true,
   discountCents: true,
   feeCents: true,
+  serviceFeeCents: true,
   totalCents: true,
   refundedCents: true,
   cancelledAt: true,
@@ -121,6 +123,7 @@ export async function checkoutRoutes(
               stripeChargesEnabled: true,
               stripeLivemode: true,
               cardFeePaidBy: true,
+              serviceFeePaidBy: true,
             },
           },
         },
@@ -235,6 +238,7 @@ export async function checkoutRoutes(
         const subtotalCents = lines.reduce((sum, l) => sum + l.unitCents * l.quantity, 0);
         let discountCents = 0;
         let promoCodeId: string | null = null;
+        let promoRules: Parameters<typeof paidTicketCount>[0] = null;
         if (input.promoCode) {
           // Locked so two orders can't both take a code's last use.
           const [promo] = await tx.$queryRaw<
@@ -268,9 +272,12 @@ export async function checkoutRoutes(
             throw new HttpError(400, "That code doesn't apply to these tickets");
           }
           promoCodeId = promo.id;
+          promoRules = rules;
         }
 
-        const totals = orderTotal(subtotalCents - discountCents, org.cardFeePaidBy);
+        // Tickets that are free, or that the code makes free, carry no service fee.
+        const paidTickets = paidTicketCount(promoRules, lines);
+        const totals = orderTotal(subtotalCents - discountCents, paidTickets, org);
         const free = totals.totalCents === 0;
         if (!free && !accountId) {
           throw new HttpError(409, "This event isn't taking card payments yet");
@@ -306,7 +313,14 @@ export async function checkoutRoutes(
               })),
             },
           },
-          select: { id: true, totalCents: true, feeCents: true, processingFeeCents: true },
+          select: {
+            id: true,
+            totalCents: true,
+            feeCents: true,
+            serviceFeeCents: true,
+            processingFeeCents: true,
+            platformFeeCents: true,
+          },
         });
       });
 
@@ -324,13 +338,17 @@ export async function checkoutRoutes(
           lines: [
             {
               name: `${event.name}: ${input.tickets.length} ${input.tickets.length === 1 ? "ticket" : "tickets"}`,
-              amountCents: order.totalCents - order.feeCents,
+              amountCents: order.totalCents - order.feeCents - order.serviceFeeCents,
             },
+            ...(order.serviceFeeCents > 0
+              ? [{ name: "Service fee", amountCents: order.serviceFeeCents }]
+              : []),
             ...(order.feeCents > 0
               ? [{ name: "Card processing fee", amountCents: order.feeCents }]
               : []),
           ],
-          applicationFeeCents: order.processingFeeCents,
+          // Covers Stripe's fee and the service fee; the rest goes to the organization.
+          applicationFeeCents: order.processingFeeCents + order.platformFeeCents,
           buyerEmail: input.buyerEmail,
           successUrl: `${eventPath}/orders/${order.id}?key=${viewKey}`,
           // Lets the checkout page close the payment page and give the seats back.

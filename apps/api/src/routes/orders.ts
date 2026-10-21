@@ -6,6 +6,7 @@ import { requireOrgPermission } from "../lib/auth";
 import { HttpError } from "../lib/errors";
 import { cancellationEmail, type CancellationNotices } from "../lib/cancellations";
 import { notSendingConfirmation } from "../lib/confirmations";
+import type { FeeReturns } from "../lib/fee-returns";
 import type { Payments, RefundResult } from "../lib/payments";
 import { parse } from "../lib/validate";
 
@@ -48,7 +49,13 @@ export async function orderRoutes(
     prisma,
     payments,
     notices,
-  }: { prisma: PrismaClient; payments?: Payments; notices: CancellationNotices },
+    fees,
+  }: {
+    prisma: PrismaClient;
+    payments?: Payments;
+    notices: CancellationNotices;
+    fees: FeeReturns;
+  },
 ) {
   const findEvent = async (orgId: string, eventId: string) => {
     const event = await prisma.event.findFirst({
@@ -103,6 +110,7 @@ export async function orderRoutes(
         status: true,
         paymentMethod: true,
         totalCents: true,
+        platformFeeCents: true,
         stripePaymentIntentId: true,
         buyerName: true,
         buyerEmail: true,
@@ -152,6 +160,8 @@ export async function orderRoutes(
           refundedCents,
           stripeRefundId: refund?.id ?? null,
           stripeRefundStatus: refund?.status ?? null,
+          // The school isn't left paying the service fee on tickets it gave the money back for.
+          feeReturnDueCents: refund ? order.platformFeeCents : 0,
           // A confirmation email that hasn't gone out yet never will.
           emailViewKey: null,
           confirmationEmail: Prisma.DbNull,
@@ -172,7 +182,10 @@ export async function orderRoutes(
     });
     // A refund already made is found again by the next attempt, so trying again is safe.
     if (outcome === "busy") throw new HttpError(409, SENDING_CONFIRMATION);
-    if (outcome === "cancelled") await notices.send(orderId);
+    if (outcome === "cancelled") {
+      await notices.send(orderId);
+      await fees.send(orderId);
+    }
 
     return {
       order: await prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: orderFields }),

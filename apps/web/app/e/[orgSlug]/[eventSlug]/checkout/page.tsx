@@ -68,7 +68,10 @@ export default async function CheckoutPage({
           orgSlug={orgSlug}
           eventSlug={eventSlug}
           ticketTypes={buyable}
-          cardFeePaidBy={event.cardFeePaidBy}
+          fees={{
+            cardFeePaidBy: event.cardFeePaidBy,
+            serviceFeePaidBy: event.serviceFeePaidBy,
+          }}
         />
       )}
     </main>

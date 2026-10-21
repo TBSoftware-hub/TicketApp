@@ -85,6 +85,28 @@ export function promoDiscountCents(
   return Math.min(discount, eligibleCents);
 }
 
+/**
+ * How many tickets in an order cost the buyer something, so carry the service fee. Tickets that
+ * are free, or that a code makes free, don't count. A code taking a set amount off only frees the
+ * tickets it applies to when it covers all of them, since it can't be pinned to one ticket.
+ */
+export function paidTicketCount(
+  promo: Pick<PromoRules, "discountType" | "discountValue" | "ticketTypeIds"> | null,
+  lines: OrderLine[],
+): number {
+  const applies = (l: OrderLine) =>
+    !!promo && (promo.ticketTypeIds.length === 0 || promo.ticketTypeIds.includes(l.ticketTypeId));
+  const eligibleCents = lines.filter(applies).reduce((sum, l) => sum + l.unitCents * l.quantity, 0);
+  // Rounded as promoDiscountCents rounds it, so a line it discounts to nothing counts as free.
+  const free = (l: OrderLine) =>
+    applies(l) &&
+    (promo!.discountType === "PERCENT"
+      ? Math.round((l.unitCents * l.quantity * promo!.discountValue) / 100) >=
+        l.unitCents * l.quantity
+      : promo!.discountValue >= eligibleCents);
+  return lines.reduce((n, l) => n + (l.unitCents > 0 && !free(l) ? l.quantity : 0), 0);
+}
+
 /** "20% off", "$5.00 off". */
 export function formatDiscount(
   promo: Pick<PromoRules, "discountType" | "discountValue">,

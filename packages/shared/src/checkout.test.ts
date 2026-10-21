@@ -1,32 +1,61 @@
 import { describe, expect, it } from "vitest";
-import { checkoutSchema, orderTotal } from "./index";
+import { checkoutSchema, orderTotal, SERVICE_FEE_CENTS } from "./index";
 
 describe("orderTotal", () => {
-  it("leaves the price alone when the organization covers the fee", () => {
-    expect(orderTotal(1000, "ORGANIZATION")).toEqual({
+  const org = { cardFeePaidBy: "ORGANIZATION", serviceFeePaidBy: "ORGANIZATION" } as const;
+  const buyer = { cardFeePaidBy: "BUYER", serviceFeePaidBy: "BUYER" } as const;
+
+  it("leaves the price alone when the organization covers both fees", () => {
+    expect(orderTotal(1000, 1, org)).toEqual({
       feeCents: 0,
+      serviceFeeCents: 0,
       processingFeeCents: 59,
+      platformFeeCents: SERVICE_FEE_CENTS,
       totalCents: 1000,
+    });
+  });
+
+  it("adds the service fee for each paid ticket when the buyer covers it", () => {
+    expect(orderTotal(2000, 2, { ...org, serviceFeePaidBy: "BUYER" })).toEqual({
+      feeCents: 0,
+      serviceFeeCents: 150,
+      // Stripe takes its share of the service fee too.
+      processingFeeCents: 92,
+      platformFeeCents: 150,
+      totalCents: 2150,
     });
   });
 
   it("grosses up the total so the organization still gets the full price", () => {
     for (const amount of [1, 99, 500, 1000, 2500, 123_456]) {
-      const { feeCents, totalCents } = orderTotal(amount, "BUYER");
-      expect(totalCents).toBe(amount + feeCents);
-      // What Stripe keeps from the total leaves at least the ticket price.
-      const stripeFee = Math.round((totalCents * 29) / 1000) + 30;
-      expect(totalCents - stripeFee).toBeGreaterThanOrEqual(amount);
-      expect(totalCents - stripeFee).toBeLessThanOrEqual(amount + 1);
+      for (const tickets of [1, 3]) {
+        const t = orderTotal(amount, tickets, buyer);
+        expect(t.totalCents).toBe(amount + t.serviceFeeCents + t.feeCents);
+        expect(t.serviceFeeCents).toBe(tickets * SERVICE_FEE_CENTS);
+        // After Stripe and the platform take their share, the ticket price is left.
+        const stripeFee = Math.round((t.totalCents * 29) / 1000) + 30;
+        const left = t.totalCents - stripeFee - t.platformFeeCents;
+        expect(left).toBeGreaterThanOrEqual(amount);
+        expect(left).toBeLessThanOrEqual(amount + 1);
+      }
     }
   });
 
   it("charges nothing on a free order", () => {
-    expect(orderTotal(0, "BUYER")).toEqual({ feeCents: 0, processingFeeCents: 0, totalCents: 0 });
+    expect(orderTotal(0, 0, buyer)).toEqual({
+      feeCents: 0,
+      serviceFeeCents: 0,
+      processingFeeCents: 0,
+      platformFeeCents: 0,
+      totalCents: 0,
+    });
   });
 
   it("never keeps back more than a tiny order is worth", () => {
-    expect(orderTotal(20, "ORGANIZATION").processingFeeCents).toBe(20);
+    const t = orderTotal(60, 1, org);
+    expect(t.processingFeeCents).toBe(32);
+    expect(t.processingFeeCents + t.platformFeeCents).toBe(60);
+    expect(orderTotal(20, 1, org)).toMatchObject({ processingFeeCents: 20, platformFeeCents: 0 });
   });
 });
 

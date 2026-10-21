@@ -76,7 +76,8 @@ export default async function OrdersPage({
       <h1>Orders</h1>
       <p className="muted">
         Cancelling an order voids its tickets and frees their seats. A card payment is refunded in
-        full from your Stripe balance; Stripe keeps its processing fee.
+        full from your Stripe balance; Stripe keeps its processing fee, and the service fee comes
+        back to you.
       </p>
 
       <form className="search-bar" role="search">

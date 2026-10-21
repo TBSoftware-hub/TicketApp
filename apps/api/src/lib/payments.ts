@@ -19,7 +19,7 @@ export interface CheckoutRequest {
   orderId: string;
   /** Shown on Stripe's payment page; our page has already shown the breakdown. */
   lines: { name: string; amountCents: number }[];
-  /** Kept by the platform to cover Stripe's fee. */
+  /** Kept by the platform to cover Stripe's fee and the service fee. */
   applicationFeeCents: number;
   buyerEmail: string;
   successUrl: string;
@@ -62,6 +62,11 @@ export interface Payments {
    * again for the same order returns the refund already made rather than making another.
    */
   refund(request: { orderId: string; paymentIntentId: string }): Promise<RefundResult>;
+  /**
+   * Hands the school back up to `cents` of the fee the platform kept on a payment. Only what
+   * hasn't been handed back yet is sent, so asking again sends nothing more.
+   */
+  returnFee(request: { orderId: string; paymentIntentId: string; cents: number }): Promise<void>;
 }
 
 /** Stripe failures become a 502 people can act on; the original error rides along for the log. */
@@ -180,7 +185,8 @@ export function createStripePayments(secretKey: string): Payments {
           {
             payment_intent: paymentIntentId,
             // The school got the money, so it gives it back. Stripe doesn't return its own fee on
-            // a refund, so the fee we kept to pay it stays with us.
+            // a refund, so the fee we kept to pay it stays with us. The service fee goes back
+            // separately, through returnFee.
             reverse_transfer: true,
             refund_application_fee: false,
             metadata: { orderId },
@@ -197,7 +203,23 @@ export function createStripePayments(secretKey: string): Payments {
         throw err;
       }
     },
+    async returnFee({ orderId, paymentIntentId, cents }) {
+      const intent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+        expand: ["latest_charge.application_fee"],
+      });
+      const charge = intent.latest_charge;
+      const fee = typeof charge === "object" ? charge?.application_fee : null;
+      if (!fee || typeof fee !== "object") return;
+      const owed = Math.min(cents, fee.amount) - fee.amount_refunded;
+      if (owed <= 0) return;
+      await stripe.applicationFees.createRefund(
+        fee.id,
+        { amount: owed, metadata: { orderId } },
+        { idempotencyKey: `order-fee-return-${orderId}` },
+      );
+    },
   };
+
   return {
     livemode: secretKey.startsWith("sk_live_") || secretKey.startsWith("rk_live_"),
     createAccount: (org) => viaStripe(() => payments.createAccount(org)),
@@ -208,6 +230,7 @@ export function createStripePayments(secretKey: string): Payments {
     checkoutState: (id) => viaStripe(() => payments.checkoutState(id)),
     expireCheckout: (id) => viaStripe(() => payments.expireCheckout(id)),
     refund: (r) => viaStripe(() => payments.refund(r)),
+    returnFee: (r) => viaStripe(() => payments.returnFee(r)),
   };
 }
 
