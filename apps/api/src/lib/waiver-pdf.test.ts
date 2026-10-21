@@ -36,15 +36,36 @@ describe("signed waiver PDFs", () => {
         userAgent: null,
         documentHash: waiverDocumentHash(version),
         answers: { photo: true },
-        guardian: null,
+      },
+      {
+        id: "s2",
+        waiverTemplateId: "w1",
+        templateVersion: 2,
+        signerRole: "GUARDIAN",
+        signerName: "Ana Kim",
+        signedAt: new Date("2026-11-01T16:00:00Z"),
+        ipAddress: "203.0.113.9",
+        userAgent: "Phone",
+        documentHash: waiverDocumentHash(version),
+        answers: {},
       },
     ],
+    // The email went out; the text didn't, so the phone number isn't listed as sent to.
+    guardianRequest: {
+      emailSentAt: new Date("2026-11-01T15:31:00Z"),
+      textSentAt: null,
+      guardian: { email: "ana@example.com", phone: "+15552013344" },
+    },
   };
 
   it("lays out long wording over several pages, and shows unsupported characters as ?", async () => {
     const text = pdfText(await waiverPdf(ticket, [version], new Date("2026-11-02T00:00:00Z")));
     expect(text).toContain("Zoë Kim · Student");
-    expect(text).toContain("Have fun ? at the dance.");
+    const lines = text.split("\n");
+    // Line breaks in the wording stay line breaks.
+    expect(lines).toContain("Have fun ? at the dance.");
+    expect(text).not.toContain("??");
+    expect(text).toContain("Link sent to: ana@example.com\n");
     expect(text).toContain("Winter Formal, Dec 11, 2026, 7:00:00 PM CST");
     expect(text).toContain("Photos are OK: Yes");
     expect(text).toContain("Allergies: (left blank)");
@@ -54,5 +75,12 @@ describe("signed waiver PDFs", () => {
     expect(
       text.split("\n").filter((l) => l.startsWith("Winter Formal · Zoë Kim")).length,
     ).toBeGreaterThan(2);
+  });
+
+  it("lays out the longest allowed wording quickly, even with no spaces", async () => {
+    const started = performance.now();
+    const pdf = await waiverPdf(ticket, [{ ...version, body: "x".repeat(20_000) }]);
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(pdfText(pdf)).toContain("x".repeat(50));
   });
 });

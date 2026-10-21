@@ -29,6 +29,13 @@ export const ticketWaiverFields = {
       userAgent: true,
       documentHash: true,
       answers: true,
+    },
+  },
+  // Where the guardian's signing link actually went, channel by channel.
+  guardianRequest: {
+    select: {
+      emailSentAt: true,
+      textSentAt: true,
       guardian: { select: { email: true, phone: true } },
     },
   },
@@ -120,26 +127,40 @@ class Writer {
       .join("");
   }
 
+  /**
+   * Breaks text into lines that fit the page. Widths are added up a character at a time, so even
+   * the longest waiver lays out in one pass.
+   */
   private wrap(text: string, font: PDFFont, size: number) {
+    const width = (ch: string) => font.widthOfTextAtSize(ch, size);
+    const space = width(" ");
     const lines: string[] = [];
-    for (const paragraph of this.clean(text, font).split(/\r?\n/)) {
+    // Split first: line breaks aren't in the font, so cleaning would turn them into "?".
+    for (const paragraph of text.split(/\r?\n/)) {
       let line = "";
-      for (const word of paragraph.split(" ")) {
-        const next = line ? `${line} ${word}` : word;
-        if (font.widthOfTextAtSize(next, size) <= WIDTH) {
-          line = next;
+      let lineWidth = 0;
+      for (const word of this.clean(paragraph, font).split(" ")) {
+        const chars = [...word];
+        const widths = chars.map(width);
+        const wordWidth = widths.reduce((a, b) => a + b, 0);
+        if (line && lineWidth + space + wordWidth <= WIDTH) {
+          line += ` ${word}`;
+          lineWidth += space + wordWidth;
           continue;
         }
         if (line) lines.push(line);
         // A single word wider than the page (a long hash or URL) is broken where it overflows.
-        let rest = word;
-        while (font.widthOfTextAtSize(rest, size) > WIDTH) {
-          let cut = rest.length - 1;
-          while (cut > 1 && font.widthOfTextAtSize(rest.slice(0, cut), size) > WIDTH) cut--;
-          lines.push(rest.slice(0, cut));
-          rest = rest.slice(cut);
-        }
-        line = rest;
+        line = "";
+        lineWidth = 0;
+        chars.forEach((ch, i) => {
+          if (line && lineWidth + widths[i]! > WIDTH) {
+            lines.push(line);
+            line = "";
+            lineWidth = 0;
+          }
+          line += ch;
+          lineWidth += widths[i]!;
+        });
       }
       lines.push(line);
     }
@@ -290,9 +311,13 @@ export async function waiverPdf(
       ["IP address", s.ipAddress ?? "Not recorded"],
       ["Browser", s.userAgent ?? "Not recorded"],
     ];
-    if (s.guardian) {
-      const contact = [s.guardian.email, s.guardian.phone].filter(Boolean).join(", ");
-      if (contact) rows.push(["Sent to", contact]);
+    const request = ticket.guardianRequest;
+    if (s.signerRole === "GUARDIAN" && request) {
+      const sentTo = [
+        request.emailSentAt && request.guardian.email,
+        request.textSentAt && request.guardian.phone,
+      ].filter(Boolean);
+      if (sentTo.length > 0) rows.push(["Link sent to", sentTo.join(", ")]);
     }
     rows.push(["Signature ID", s.id], ["Document hash", s.documentHash]);
     for (const [label, value] of rows) out.text(`${label}: ${value}`, { size: 9, after: 1 });

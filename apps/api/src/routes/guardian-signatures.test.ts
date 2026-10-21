@@ -411,7 +411,7 @@ describe("guardian signatures for minors", () => {
       "Signed by Sam Park (parent or guardian)",
       "Audit trail",
       "Browser: Guardian Browser",
-      "Sent to: sam@example.com",
+      "Link sent to: sam@example.com",
       "Wording check: matches the stored waiver",
     ]) {
       expect(text).toContain(expected);
