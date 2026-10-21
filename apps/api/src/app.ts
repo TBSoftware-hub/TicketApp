@@ -5,11 +5,13 @@ import type { HealthResponse } from "@ticketapp/shared";
 import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
 import { createLogMailer, type Mailer } from "./lib/mailer";
+import type { Payments } from "./lib/payments";
 import { authRoutes } from "./routes/auth";
 import { compRoutes } from "./routes/comps";
 import { eventRoutes } from "./routes/events";
 import { memberRoutes } from "./routes/members";
 import { orgRoutes } from "./routes/orgs";
+import { paymentRoutes } from "./routes/payments";
 import { promoCodeRoutes } from "./routes/promo-codes";
 import { publicEventRoutes } from "./routes/public-events";
 import { ticketTypeRoutes } from "./routes/ticket-types";
@@ -19,6 +21,8 @@ export const API_VERSION = "0.0.0";
 export interface AppDeps {
   prisma: PrismaClient;
   mailer?: Mailer;
+  /** Connected-account payments; leaving it out switches payments off. */
+  payments?: Payments;
   /** Base URL of the web dashboard, used in sign-in links. */
   webBaseUrl?: string;
   /** Sign-in link requests allowed per client IP per minute (default 10). */
@@ -48,6 +52,8 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {
+      // Upstream failures (Stripe and the like) still need investigating.
+      if (error.statusCode >= 500) request.log.error(error.cause ?? error);
       return reply.code(error.statusCode).send({ error: error.message });
     }
     const statusCode = (error as { statusCode?: number }).statusCode;
@@ -74,6 +80,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(publicEventRoutes, { prisma: deps.prisma });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma });
+  await app.register(paymentRoutes, { prisma: deps.prisma, payments: deps.payments, webBaseUrl });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 
   return app;

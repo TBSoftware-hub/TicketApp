@@ -27,20 +27,26 @@ enum OrganizationType {
 }
 
 model Organization {
-  id              String           @id @default(uuid(7)) @db.Uuid
-  name            String
-  slug            String           @unique
-  type            OrganizationType
-  timezone        String           @default("America/New_York")
-  districtId      String?          @db.Uuid
-  district        District?        @relation(fields: [districtId], references: [id])
-  stripeAccountId String?          @unique
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  memberships     Membership[]
-  invitations     Invitation[]
-  events          Event[]
-  waiverTemplates WaiverTemplate[]
+  id                     String           @id @default(uuid(7)) @db.Uuid
+  name                   String
+  slug                   String           @unique
+  type                   OrganizationType
+  timezone               String           @default("America/New_York")
+  districtId             String?          @db.Uuid
+  district               District?        @relation(fields: [districtId], references: [id])
+  stripeAccountId        String?          @unique
+  /// Cached from the Stripe account so checkout can tell whether the org can take payments.
+  stripeChargesEnabled   Boolean          @default(false)
+  stripePayoutsEnabled   Boolean          @default(false)
+  stripeDetailsSubmitted Boolean          @default(false)
+  /// Whether stripeAccountId was made with a live key; a test account is useless once live.
+  stripeLivemode         Boolean?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  memberships            Membership[]
+  invitations            Invitation[]
+  events                 Event[]
+  waiverTemplates        WaiverTemplate[]
 
   @@index([districtId])
 }

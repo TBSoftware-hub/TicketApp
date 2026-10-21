@@ -399,3 +399,20 @@ export async function voidComp(formData: FormData) {
   if (status !== 200) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
   redirect(page);
 }
+
+/** Sends an owner to Stripe's hosted setup (or their Stripe dashboard) for the organization. */
+export async function openStripe(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const target = formData.get("target") === "dashboard" ? "dashboard" : "onboarding";
+  const { status, data } = await api<{ url: string }>(
+    `/orgs/${encodeURIComponent(orgId)}/payments/${target}`,
+    { method: "POST", token },
+  );
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200 || !("url" in data)) {
+    redirect(`/orgs/${orgId}/payouts?error=${encodeURIComponent(errorMessage(data))}`);
+  }
+  redirect(data.url);
+}
