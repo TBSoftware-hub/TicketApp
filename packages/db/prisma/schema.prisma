@@ -264,6 +264,8 @@ model Order {
   /// Who on staff took the cash for a door sale.
   soldById                 String?       @db.Uuid
   soldBy                   User?         @relation("SoldBy", fields: [soldById], references: [id], onDelete: SetNull)
+  /// Sent with each door sale so a retried request returns the first sale instead of selling twice.
+  doorSaleKey              String?       @unique @db.Uuid
   note                     String?
   /// Card fee added to what the buyer pays; zero when the organization covers it.
   feeCents                 Int           @default(0)

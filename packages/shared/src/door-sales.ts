@@ -5,6 +5,8 @@ export const MAX_DOOR_SALE_TICKETS = 20;
 
 /** Tickets sold at the door for cash, all under one name. */
 export const doorSaleSchema = z.object({
+  /** Made by the form once per sale, so sending the same sale twice only records it once. */
+  saleKey: z.uuid(),
   ticketTypeId: z.uuid("Pick a ticket type"),
   quantity: z
     .int("Enter how many tickets")
@@ -16,3 +18,6 @@ export const doorSaleSchema = z.object({
   email: z.email("Enter a valid email").trim().toLowerCase().max(254).nullable().optional(),
 });
 export type DoorSale = z.infer<typeof doorSaleSchema>;
+
+/** Door sales are listed newest first, a page at a time; `before` is the last sale already shown. */
+export const doorSaleListSchema = z.object({ before: z.uuid().optional() });

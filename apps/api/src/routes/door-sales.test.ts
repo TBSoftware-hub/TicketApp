@@ -90,10 +90,21 @@ describe("door sales", () => {
         method: "POST",
         url: `${base}/door-sales`,
         headers,
-        payload: { ticketTypeId, quantity: 1, firstName: "Jo", lastName: "Park", ...payload },
+        payload: {
+          saleKey: randomUUID(),
+          ticketTypeId,
+          quantity: 1,
+          firstName: "Jo",
+          lastName: "Park",
+          ...payload,
+        },
       });
-    const report = (headers = owner.headers) =>
-      t.app.inject({ method: "GET", url: `${base}/door-sales`, headers });
+    const report = (headers = owner.headers, before?: string) =>
+      t.app.inject({
+        method: "GET",
+        url: `${base}/door-sales${before ? `?before=${before}` : ""}`,
+        headers,
+      });
     return { owner, orgId, eventId, base, ticketTypeId, sell, report };
   }
 
@@ -172,6 +183,40 @@ describe("door sales", () => {
     expect(cashCents).toBe(3000);
     expect(saleCount).toBe(1);
     expect(sales.map((s: { status: string }) => s.status)).toEqual(["CANCELLED", "PAID"]);
+  });
+
+  it("records a sale sent twice only once", async () => {
+    const door = await atTheDoor();
+    const saleKey = randomUUID();
+    const first = await door.sell({ saleKey, quantity: 2 });
+    expect(first.statusCode).toBe(201);
+    const again = await door.sell({ saleKey, quantity: 2 });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().sale.id).toBe(first.json().sale.id);
+    const { cashCents, saleCount } = (await door.report()).json();
+    expect({ cashCents, saleCount }).toEqual({ cashCents: 3000, saleCount: 1 });
+
+    // A key can't be borrowed for another event.
+    const other = await atTheDoor();
+    const elsewhere = await other.sell({ saleKey });
+    expect(elsewhere.statusCode).toBe(409);
+    expect((await other.report()).json().saleCount).toBe(0);
+  });
+
+  it("pages back through older sales", async () => {
+    const door = await atTheDoor({ quantity: 60 });
+    const ids: string[] = [];
+    for (let i = 0; i < 52; i++) ids.push((await door.sell({})).json().sale.id);
+    const first = (await door.report()).json();
+    expect(first.sales).toHaveLength(50);
+    expect(first.more).toBe(true);
+    expect(first.saleCount).toBe(52);
+    const last = first.sales.at(-1).id as string;
+    const older = (await door.report(door.owner.headers, last)).json();
+    expect(older.more).toBe(false);
+    const seen = [...first.sales, ...older.sales].map((s: { id: string }) => s.id);
+    expect(seen.sort()).toEqual([...ids].sort());
+    expect((await door.report(door.owner.headers, "nope")).statusCode).toBe(400);
   });
 
   it("lets door staff sell and see the takings, but not outsiders", async () => {

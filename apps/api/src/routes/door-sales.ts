@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@ticketapp/db";
-import { doorSaleSchema } from "@ticketapp/shared";
+import { doorSaleListSchema, doorSaleSchema } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
@@ -12,6 +12,9 @@ import { parse } from "../lib/validate";
 import { newTicketCode } from "./comps";
 
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
+
+/** How many sales the page lists at once; staff can page back through the rest. */
+const SALE_PAGE = 50;
 
 const saleFields = {
   id: true,
@@ -33,10 +36,11 @@ export async function doorSaleRoutes(
     confirm,
   }: { prisma: PrismaClient; payments?: Payments; confirm: ConfirmOrder },
 ) {
-  // Today's door sales and the cash they should have brought in.
+  // The door sales so far, a page at a time, and the cash they should have brought in.
   app.get("/orgs/:orgId/events/:eventId/door-sales", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "checkin.scan");
+    const { before } = parse(doorSaleListSchema, request.query);
     const event = await prisma.event.findFirst({
       where: { id: eventId, organizationId: orgId },
       select: { id: true },
@@ -47,7 +51,8 @@ export async function doorSaleRoutes(
         where: { eventId, paymentMethod: "CASH" },
         select: saleFields,
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: 100,
+        ...(before ? { cursor: { id: before }, skip: 1 } : {}),
+        take: SALE_PAGE + 1,
       }),
       // Cancelled sales were handed back, so they don't count.
       prisma.order.aggregate({
@@ -57,7 +62,8 @@ export async function doorSaleRoutes(
       }),
     ]);
     return {
-      sales,
+      sales: sales.slice(0, SALE_PAGE),
+      more: sales.length > SALE_PAGE,
       cashCents: collected._sum.totalCents ?? 0,
       saleCount: collected._count,
     };
@@ -76,13 +82,29 @@ export async function doorSaleRoutes(
     await settleLapsedHolds(prisma, payments, eventId, { onPaid: confirm }).catch((err) =>
       request.log.warn({ err }, "Couldn't settle lapsed checkouts"),
     );
-    const sale = await prisma.$transaction(async (tx) => {
+    const { sale, repeat } = await prisma.$transaction(async (tx) => {
       // Every ticket issued for the event takes this lock, so two can't both take the last seat.
       const [event] = await tx.$queryRaw<{ capacity: number | null; status: string }[]>`
         SELECT capacity, status FROM "Event"
         WHERE id = ${eventId}::uuid AND "organizationId" = ${orgId}::uuid
         FOR UPDATE`;
       if (!event) throw new HttpError(404, "Event not found");
+      // A sale sent again (say, after its response was lost) comes back as it was. Sales for the
+      // event wait on the lock above, so a repeat can't slip in between this check and the insert.
+      const earlier = await tx.order.findUnique({
+        where: { doorSaleKey: input.saleKey },
+        select: { eventId: true },
+      });
+      if (earlier) {
+        if (earlier.eventId !== eventId) {
+          throw new HttpError(409, "That sale was for another event");
+        }
+        const sale = await tx.order.findUniqueOrThrow({
+          where: { doorSaleKey: input.saleKey },
+          select: saleFields,
+        });
+        return { sale, repeat: true };
+      }
       if (event.status === "CANCELLED") throw new HttpError(409, "This event is cancelled");
       if (event.status !== "PUBLISHED") {
         throw new HttpError(409, "Publish the event before selling tickets");
@@ -122,7 +144,7 @@ export async function doorSaleRoutes(
         }
       }
       const totalCents = ticketType.priceCents * input.quantity;
-      return tx.order.create({
+      const sale = await tx.order.create({
         data: {
           eventId,
           buyerName: `${input.firstName} ${input.lastName}`,
@@ -133,6 +155,7 @@ export async function doorSaleRoutes(
           subtotalCents: totalCents,
           totalCents,
           soldById: user.id,
+          doorSaleKey: input.saleKey,
           tickets: {
             create: Array.from({ length: input.quantity }, () => ({
               code: newTicketCode(),
@@ -150,8 +173,9 @@ export async function doorSaleRoutes(
         },
         select: saleFields,
       });
+      return { sale, repeat: false };
     });
     if (sale.buyerEmail) await confirm(sale.id);
-    return reply.code(201).send({ sale });
+    return reply.code(repeat ? 200 : 201).send({ sale });
   });
 }

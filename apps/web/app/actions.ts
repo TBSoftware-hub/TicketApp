@@ -396,6 +396,7 @@ export async function recordDoorSale(
   if (!token) redirect("/sign-in");
   const email = String(formData.get("email") ?? "").trim();
   const parsed = doorSaleSchema.safeParse({
+    saleKey: formData.get("saleKey"),
     ticketTypeId: formData.get("ticketTypeId"),
     quantity: Number(formData.get("quantity")),
     firstName: formData.get("firstName"),

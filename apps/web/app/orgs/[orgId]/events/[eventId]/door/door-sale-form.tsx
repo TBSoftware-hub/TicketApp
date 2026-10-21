@@ -1,7 +1,7 @@
 "use client";
 
 import { MAX_DOOR_SALE_TICKETS } from "@ticketapp/shared";
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { formatPrice } from "../../../../../../lib/ticket-types";
 import { useClearingForm } from "../../../../../../lib/use-clearing-form";
 import { recordDoorSale, type CreatedState } from "../../../../../actions";
@@ -22,6 +22,13 @@ export function DoorSaleForm({
   const { formRef, doneRef, onSubmit } = useClearingForm(state.done, formAction);
   const [typeId, setTypeId] = useState(ticketTypes[0]?.id ?? "");
   const [quantity, setQuantity] = useState(1);
+  // One key per sale: a resend after a lost response is recognised, and the next sale gets a new
+  // key once this one is recorded.
+  const [saleKey, setSaleKey] = useState(() => crypto.randomUUID());
+  const soldId = state.done?.id;
+  useEffect(() => {
+    if (soldId) setSaleKey(crypto.randomUUID());
+  }, [soldId]);
   const price = ticketTypes.find((tt) => tt.id === typeId)?.priceCents ?? 0;
   const reset = () => {
     setTypeId(ticketTypes[0]?.id ?? "");
@@ -30,6 +37,7 @@ export function DoorSaleForm({
 
   return (
     <form ref={formRef} onSubmit={onSubmit} onReset={reset} className="stack">
+      <input type="hidden" name="saleKey" value={saleKey} />
       <div className="row-fields">
         <label>
           Ticket type

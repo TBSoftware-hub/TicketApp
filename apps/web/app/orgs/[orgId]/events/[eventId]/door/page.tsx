@@ -22,10 +22,13 @@ interface SaleRecord {
 
 export default async function DoorSalesPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ orgId: string; eventId: string }>;
+  searchParams: Promise<{ before?: string }>;
 }) {
   const { orgId, eventId } = await params;
+  const { before } = await searchParams;
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "checkin.scan")) redirect(`/orgs/${orgId}/events`);
   const canManage = roleCan(role, "events.manage");
@@ -33,9 +36,10 @@ export default async function DoorSalesPage({
   const [eventRes, typesRes, salesRes] = await Promise.all([
     api<{ event: EventRecord }>(base, { token }),
     api<{ ticketTypes: TicketTypeRecord[] }>(`${base}/ticket-types`, { token }),
-    api<{ sales: SaleRecord[]; cashCents: number; saleCount: number }>(`${base}/door-sales`, {
-      token,
-    }),
+    api<{ sales: SaleRecord[]; more: boolean; cashCents: number; saleCount: number }>(
+      `${base}/door-sales${before ? `?${new URLSearchParams({ before })}` : ""}`,
+      { token },
+    ),
   ]);
   if (eventRes.status === 404 || eventRes.status === 400) notFound();
   if (!("event" in eventRes.data)) throw new Error(`Couldn't load the event (${eventRes.status})`);
@@ -44,7 +48,8 @@ export default async function DoorSalesPage({
   }
   const event = eventRes.data.event;
   const ticketTypes = typesRes.data.ticketTypes;
-  const { sales, cashCents, saleCount } = salesRes.data;
+  const { sales, more, cashCents, saleCount } = salesRes.data;
+  const page = `/orgs/${orgId}/events/${eventId}/door`;
   const time = new Intl.DateTimeFormat("en-US", {
     timeZone: org.timezone,
     month: "short",
@@ -114,6 +119,16 @@ export default async function DoorSalesPage({
               );
             })}
           </ul>
+        )}
+        {(more || before) && (
+          <p className="links">
+            {before && <a href={page}>Latest sales</a>}
+            {more && (
+              <a href={`${page}?${new URLSearchParams({ before: sales.at(-1)!.id })}`}>
+                Older sales
+              </a>
+            )}
+          </p>
         )}
         {canManage && sales.length > 0 && (
           <p className="muted">
