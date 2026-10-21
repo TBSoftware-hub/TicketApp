@@ -220,7 +220,7 @@ describe("checkout", () => {
     const abandoned = (await shop.buy([attendee(general, "B")])).json();
     await t.prisma.order.update({
       where: { id: lost.orderId },
-      data: { stripeCheckoutSessionId: "cs_test_missing" },
+      data: { stripeCheckoutSessionId: `cs_test_missing_${lost.orderId}` },
     });
     await lapse(lost.orderId);
     await lapse(abandoned.orderId);
@@ -352,6 +352,12 @@ describe("checkout", () => {
     const guestPass = await shop.buy([attendee(guest)]);
     expect(guestPass.statusCode).toBe(400);
     expect(guestPass.json().error).toMatch(/need the school's approval/);
+  });
+
+  it("accepts ticket type ids in upper case", async () => {
+    const shop = await onSale();
+    const general = await shop.addTicket();
+    expect((await shop.buy([attendee(general.toUpperCase())])).statusCode).toBe(201);
   });
 
   it("keeps to the per-order limit", async () => {

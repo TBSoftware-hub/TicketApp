@@ -40,7 +40,8 @@ const name = (label: string) =>
   z.string().trim().min(1, `Enter ${label}`).max(80, `Keep ${label} under 80 characters`);
 
 export const checkoutTicketSchema = z.object({
-  ticketTypeId: z.uuid(),
+  // Lower-cased to match the ids Postgres hands back, which checkout looks tickets up by.
+  ticketTypeId: z.string().trim().toLowerCase().pipe(z.uuid()),
   firstName: name("each attendee's first name"),
   lastName: name("each attendee's last name"),
   grade: z

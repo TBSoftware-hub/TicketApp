@@ -124,6 +124,9 @@ export function createStripePayments(secretKey: string): Payments {
       const session = await stripe.checkout.sessions.create(
         {
           mode: "payment",
+          // Cards settle at once (Apple Pay and Google Pay included). Delayed methods such as bank
+          // debits would leave seats held with no outcome until webhooks (E4.6) handle them.
+          allowed_payment_method_types: ["card"],
           customer_email: r.buyerEmail,
           client_reference_id: r.orderId,
           line_items: r.lines.map((line) => ({

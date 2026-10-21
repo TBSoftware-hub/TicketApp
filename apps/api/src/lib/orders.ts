@@ -43,10 +43,14 @@ export async function applyCheckoutState(
   }
 }
 
+/** How many lapsed orders one checkout settles, so a backlog can't hold up a buyer for long. */
+const SETTLE_BATCH = 10;
+
 /**
- * Settles an event's unpaid orders whose hold has run out, asking Stripe about each first so a
- * payment that came in without the buyer returning still gets its tickets. An order Stripe can't
- * tell us about keeps its seats; the rest are still settled, then the failures are thrown.
+ * Settles up to a batch of an event's unpaid orders whose hold has run out, oldest first, asking
+ * Stripe about each so a payment that came in without the buyer returning still gets its
+ * tickets. Each checkout takes the next batch. An order Stripe can't tell us about keeps its
+ * seats; the rest are still settled, then the failures are thrown.
  */
 export async function settleLapsedHolds(
   prisma: PrismaClient,
@@ -57,10 +61,11 @@ export async function settleLapsedHolds(
   const lapsed = await prisma.order.findMany({
     where: { eventId, status: "PENDING", holdExpiresAt: { lte: now } },
     select: { id: true, stripeCheckoutSessionId: true },
+    orderBy: { holdExpiresAt: "asc" },
+    take: SETTLE_BATCH,
   });
-  const failures: unknown[] = [];
-  for (const order of lapsed) {
-    try {
+  const results = await Promise.allSettled(
+    lapsed.map(async (order) => {
       if (!order.stripeCheckoutSessionId) {
         // The payment page never opened, so nobody could have paid.
         await prisma.$transaction((tx) => releaseOrder(tx, order.id));
@@ -71,10 +76,9 @@ export async function settleLapsedHolds(
           await payments.checkoutState(order.stripeCheckoutSessionId),
         );
       }
-    } catch (err) {
-      failures.push(err);
-    }
-  }
+    }),
+  );
+  const failures = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
   if (failures.length > 0) {
     throw new AggregateError(failures, `Couldn't settle ${failures.length} lapsed orders`);
   }

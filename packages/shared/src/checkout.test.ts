@@ -44,6 +44,17 @@ describe("checkoutSchema", () => {
     expect(parsed.promoCode).toBe("EARLY");
   });
 
+  it("lower-cases ticket type ids", () => {
+    const parsed = checkoutSchema.parse({
+      buyerName: "Sam Lee",
+      buyerEmail: "sam@example.com",
+      tickets: [
+        { ticketTypeId: "0199F1C2-0000-7000-8000-00000000000A", firstName: "Sam", lastName: "Lee" },
+      ],
+    });
+    expect(parsed.tickets[0]!.ticketTypeId).toBe("0199f1c2-0000-7000-8000-00000000000a");
+  });
+
   it("treats an empty promo code as none", () => {
     const parsed = checkoutSchema.parse({
       buyerName: "Sam Lee",
