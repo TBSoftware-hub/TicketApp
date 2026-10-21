@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_GRADE, MIN_GRADE } from "./ticket-types";
+import { birthDateSchema, guardianContactSchema } from "./guardians";
 import { checkoutWaiverSchema } from "./waivers";
 
 export const feePayerSchema = z.enum(["BUYER", "ORGANIZATION"]);
@@ -90,6 +91,10 @@ export const checkoutTicketSchema = z.object({
     .optional(),
   /** One entry for each waiver the ticket type asks for. */
   waivers: z.array(checkoutWaiverSchema).max(10).default([]),
+  /** Asked for when a waiver needs a guardian's signature for minors. */
+  dateOfBirth: birthDateSchema.nullable().optional(),
+  /** Who signs for an attendee under 18; asked for alongside the date of birth. */
+  guardian: guardianContactSchema.nullable().optional(),
 });
 export type CheckoutTicket = z.infer<typeof checkoutTicketSchema>;
 

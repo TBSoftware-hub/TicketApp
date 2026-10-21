@@ -18,6 +18,18 @@ We send from `mail.myschooltix.com`, which is verified in Resend: set `RESEND_AP
 `MAIL_FROM` is already `TicketApp <no-reply@mail.myschooltix.com>`. Its DNS records live at GoDaddy
 under the `mail` subdomain, so they don't touch the Microsoft 365 mailboxes on the main domain.
 
+## Texts
+
+When a waiver needs a guardian's signature and the attendee is under 18, the guardian is sent a
+signing link by email, and by text if a mobile number is given. Texts go through Twilio:
+
+1. Create a Twilio account and buy a phone number that can send SMS (or set up a messaging
+   service). US numbers need A2P 10DLC registration before carriers deliver their texts.
+2. Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` (the number, like
+   `+15551234567`, or the messaging service ID starting `MG`) on the API.
+
+Without them, checkout only asks for a guardian's email.
+
 ## Payments
 
 Each organization connects its own Stripe Express account from **Payouts** in the dashboard, so

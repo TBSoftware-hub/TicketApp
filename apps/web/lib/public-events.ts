@@ -49,6 +49,8 @@ export interface PublicEvent {
   onlinePayments: boolean;
   cardFeePaidBy: FeePayer;
   serviceFeePaidBy: FeePayer;
+  /** Whether a minor's guardian can be texted their signing link, not just emailed. */
+  guardianTexts: boolean;
 }
 
 /** Path of an event's public page, relative to the site. */

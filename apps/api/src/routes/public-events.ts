@@ -13,7 +13,7 @@ const paramsSchema = z.object({ orgSlug: slug, eventSlug: slug });
 /** What anyone with the link can see. No sign-in; drafts stay hidden. */
 export async function publicEventRoutes(
   app: FastifyInstance,
-  { prisma, payments }: { prisma: PrismaClient; payments?: Payments },
+  { prisma, payments, texts }: { prisma: PrismaClient; payments?: Payments; texts: boolean },
 ) {
   app.get("/public/events/:orgSlug/:eventSlug", async (request) => {
     const { orgSlug, eventSlug } = parse(paramsSchema, request.params);
@@ -102,6 +102,8 @@ export async function publicEventRoutes(
         onlinePayments,
         cardFeePaidBy: organization.cardFeePaidBy,
         serviceFeePaidBy: organization.serviceFeePaidBy,
+        // Whether a minor's guardian can be texted their signing link, not just emailed.
+        guardianTexts: texts,
       },
       // Counts stay private; buyers only see whether they can buy.
       ticketTypes: ticketTypes.map(({ _count, quantity, waivers, ...tt }) => ({

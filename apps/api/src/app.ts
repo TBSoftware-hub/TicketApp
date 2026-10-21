@@ -6,14 +6,17 @@ import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
 import { cancellationNotices } from "./lib/cancellations";
 import { feeReturns } from "./lib/fee-returns";
-import { orderConfirmations } from "./lib/confirmations";
+import { orderConfirmations, type ConfirmOrder } from "./lib/confirmations";
+import { guardianRequests } from "./lib/guardian-requests";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import type { Payments } from "./lib/payments";
+import { createLogTexter, type Texter } from "./lib/texter";
 import { authRoutes } from "./routes/auth";
 import { checkoutRoutes } from "./routes/checkout";
 import { compRoutes } from "./routes/comps";
 import { doorSaleRoutes } from "./routes/door-sales";
 import { eventRoutes } from "./routes/events";
+import { guardianSignatureRoutes } from "./routes/guardian-signatures";
 import { memberRoutes } from "./routes/members";
 import { orderRoutes } from "./routes/orders";
 import { orgRoutes } from "./routes/orgs";
@@ -28,6 +31,8 @@ export const API_VERSION = "0.0.0";
 export interface AppDeps {
   prisma: PrismaClient;
   mailer?: Mailer;
+  /** Sends texts. Left out in production, guardians can only be emailed; elsewhere texts are logged. */
+  texter?: Texter;
   /** Connected-account payments; leaving it out switches payments off. */
   payments?: Payments;
   /** Base URL of the web dashboard, used in sign-in links. */
@@ -50,6 +55,8 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     throw new Error("A real mailer must be configured in production");
   }
   const mailer = deps.mailer ?? createLogMailer(app.log);
+  const texter =
+    deps.texter ?? (process.env.NODE_ENV === "production" ? undefined : createLogTexter(app.log));
   const webBaseUrl = (
     deps.webBaseUrl ??
     process.env.WEB_BASE_URL ??
@@ -91,19 +98,29 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(orgRoutes, { prisma: deps.prisma });
   await app.register(eventRoutes, { prisma: deps.prisma });
   await app.register(ticketTypeRoutes, { prisma: deps.prisma });
-  await app.register(publicEventRoutes, { prisma: deps.prisma, payments: deps.payments });
+  await app.register(publicEventRoutes, {
+    prisma: deps.prisma,
+    payments: deps.payments,
+    texts: Boolean(texter),
+  });
   const confirmations = orderConfirmations({
     prisma: deps.prisma,
     mailer,
     webBaseUrl,
     log: app.log,
   });
-  const confirm = confirmations.confirm;
+  const guardians = guardianRequests({ prisma: deps.prisma, mailer, texter, log: app.log });
+  // A paid order's tickets go to the buyer, and its minors' signing links to their guardians.
+  const confirm: ConfirmOrder = async (orderId, viewKey) => {
+    await confirmations.confirm(orderId, viewKey);
+    await guardians.send(orderId);
+  };
   const notices = cancellationNotices({ prisma: deps.prisma, mailer, log: app.log });
   const fees = feeReturns({ prisma: deps.prisma, payments: deps.payments, log: app.log });
   if (deps.retryMs) {
     const timer = setInterval(() => {
       void confirmations.retry();
+      void guardians.retry();
       void notices.retry();
       void fees.retry();
     }, deps.retryMs);
@@ -116,6 +133,11 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     webBaseUrl,
     checkoutPerIpPerMinute: deps.checkoutPerIpPerMinute ?? 30,
     confirm,
+    texts: Boolean(texter),
+  });
+  await app.register(guardianSignatureRoutes, {
+    prisma: deps.prisma,
+    signPerIpPerMinute: deps.checkoutPerIpPerMinute ?? 30,
   });
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
   await app.register(waiverRoutes, { prisma: deps.prisma });

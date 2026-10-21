@@ -122,12 +122,14 @@ describe("waivers on ticket types", () => {
         ticketTypeId,
         firstName: "Jo",
         lastName: "Park",
+        dateOfBirth: "1990-01-01",
         waivers: [signed(waiver, { answers: { allergy: " peanuts ", size: "M", rules: true } })],
       },
       {
         ticketTypeId,
         firstName: "Sam",
         lastName: "Lee",
+        dateOfBirth: "1990-01-01",
         waivers: [signed(waiver, { signature: "sam lee" })],
       },
     ]);
@@ -165,7 +167,9 @@ describe("waivers on ticket types", () => {
     const ticketTypeId = (await s.addTicket({ waiverIds: [waiver.id] })).json().ticketType.id;
     await s.publish();
     const attempt = async (waivers: object[]) => {
-      const res = await s.checkout([{ ticketTypeId, firstName: "Jo", lastName: "Park", waivers }]);
+      const res = await s.checkout([
+        { ticketTypeId, firstName: "Jo", lastName: "Park", dateOfBirth: "1990-01-01", waivers },
+      ]);
       return [res.statusCode, res.json().error];
     };
 
@@ -204,7 +208,13 @@ describe("waivers on ticket types", () => {
       version: 1,
     });
     const stale = await s.checkout([
-      { ticketTypeId, firstName: "Jo", lastName: "Park", waivers: [signed(waiver)] },
+      {
+        ticketTypeId,
+        firstName: "Jo",
+        lastName: "Park",
+        dateOfBirth: "1990-01-01",
+        waivers: [signed(waiver)],
+      },
     ]);
     expect(stale.statusCode).toBe(409);
     expect(stale.json().error).toBe(
@@ -215,6 +225,7 @@ describe("waivers on ticket types", () => {
         ticketTypeId,
         firstName: "Jo",
         lastName: "Park",
+        dateOfBirth: "1990-01-01",
         waivers: [signed({ id: waiver.id, version: 2 })],
       },
     ]);
