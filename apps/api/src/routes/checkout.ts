@@ -251,9 +251,9 @@ export async function checkoutRoutes(
       const order = await prisma.$transaction(async (tx) => {
         // The same lock comps take, so two buyers can't both get the last seat.
         const [locked] = await tx.$queryRaw<
-          { capacity: number | null; status: string; endsAt: Date }[]
+          { capacity: number | null; status: string; startsAt: Date; endsAt: Date }[]
         >`
-          SELECT capacity, status, "endsAt" FROM "Event" WHERE id = ${event.id}::uuid FOR UPDATE`;
+          SELECT capacity, status, "startsAt", "endsAt" FROM "Event" WHERE id = ${event.id}::uuid FOR UPDATE`;
         if (!locked || locked.status !== "PUBLISHED")
           throw new HttpError(409, "Tickets aren't on sale");
         // Waiting on Stripe and the lock takes time, so judge sale windows and codes from here.
@@ -347,7 +347,8 @@ export async function checkoutRoutes(
           guardianFor(
             ticket,
             waiversFor(ticket),
-            { startsAt: event.startsAt, timezone: org.timezone },
+            // Judged from the locked row, so a move to the event can't slip past the age check.
+            { startsAt: locked.startsAt, timezone: org.timezone },
             texts,
           ),
         );
@@ -428,7 +429,12 @@ export async function checkoutRoutes(
             guardian,
             buyer: { name: input.buyerName, email: input.buyerEmail },
             attendee: ticket,
-            event: { ...event, organization: org },
+            event: {
+              name: event.name,
+              startsAt: locked.startsAt,
+              endsAt: locked.endsAt,
+              organization: org,
+            },
             waiverTitles: guardian.waiverTitles,
             url: `${webBaseUrl}/sign?token=${encodeURIComponent(token)}`,
             texts,

@@ -47,14 +47,20 @@ type RequestRow = Prisma.GuardianSignatureRequestGetPayload<{ select: typeof req
 
 const NOT_FOUND = "This link doesn't work. Ask whoever bought the ticket to check their order";
 
-/** The request a signing link points at, as long as its ticket still stands. */
-async function findRequest(db: Prisma.TransactionClient, token: string) {
+/**
+ * The request a signing link points at, as long as its ticket still stands and its event isn't
+ * over. Past that the link shows nothing, so it can't keep exposing the attendee's details.
+ */
+async function findRequest(db: Prisma.TransactionClient, token: string, now = new Date()) {
   const request = await db.guardianSignatureRequest.findUnique({
     where: { tokenHash: hashToken(token) },
     select: requestFields,
   });
   if (!request || request.ticket.status !== "VALID" || request.ticket.order.status !== "PAID") {
     throw new HttpError(404, NOT_FOUND);
+  }
+  if (request.ticket.event.endsAt <= now) {
+    throw new HttpError(410, `${request.ticket.event.name} is over, so this link no longer works`);
   }
   return request;
 }
@@ -92,7 +98,7 @@ async function waiversToSign(db: Prisma.TransactionClient, request: RequestRow) 
   });
 }
 
-async function present(db: Prisma.TransactionClient, request: RequestRow, now = new Date()) {
+async function present(db: Prisma.TransactionClient, request: RequestRow) {
   const { ticket } = request;
   const { organization, ...event } = ticket.event;
   const guardianSignature = ticket.signatures.find((s) => s.signerRole === "GUARDIAN");
@@ -105,8 +111,6 @@ async function present(db: Prisma.TransactionClient, request: RequestRow, now = 
       waivers: await waiversToSign(db, request),
       signedAt: request.signedAt,
       signerName: request.signedAt ? (guardianSignature?.signerName ?? null) : null,
-      // The link is for this event; once it's over, there's nothing left to sign for.
-      expired: ticket.event.endsAt <= now,
     },
   };
 }
@@ -133,12 +137,9 @@ export async function guardianSignatureRoutes(
           WHERE "tokenHash" = ${hashToken(input.token)}
           FOR UPDATE`;
         if (!locked) throw new HttpError(404, NOT_FOUND);
-        const found = await findRequest(tx, input.token);
         const now = new Date();
+        const found = await findRequest(tx, input.token, now);
         if (found.signedAt) throw new HttpError(409, "These waivers are already signed");
-        if (found.ticket.event.endsAt <= now) {
-          throw new HttpError(409, "This event is over, so there's nothing left to sign");
-        }
         const waivers = await waiversToSign(tx, found);
         await tx.waiverSignature.createMany({
           data: waivers.map((w) => ({
@@ -159,7 +160,7 @@ export async function guardianSignatureRoutes(
           where: { id: found.id },
           data: { signedAt: now, pendingMessages: Prisma.DbNull },
         });
-        return present(tx, await findRequest(tx, input.token), now);
+        return present(tx, await findRequest(tx, input.token, now));
       });
     },
   );

@@ -27,13 +27,6 @@ export function GuardianSignForm({ token, initial }: { token: string; initial: G
       </p>
     );
   }
-  if (request.expired) {
-    return (
-      <p className="notice" role="status">
-        {request.event.name} is over, so there&apos;s nothing left to sign.
-      </p>
-    );
-  }
 
   async function onSubmit(submit: FormEvent<HTMLFormElement>) {
     submit.preventDefault();

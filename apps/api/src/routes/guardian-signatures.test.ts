@@ -193,7 +193,6 @@ describe("guardian signatures for minors", () => {
         { id: s.waiver.id, version: 1, title: "Field Trip Waiver", answers: { size: "M" } },
       ],
       signedAt: null,
-      expired: false,
     });
 
     expect((await sign(token, { agreed: false })).statusCode).toBe(400);
@@ -202,7 +201,7 @@ describe("guardian signatures for minors", () => {
     );
     const signed = await sign(token);
     expect(signed.statusCode).toBe(200);
-    expect(signed.json().request).toMatchObject({ signerName: "Sam Park", expired: false });
+    expect(signed.json().request).toMatchObject({ signerName: "Sam Park" });
     expect(signed.json().request.signedAt).not.toBeNull();
 
     const version = await t.prisma.waiverTemplateVersion.findUniqueOrThrow({
@@ -297,6 +296,40 @@ describe("guardian signatures for minors", () => {
     const mail = t.sent.findLast((m) => m.to === "sam4@example.com")!;
     expect(mail.idempotencyKey).toBe(`guardian-request-${request.id}`);
     expect((await view(tokenSentTo("sam4@example.com"))).statusCode).toBe(200);
+  });
+
+  it("shuts the link, and stops sending it, once the event is over", async () => {
+    const s = await trip();
+    t.mailFailures.to.add("sam6@example.com");
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam6@example.com" } }),
+    ]);
+    t.mailFailures.to.delete("sam6@example.com");
+    const { orderId, key } = res.json();
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { orderId } });
+    await t.prisma.event.update({
+      where: { id: ticket.eventId },
+      data: { startsAt: new Date(Date.now() - 2 * 60 * 60_000), endsAt: new Date(Date.now() - 1) },
+    });
+
+    // The unsent link isn't sent now that it couldn't be used.
+    await t.app.inject({ method: "POST", url: `/public/orders/${orderId}`, payload: { key } });
+    const request = await t.prisma.guardianSignatureRequest.findFirstOrThrow({
+      where: { ticketId: ticket.id },
+    });
+    expect(request).toMatchObject({ emailSentAt: null, sendAttempts: 1 });
+    expect(t.sent.some((m) => m.to === "sam6@example.com")).toBe(false);
+
+    // A link sent earlier shows nothing about the attendee any more.
+    const token = "x".repeat(43);
+    await t.prisma.guardianSignatureRequest.update({
+      where: { id: request.id },
+      data: { tokenHash: createHash("sha256").update(token).digest("hex") },
+    });
+    const shown = await view(token);
+    expect(shown.statusCode).toBe(410);
+    expect(shown.json()).toEqual({ error: "Museum Trip is over, so this link no longer works" });
+    expect((await sign(token)).statusCode).toBe(410);
   });
 
   it("refuses a link that doesn't match a paid ticket", async () => {

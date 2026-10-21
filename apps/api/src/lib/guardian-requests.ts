@@ -54,8 +54,11 @@ export function guardianRequests({
           "sendClaimedAt" = ${now},
           "sendAttempts" = r."sendAttempts" + 1,
           "sendFirstTriedAt" = COALESCE(r."sendFirstTriedAt", ${now})
-        FROM "Ticket" t JOIN "Order" o ON o.id = t."orderId"
+        FROM "Ticket" t
+        JOIN "Order" o ON o.id = t."orderId"
+        JOIN "Event" e ON e.id = t."eventId"
         WHERE r.id = ${requestId}::uuid
+          AND e."endsAt" > ${now}
           AND t.id = r."ticketId"
           AND o.status = 'PAID'
           AND t.status = 'VALID'
@@ -83,8 +86,9 @@ export function guardianRequests({
         try {
           // The same key on every attempt, so a retry after an unclear failure isn't delivered twice.
           await mailer.send({ ...messages.email, idempotencyKey: `guardian-request-${requestId}` });
-          emailDone = true;
+          // Done only once it's recorded; a retry after a failed record reuses the idempotency key.
           await sent(requestId, request.guardianId, "EMAIL", messages.email.to, messages.summary);
+          emailDone = true;
         } catch (err) {
           log.error({ err, requestId }, "Couldn't email the guardian signature request");
         }
@@ -92,8 +96,8 @@ export function guardianRequests({
       if (!textDone && messages.text && texter) {
         try {
           await texter.send(messages.text);
-          textDone = true;
           await sent(requestId, request.guardianId, "SMS", messages.text.to, messages.summary);
+          textDone = true;
         } catch (err) {
           log.error({ err, requestId }, "Couldn't text the guardian signature request");
         }
@@ -164,6 +168,8 @@ export function guardianRequests({
                 { sendFirstTriedAt: { lte: minutesBefore(now, RETRY_HOURS * 60) } },
                 { signedAt: { not: null } },
                 { ticket: { status: "VOID" } },
+                // Once the event is over the link no longer works, so there's no point sending it.
+                { ticket: { event: { endsAt: { lte: now } } } },
                 { ticket: { order: { status: { in: ["CANCELLED", "REFUNDED"] } } } },
               ],
             },
@@ -182,7 +188,7 @@ export function guardianRequests({
           pendingMessages: { not: Prisma.DbNull },
           signedAt: null,
           sendAttempts: { lt: MAX_GUARDIAN_REQUEST_ATTEMPTS },
-          ticket: { status: "VALID", order: { status: "PAID" } },
+          ticket: { status: "VALID", order: { status: "PAID" }, event: { endsAt: { gt: now } } },
           AND: [
             {
               OR: [

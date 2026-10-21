@@ -24,6 +24,4 @@ export interface GuardianRequest {
   }[];
   signedAt: string | null;
   signerName: string | null;
-  /** The event is over, so there's nothing left to sign. */
-  expired: boolean;
 }
