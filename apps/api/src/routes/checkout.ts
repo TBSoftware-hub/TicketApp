@@ -374,6 +374,7 @@ export async function checkoutRoutes(
                 await tx.ticket.findMany({
                   where: {
                     ...takesSeat,
+                    eventId: event.id,
                     ticketTypeId: { in: types.filter(checksRoster).map((t) => t.id) },
                     attendee: { studentId: { in: rosterIds } },
                   },

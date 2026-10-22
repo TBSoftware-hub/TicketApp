@@ -30,6 +30,13 @@ describe("parseRosterCsv", () => {
     });
   });
 
+  it("matches headings with stray punctuation", () => {
+    expect(parseRosterCsv("Student No.,First.Name,Last_Name,Grade.\nS1,Sam,Lee,9\n")).toEqual({
+      ok: true,
+      students: [{ studentId: "S1", firstName: "Sam", lastName: "Lee", grade: 9 }],
+    });
+  });
+
   it("says which headings it couldn't find", () => {
     const parsed = parseRosterCsv("Name,Grade\nSam Lee,9\n");
     expect(parsed.ok).toBe(false);

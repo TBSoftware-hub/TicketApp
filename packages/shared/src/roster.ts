@@ -48,7 +48,8 @@ const COLUMNS = {
 } as const;
 type Column = keyof typeof COLUMNS;
 
-const heading = (s: string) => s.trim().toLowerCase().replace(/[_.]+/g, " ").replace(/\s+/g, " ");
+// Trimmed last, so "Grade." doesn't keep the space its full stop became.
+const heading = (s: string) => s.toLowerCase().replace(/[_.]+/g, " ").replace(/\s+/g, " ").trim();
 
 /**
  * Splits CSV text into rows, following the quoting rules spreadsheets use. Quotes anywhere else
