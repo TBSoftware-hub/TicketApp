@@ -673,6 +673,34 @@ describe("guardian signatures for minors", () => {
     expect(request.pendingMessages).not.toBeNull();
   });
 
+  it("keeps a reminder queued while an earlier attempt's expired claim was still set", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam11@example.com" } }),
+    ]);
+    const { orderId } = res.json() as { orderId: string };
+    await remindOnly([orderId]);
+    const where = { ticket: { orderId } };
+    const build = (send: (m: MailMessage) => Promise<void>) =>
+      guardianRequests({ prisma: t.prisma, mailer: { send }, log: t.app.log, webBaseUrl: "x" });
+    const other = build(async () => {});
+
+    // While the first reminder is still sending, it's given up on and the next one is queued,
+    // before anything claims it. Then the old attempt finishes and tidies up after itself.
+    await build(async () => {
+      const { id } = await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where });
+      await t.prisma.guardianSignatureRequest.update({
+        where: { id },
+        data: { pendingMessages: Prisma.DbNull },
+      });
+      expect(await other.queueReminder(id, 1)).toBe(true);
+    }).retry(new Date(Date.now() + 49 * 60 * 60_000));
+
+    const request = await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where });
+    expect(request).toMatchObject({ remindersSent: 2, sendClaimedAt: null, emailSentAt: null });
+    expect(request.pendingMessages).not.toBeNull();
+  });
+
   it("doesn't remind a guardian who signed, or for a cancelled event", async () => {
     const s = await trip();
     const signs = await s.checkout([

@@ -53,6 +53,11 @@ export interface GuardianRequests {
    * who still haven't signed.
    */
   retry(now?: Date): Promise<void>;
+  /**
+   * Queues the reminder after `round` with a fresh link, unless the request moved on first.
+   * Returns whether it did. The sweep calls it; it's exposed so tests can race it.
+   */
+  queueReminder(requestId: string, round: number): Promise<boolean>;
 }
 
 export function guardianRequests({
@@ -426,6 +431,8 @@ export function guardianRequests({
           textSentAt: null,
           sendAttempts: 0,
           sendFirstTriedAt: null,
+          // An old attempt's expired claim goes too, or its cleanup could clear this round's messages.
+          sendClaimedAt: null,
         },
       });
       if (count === 0) return false;
@@ -434,7 +441,7 @@ export function guardianRequests({
     });
   }
 
-  return { send, retry };
+  return { send, retry, queueReminder };
 }
 
 const escape = (s: string) =>
