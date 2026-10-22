@@ -3,6 +3,7 @@ import { formatPhone } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
+import { csvFile, localTime } from "../lib/csv";
 import { HttpError } from "../lib/errors";
 import { parse } from "../lib/validate";
 import {
@@ -95,35 +96,6 @@ function waiverStatus(t: ExportTicket) {
   return request ? `Signed, with ${guardianName(t)} as parent or guardian` : "Signed";
 }
 
-/**
- * A CSV cell. Quoted when it needs to be, and a leading = + - @ is defused so a spreadsheet
- * doesn't run what an attendee typed as a formula.
- */
-function cell(value: string | null | undefined) {
-  let v = value ?? "";
-  if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
-  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-}
-
-/** "2026-10-22 14:50", in the organization's time zone, which is how spreadsheets sort well. */
-function localTime(instant: Date | null | undefined, timeZone: string) {
-  if (!instant) return "";
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(instant)
-      .map((p) => [p.type, p.value]),
-  );
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
-}
-
 /** A download name built from the event's slug, which is already safe in a header. */
 function fileName(slug: string, suffix: string) {
   return `${slug}-${suffix}`;
@@ -194,8 +166,7 @@ export async function waiverExportRoutes(
           : []),
       ];
     });
-    // CRLF line ends and a byte-order mark, so Excel reads it as UTF-8 on every platform.
-    const csv = `\uFEFF${[header, ...rows].map((r) => r.map(cell).join(",")).join("\r\n")}\r\n`;
+    const csv = csvFile([header, ...rows]);
     return reply
       .type("text/csv; charset=utf-8")
       .header(

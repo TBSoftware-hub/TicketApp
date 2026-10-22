@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp, pdfText, uniqueSlug } from "../test-helpers";
+import { buildTestApp, parseCsv, pdfText, uniqueSlug } from "../test-helpers";
 
 describe("waiver exports for vendors", () => {
   let t: Awaited<ReturnType<typeof buildTestApp>>;
@@ -118,33 +118,6 @@ describe("waiver exports for vendors", () => {
     });
     expect(comp.statusCode).toBe(201);
     return { orgId, base, owner, call };
-  }
-
-  /** Splits a CSV the way a spreadsheet would. */
-  function parseCsv(text: string) {
-    const rows: string[][] = [];
-    let row: string[] = [];
-    let value = "";
-    let quoted = false;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i]!;
-      if (quoted) {
-        if (ch === '"' && text[i + 1] === '"') {
-          value += '"';
-          i++;
-        } else if (ch === '"') quoted = false;
-        else value += ch;
-      } else if (ch === '"') quoted = true;
-      else if (ch === "," || ch === "\n") {
-        row.push(value);
-        value = "";
-        if (ch === "\n") {
-          rows.push(row);
-          row = [];
-        }
-      } else if (ch !== "\r") value += ch;
-    }
-    return rows;
   }
 
   it("lists each attendee's waiver status as a CSV", async () => {

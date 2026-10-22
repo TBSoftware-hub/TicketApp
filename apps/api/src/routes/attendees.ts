@@ -1,12 +1,16 @@
 import type { Prisma, PrismaClient } from "@ticketapp/db";
 import {
+  attendeeExportSchema,
   attendeeSearchSchema,
+  formatPhone,
   type AttendeeCheckInFilter,
+  type AttendeeSearch,
   type AttendeeWaiverFilter,
 } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
+import { csvFile, localTime } from "../lib/csv";
 import { HttpError } from "../lib/errors";
 import { parse } from "../lib/validate";
 
@@ -87,11 +91,104 @@ function checkInAt(t: AttendeeTicket, status: AttendeeCheckInFilter) {
   return null;
 }
 
+/** Tickets that will get someone in: not held for an unpaid checkout, cancelled or refunded. */
+function comingTo(eventId: string) {
+  return {
+    eventId,
+    status: "VALID",
+    order: { status: "PAID" },
+  } as const satisfies Prisma.TicketWhereInput;
+}
+
+/** The tickets a search and its filters pick out, for the list and the download alike. */
+function matching(eventId: string, { q, waiver, checkIn, ticketTypeId }: AttendeeSearch) {
+  const contains = (value: string) => ({ contains: value, mode: "insensitive" as const });
+  return {
+    ...comingTo(eventId),
+    ...(ticketTypeId ? { ticketTypeId } : {}),
+    // Every word has to match somewhere, so "Sam Lee" finds Sam Lee.
+    AND: [
+      ...(q?.split(/\s+/) ?? []).map((word) => ({
+        OR: [
+          { attendee: { firstName: contains(word) } },
+          { attendee: { lastName: contains(word) } },
+          { attendee: { email: contains(word) } },
+          { order: { buyerName: contains(word) } },
+        ],
+      })),
+      ...(waiver ? [waiverWhere[waiver]] : []),
+      ...(checkIn ? [checkInWhere[checkIn]] : []),
+    ],
+  } satisfies Prisma.TicketWhereInput;
+}
+
+const byName = [
+  { attendee: { lastName: "asc" } },
+  { attendee: { firstName: "asc" } },
+  { id: "asc" },
+] as const satisfies Prisma.TicketOrderByWithRelationInput[];
+
+/** The download carries what the list shows, and what staff need to reach people. */
+const exportFields = {
+  ...attendeeFields,
+  code: true,
+  attendee: {
+    select: {
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      grade: true,
+      studentId: true,
+      dateOfBirth: true,
+      emergencyContactName: true,
+      emergencyContactPhone: true,
+      medicalNotes: true,
+    },
+  },
+  order: {
+    select: {
+      buyerName: true,
+      buyerEmail: true,
+      buyerPhone: true,
+      paymentMethod: true,
+      totalCents: true,
+      createdAt: true,
+    },
+  },
+  guardianRequest: {
+    select: {
+      signedAt: true,
+      guardian: { select: { name: true, email: true, phone: true } },
+    },
+  },
+} as const satisfies Prisma.TicketSelect;
+
+const WAIVER_TEXT: Record<AttendeeWaiverFilter, string> = {
+  signed: "Signed",
+  waiting: "Waiting on a guardian",
+  missing: "Not signed",
+  none: "Not needed",
+};
+
+const CHECK_IN_TEXT: Record<AttendeeCheckInFilter, string> = {
+  inside: "Inside",
+  left: "Checked out",
+  "not-arrived": "Not arrived",
+};
+
+/** How the order was paid for, the way a bookkeeper would say it. */
+function paidWith({ paymentMethod, totalCents }: { paymentMethod: string; totalCents: number }) {
+  if (paymentMethod === "COMP") return "Comp";
+  if (totalCents === 0) return "Free";
+  return paymentMethod === "CASH" ? "Cash" : "Card";
+}
+
 /** Everyone coming to an event, one row per ticket, for staff to look people up. */
 export async function attendeeRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
   app.get("/orgs/:orgId/events/:eventId/attendees", async (request) => {
     const { orgId, eventId } = parse(paramsSchema, request.params);
-    const { q, waiver, checkIn, ticketTypeId } = parse(attendeeSearchSchema, request.query);
+    const search = parse(attendeeSearchSchema, request.query);
     // Door staff look people up too, so this follows check-in rather than event management.
     await requireOrgPermission(prisma, request, orgId, "checkin.scan");
     const event = await prisma.event.findFirst({
@@ -100,37 +197,11 @@ export async function attendeeRoutes(app: FastifyInstance, { prisma }: { prisma:
     });
     if (!event) throw new HttpError(404, "Event not found");
 
-    // Tickets that will get someone in: not held for an unpaid checkout, cancelled or refunded.
-    const coming = {
-      eventId,
-      status: "VALID",
-      order: { status: "PAID" },
-    } as const satisfies Prisma.TicketWhereInput;
-    const contains = (value: string) => ({ contains: value, mode: "insensitive" as const });
+    const coming = comingTo(eventId);
     const tickets = await prisma.ticket.findMany({
-      where: {
-        ...coming,
-        ...(ticketTypeId ? { ticketTypeId } : {}),
-        // Every word has to match somewhere, so "Sam Lee" finds Sam Lee.
-        AND: [
-          ...(q?.split(/\s+/) ?? []).map((word) => ({
-            OR: [
-              { attendee: { firstName: contains(word) } },
-              { attendee: { lastName: contains(word) } },
-              { attendee: { email: contains(word) } },
-              { order: { buyerName: contains(word) } },
-            ],
-          })),
-          ...(waiver ? [waiverWhere[waiver]] : []),
-          ...(checkIn ? [checkInWhere[checkIn]] : []),
-        ],
-      },
+      where: matching(eventId, search),
       select: attendeeFields,
-      orderBy: [
-        { attendee: { lastName: "asc" } },
-        { attendee: { firstName: "asc" } },
-        { id: "asc" },
-      ],
+      orderBy: byName,
       take: ATTENDEE_PAGE + 1,
     });
 
@@ -172,5 +243,88 @@ export async function attendeeRoutes(app: FastifyInstance, { prisma }: { prisma:
       totals: { attendees: total, signed, waiting, missing, inside, left },
       ticketTypes,
     };
+  });
+
+  // Everyone the list's search and filters pick out, with no page limit, to open in a spreadsheet.
+  app.get("/orgs/:orgId/events/:eventId/attendees.csv", async (request, reply) => {
+    const { orgId, eventId } = parse(paramsSchema, request.params);
+    const { details, ...search } = parse(attendeeExportSchema, request.query);
+    // Contact details for every attendee and buyer leave with the file, so this is for managers.
+    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    const event = await prisma.event.findFirst({
+      where: { id: eventId, organizationId: orgId },
+      select: { slug: true, organization: { select: { timezone: true } } },
+    });
+    if (!event) throw new HttpError(404, "Event not found");
+    const tz = event.organization.timezone;
+    const tickets = await prisma.ticket.findMany({
+      where: matching(eventId, search),
+      select: exportFields,
+      orderBy: byName,
+    });
+
+    const phone = (p: string | null | undefined) => (p ? formatPhone(p) : null);
+    const header = [
+      "Last name",
+      "First name",
+      "Email",
+      "Phone",
+      "Grade",
+      "Student ID",
+      "Date of birth",
+      "Ticket type",
+      "Ticket code",
+      "Bought by",
+      "Buyer email",
+      "Buyer phone",
+      "Paid with",
+      "Ordered at",
+      "Waiver",
+      "Parent or guardian",
+      "Guardian contact",
+      "Check-in",
+      "Last in or out",
+      ...(details ? ["Emergency contact", "Emergency phone", "Medical notes"] : []),
+    ];
+    const rows = tickets.map((t) => {
+      const checkIn = checkInStatus(t);
+      const guardian = t.guardianRequest?.guardian;
+      return [
+        t.attendee.lastName,
+        t.attendee.firstName,
+        t.attendee.email,
+        phone(t.attendee.phone),
+        t.attendee.grade,
+        t.attendee.studentId,
+        t.attendee.dateOfBirth?.toISOString().slice(0, 10),
+        t.ticketType.name,
+        t.code,
+        t.order.buyerName,
+        t.order.buyerEmail,
+        phone(t.order.buyerPhone),
+        paidWith(t.order),
+        localTime(t.order.createdAt, tz),
+        WAIVER_TEXT[waiverStatus(t)],
+        guardian?.name,
+        [guardian?.email, phone(guardian?.phone)].filter(Boolean).join(", "),
+        CHECK_IN_TEXT[checkIn],
+        localTime(checkInAt(t, checkIn), tz),
+        ...(details
+          ? [
+              t.attendee.emergencyContactName,
+              phone(t.attendee.emergencyContactPhone),
+              t.attendee.medicalNotes,
+            ]
+          : []),
+      ];
+    });
+    return reply
+      .type("text/csv; charset=utf-8")
+      .header(
+        "content-disposition",
+        `attachment; filename="${event.slug}-${details ? "attendees-with-medical" : "attendees"}.csv"`,
+      )
+      .header("cache-control", "private, no-store")
+      .send(csvFile([header, ...rows]));
   });
 }

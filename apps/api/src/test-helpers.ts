@@ -199,3 +199,30 @@ export function pdfText(pdf: Uint8Array | Buffer) {
   }
   return lines.join("\n");
 }
+
+/** Splits a CSV the way a spreadsheet would, for checking an export cell by cell. */
+export function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') {
+        value += '"';
+        i++;
+      } else if (ch === '"') quoted = false;
+      else value += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === "," || ch === "\n") {
+      row.push(value);
+      value = "";
+      if (ch === "\n") {
+        rows.push(row);
+        row = [];
+      }
+    } else if (ch !== "\r") value += ch;
+  }
+  return rows;
+}

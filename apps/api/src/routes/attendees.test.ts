@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp, uniqueSlug } from "../test-helpers";
+import { buildTestApp, parseCsv, uniqueSlug } from "../test-helpers";
 
 describe("attendee list", () => {
   let t: Awaited<ReturnType<typeof buildTestApp>>;
@@ -130,6 +130,15 @@ describe("attendee list", () => {
     };
     const names = async (query: string) => (await list(query)).attendees.map((a) => a.firstName);
     return { orgId, eventId, base, owner, call, list, names, student, guest };
+  }
+
+  /** The ticket an attendee in the test event holds, by first name. */
+  async function ticketOf(s: { eventId: string }, firstName: string) {
+    const ticket = await t.prisma.ticket.findFirstOrThrow({
+      where: { eventId: s.eventId, attendee: { firstName } },
+      select: { id: true },
+    });
+    return ticket.id;
   }
 
   it("lists everyone coming, by last name, with where their waivers stand", async () => {
@@ -283,7 +292,106 @@ describe("attendee list", () => {
     expect((await s.list()).totals.missing).toBe(0);
   });
 
-  it("is for staff who work the door or manage the event", async () => {
+  it("downloads everyone the search picks out as a CSV", async () => {
+    const s = await trip();
+    const download = async (query = "") => {
+      const res = await s.call("GET", `${s.base}/attendees.csv${query}`);
+      expect(res.statusCode).toBe(200);
+      return res;
+    };
+    const res = await download();
+    expect(res.headers["content-type"]).toBe("text/csv; charset=utf-8");
+    expect(res.headers["content-disposition"]).toMatch(
+      /^attachment; filename="trip-.*-attendees\.csv"$/,
+    );
+    expect(res.headers["cache-control"]).toBe("private, no-store");
+    expect(res.body.startsWith("\uFEFF")).toBe(true);
+
+    const [header, ...rows] = parseCsv(res.body.slice(1));
+    const col = (name: string) => header!.indexOf(name);
+    expect(header).not.toContain("Medical notes");
+    expect(rows.map((r) => r[col("Last name")])).toEqual(["Adams", "Comp", "Guest", "Park"]);
+    const [ann, cal, gus, jo] = rows as [string[], string[], string[], string[]];
+    expect(ann[col("Ticket type")]).toBe("Student");
+    expect(ann[col("Ticket code")]).toMatch(/\S/);
+    expect(ann[col("Bought by")]).toBe("Pat Parent");
+    expect(ann[col("Buyer email")]).toBe("pat@example.com");
+    expect(ann[col("Paid with")]).toBe("Free");
+    expect(ann[col("Ordered at")]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(ann[col("Waiver")]).toBe("Signed");
+    expect(ann[col("Check-in")]).toBe("Not arrived");
+    expect(cal[col("Email")]).toBe("cal@example.com");
+    expect(cal[col("Paid with")]).toBe("Comp");
+    expect(cal[col("Waiver")]).toBe("Not signed");
+    expect(gus[col("Waiver")]).toBe("Not needed");
+    expect(jo[col("Waiver")]).toBe("Waiting on a guardian");
+    expect(jo[col("Parent or guardian")]).toBe("Sam Park");
+    expect(jo[col("Guardian contact")]).toBe("sam@example.com");
+    expect(jo[col("Date of birth")]).toBe(minor);
+
+    // The list's search and filters pick out the same people for the download.
+    const lastNames = async (query: string) =>
+      parseCsv((await download(query)).body.slice(1))
+        .slice(1)
+        .map((r) => r[col("Last name")]);
+    expect(await lastNames("?waiver=missing")).toEqual(["Comp"]);
+    expect(await lastNames(`?ticketTypeId=${s.guest}`)).toEqual(["Guest"]);
+    expect(await lastNames("?q=pat%20parent&waiver=signed")).toEqual(["Adams"]);
+    expect((await s.call("GET", `${s.base}/attendees.csv?waiver=maybe`)).statusCode).toBe(400);
+
+    // Who's inside, and since when.
+    await t.prisma.scanEvent.create({
+      data: {
+        eventId: s.eventId,
+        ticketId: await ticketOf(s, "Ann"),
+        direction: "IN",
+        outcome: "ADMITTED",
+        scannedAt: new Date(),
+      },
+    });
+    await t.prisma.ticket.update({
+      where: { id: await ticketOf(s, "Ann") },
+      data: { isInside: true },
+    });
+    const inside = parseCsv((await download("?checkIn=inside")).body.slice(1));
+    expect(inside[1]![col("Check-in")]).toBe("Inside");
+    expect(inside[1]![col("Last in or out")]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+
+    // Emergency contacts and medical notes only when asked for, with formulas defused.
+    const ann2 = await t.prisma.ticket.findUniqueOrThrow({
+      where: { id: await ticketOf(s, "Ann") },
+      select: { attendeeId: true },
+    });
+    await t.prisma.attendee.update({
+      where: { id: ann2.attendeeId },
+      data: {
+        emergencyContactName: "Pat Parent",
+        emergencyContactPhone: "+15552013344",
+        medicalNotes: '=HYPERLINK("x"), peanuts',
+      },
+    });
+    const full = await download("?details=1");
+    expect(full.headers["content-disposition"]).toContain("attendees-with-medical.csv");
+    const [h2, first] = parseCsv(full.body.slice(1));
+    expect(first![h2!.indexOf("Emergency contact")]).toBe("Pat Parent");
+    expect(first![h2!.indexOf("Emergency phone")]).toBe("(555) 201-3344");
+    expect(first![h2!.indexOf("Medical notes")]).toBe(`'=HYPERLINK("x"), peanuts`);
+  });
+
+  it("leaves cancelled tickets out of the download", async () => {
+    const s = await trip();
+    const { orders } = (await s.call("GET", `${s.base}/orders`)).json() as {
+      orders: { id: string; buyerName: string }[];
+    };
+    const comp = orders.find((o) => o.buyerName === "Cal Comp")!;
+    expect((await s.call("POST", `${s.base}/orders/${comp.id}/cancel`)).statusCode).toBe(200);
+    const [header, ...rows] = parseCsv(
+      (await s.call("GET", `${s.base}/attendees.csv`)).body.slice(1),
+    );
+    expect(rows.map((r) => r[header!.indexOf("First name")])).toEqual(["Ann", "Gus", "Jo"]);
+  });
+
+  it("is for staff who work the door or manage the event, and the download for managers", async () => {
     const s = await trip();
     const member = async (role: string) => {
       const email = `m-${randomUUID()}@example.com`;
@@ -298,10 +406,15 @@ describe("attendee list", () => {
       });
       return { authorization: `Bearer ${res.json().sessionToken}` };
     };
-    const as = (headers: Record<string, string>) =>
-      t.app.inject({ method: "GET", url: `${s.base}/attendees`, headers });
-    expect((await as(await member("DOOR_STAFF"))).statusCode).toBe(200);
+    const as = (headers: Record<string, string>, path = "attendees") =>
+      t.app.inject({ method: "GET", url: `${s.base}/${path}`, headers });
+    const door = await member("DOOR_STAFF");
+    expect((await as(door)).statusCode).toBe(200);
     expect((await as(await member("VIEWER"))).statusCode).toBe(403);
     expect((await as((await t.signIn()).headers)).statusCode).toBe(404);
+    // The download carries everyone's contact details, so it's for staff who manage the event.
+    expect((await as(door, "attendees.csv")).statusCode).toBe(403);
+    expect((await as(await member("ADMIN"), "attendees.csv")).statusCode).toBe(200);
+    expect((await as((await t.signIn()).headers, "attendees.csv")).statusCode).toBe(404);
   });
 });

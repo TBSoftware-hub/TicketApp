@@ -39,3 +39,13 @@ export const attendeeSearchSchema = z.object({
   ticketTypeId: z.preprocess(blankToUndefined, z.uuid().optional()),
 });
 export type AttendeeSearch = z.infer<typeof attendeeSearchSchema>;
+
+/** The attendee download: the list's search and filters, plus whether to add medical details. */
+export const attendeeExportSchema = attendeeSearchSchema.extend({
+  /** Adds emergency contacts and medical notes, which not everyone the file goes to should see. */
+  details: z
+    .enum(["1"])
+    .optional()
+    .transform((d) => d === "1"),
+});
+export type AttendeeExport = z.infer<typeof attendeeExportSchema>;

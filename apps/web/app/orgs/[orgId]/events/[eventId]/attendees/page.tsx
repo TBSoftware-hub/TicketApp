@@ -101,6 +101,11 @@ export default async function AttendeesPage({
     minute: "2-digit",
   });
   const filterLink = (f: Record<string, string>) => `${base}/attendees?${new URLSearchParams(f)}`;
+  /** The CSV of whoever the current search and filters pick out. */
+  const download = (extra: Record<string, string>) => {
+    const q = new URLSearchParams([...query, ...Object.entries(extra)]);
+    return `${base}/attendees/attendees.csv${q.size ? `?${q}` : ""}`;
+  };
 
   const waiverText = (a: AttendeeRow) => {
     if (a.waiver === "signed") return "Waivers signed";
@@ -213,6 +218,20 @@ export default async function AttendeesPage({
           </p>
         )}
       </form>
+
+      {/* The download carries everyone's contact details, so it's for staff who manage events. */}
+      {roleCan(role, "events.manage") && totals.attendees > 0 && (
+        <p className="muted">
+          {filtered ? "Download the matches" : "Download everyone"}:{" "}
+          <a href={download({})} download>
+            Spreadsheet (CSV)
+          </a>
+          {" · "}
+          <a href={download({ details: "1" })} download>
+            With emergency contacts and medical notes
+          </a>
+        </p>
+      )}
 
       {attendees.length === 0 ? (
         <p className="muted">
