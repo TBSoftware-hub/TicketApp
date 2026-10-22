@@ -118,6 +118,8 @@ export async function seed(prisma: PrismaClient) {
             eventId: event.id,
             ticketTypeId: ticketType.id,
             attendeeId: attendee.id,
+            // Its type asks for a waiver, and nobody has signed it yet.
+            waiversRequired: true,
           },
         },
       },
