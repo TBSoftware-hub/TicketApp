@@ -43,7 +43,13 @@ const orderFields = {
       attendee: { select: { firstName: true, lastName: true } },
       _count: { select: { signatures: true } },
       guardianRequest: {
-        select: { signedAt: true, remindersSent: true, guardian: { select: { name: true } } },
+        select: {
+          signedAt: true,
+          remindersDelivered: true,
+          emailDeliveredAt: true,
+          textDeliveredAt: true,
+          guardian: { select: { name: true } },
+        },
       },
     },
   },

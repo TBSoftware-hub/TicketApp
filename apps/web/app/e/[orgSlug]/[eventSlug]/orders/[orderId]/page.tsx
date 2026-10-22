@@ -35,6 +35,7 @@ interface PublicOrder {
     lastName: string;
     hasWaivers: boolean;
     awaitingGuardian: string | null;
+    guardianLinkSent: boolean;
   }[];
 }
 
@@ -133,8 +134,8 @@ export default async function OrderPage({
               </span>
               {order.status === "PAID" && t.awaitingGuardian && (
                 <span className="muted">
-                  Waiting for {t.awaitingGuardian} to sign. We&apos;ve sent them a link and will
-                  remind them.
+                  Waiting for {t.awaitingGuardian} to sign.
+                  {t.guardianLinkSent && " We've sent them a link to sign with."}
                 </span>
               )}
               {t.hasWaivers && (

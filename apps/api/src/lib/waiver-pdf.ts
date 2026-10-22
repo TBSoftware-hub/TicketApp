@@ -34,8 +34,8 @@ export const ticketWaiverFields = {
   // Where the guardian's signing link actually went, channel by channel.
   guardianRequest: {
     select: {
-      emailSentAt: true,
-      textSentAt: true,
+      emailDeliveredAt: true,
+      textDeliveredAt: true,
       guardian: { select: { email: true, phone: true } },
     },
   },
@@ -319,8 +319,8 @@ export async function waiverPdf(
     const request = ticket.guardianRequest;
     if (s.signerRole === "GUARDIAN" && request) {
       const sentTo = [
-        request.emailSentAt && request.guardian.email,
-        request.textSentAt && request.guardian.phone,
+        request.emailDeliveredAt && request.guardian.email,
+        request.textDeliveredAt && request.guardian.phone,
       ].filter(Boolean);
       if (sentTo.length > 0) rows.push(["Link sent to", sentTo.join(", ")]);
     }

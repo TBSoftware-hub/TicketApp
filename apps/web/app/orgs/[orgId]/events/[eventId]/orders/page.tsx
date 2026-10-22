@@ -30,7 +30,9 @@ interface OrderRecord {
     _count: { signatures: number };
     guardianRequest: {
       signedAt: string | null;
-      remindersSent: number;
+      remindersDelivered: number;
+      emailDeliveredAt: string | null;
+      textDeliveredAt: string | null;
       guardian: { name: string };
     } | null;
   }[];
@@ -151,8 +153,11 @@ export default async function OrdersPage({
                       {t.status === "VALID" && t.guardianRequest && !t.guardianRequest.signedAt && (
                         <span className="muted">
                           {" · "}Waiting on {t.guardianRequest.guardian.name}
-                          {t.guardianRequest.remindersSent > 0 &&
-                            ` (reminded ${t.guardianRequest.remindersSent === 1 ? "once" : "twice"})`}
+                          {/* Only what actually reached them, not what's queued. */}
+                          {!t.guardianRequest.emailDeliveredAt && !t.guardianRequest.textDeliveredAt
+                            ? " (link not delivered yet)"
+                            : t.guardianRequest.remindersDelivered > 0 &&
+                              ` (reminded ${t.guardianRequest.remindersDelivered === 1 ? "once" : "twice"})`}
                         </span>
                       )}
                       {t._count.signatures > 0 && (

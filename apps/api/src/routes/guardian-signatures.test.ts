@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Prisma } from "@ticketapp/db";
 import { localDate } from "@ticketapp/shared";
 import { canonical } from "../lib/canonical";
 import { guardianRequests, MAX_GUARDIAN_REMINDERS } from "../lib/guardian-requests";
@@ -485,16 +486,32 @@ describe("guardian signatures for minors", () => {
           headers: s.owner.headers,
         })
       ).json() as {
-        orders: { id: string; tickets: { guardianRequest: { signedAt: string | null } }[] }[];
+        orders: {
+          id: string;
+          tickets: {
+            guardianRequest: {
+              signedAt: string | null;
+              remindersDelivered: number;
+              emailDeliveredAt: string | null;
+            };
+          }[];
+        }[];
         waitingOnGuardians: number;
       };
-    const buyerOrder = async () =>
+    const staffTicket = async () =>
+      (await staffOrders()).orders.find((o) => o.id === orderId)!.tickets[0]!.guardianRequest;
+    const buyerTicket = async () =>
       (
         await t.app.inject({ method: "POST", url: `/public/orders/${orderId}`, payload: { key } })
-      ).json().order.tickets[0].awaitingGuardian;
+      ).json().order.tickets[0];
+    const buyerOrder = async () => (await buyerTicket()).awaitingGuardian;
     expect((await staffOrders()).waitingOnGuardians).toBe(1);
     expect((await staffOrders("?waiting=1")).orders.map((o) => o.id)).toEqual([orderId]);
-    expect(await buyerOrder()).toBe("Sam Park");
+    expect(await buyerTicket()).toMatchObject({
+      awaitingGuardian: "Sam Park",
+      guardianLinkSent: true,
+    });
+    expect(await staffTicket()).toMatchObject({ remindersDelivered: 0 });
 
     const mail: MailMessage[] = [];
     const sms: TextMessage[] = [];
@@ -529,6 +546,7 @@ describe("guardian signatures for minors", () => {
     expect((await view(second)).statusCode).toBe(200);
     const log = await t.prisma.notification.findMany({ where: { guardianId: request.guardianId } });
     expect(log.filter((n) => n.body.startsWith("Reminded to sign"))).toHaveLength(2);
+    expect(await staffTicket()).toMatchObject({ remindersDelivered: 1 });
 
     // Not again right away (sent times are real ones, so "right away" is now), nor two days
     // later: the second is kept for the last day before the event. Then no more.
@@ -542,9 +560,8 @@ describe("guardian signatures for minors", () => {
     await reminders.retry(new Date(startsAt.getTime() - 60_000));
     expect(remindersFor()).toHaveLength(2);
     expect(
-      (await t.prisma.guardianSignatureRequest.findUniqueOrThrow({ where: { id: request.id } }))
-        .remindersSent,
-    ).toBe(2);
+      await t.prisma.guardianSignatureRequest.findUniqueOrThrow({ where: { id: request.id } }),
+    ).toMatchObject({ remindersSent: 2, remindersDelivered: 2 });
 
     // Signing through the reminder's link settles it everywhere.
     expect((await sign(second)).statusCode).toBe(200);
@@ -579,6 +596,49 @@ describe("guardian signatures for minors", () => {
     expect(
       (await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where })).pendingMessages,
     ).toBeNull();
+  });
+
+  it("still sends the last-day reminder after an earlier reminder never arrived", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam9@example.com" } }),
+    ]);
+    const { orderId } = res.json() as { orderId: string };
+    await remindOnly([orderId]);
+    const where = { ticket: { orderId } };
+    const delivered = (await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where }))
+      .emailDeliveredAt;
+    expect(delivered).not.toBeNull();
+    const sweep = (send: (m: MailMessage) => Promise<void>) =>
+      guardianRequests({ prisma: t.prisma, mailer: { send }, log: t.app.log, webBaseUrl: "x" });
+
+    // The first reminder fails, and is eventually given up on.
+    await sweep(async () => {
+      throw new Error("down");
+    }).retry(new Date(Date.now() + 49 * 60 * 60_000));
+    await t.prisma.guardianSignatureRequest.updateMany({
+      where,
+      data: { pendingMessages: Prisma.DbNull },
+    });
+    const failed = await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where });
+    // The original delivery is still on record, and the failed one doesn't count as a reminder.
+    expect(failed).toMatchObject({
+      remindersSent: 1,
+      remindersDelivered: 0,
+      emailSentAt: null,
+      emailDeliveredAt: delivered,
+    });
+
+    // Once mail works again, the last-day reminder still goes.
+    const mail: MailMessage[] = [];
+    await sweep(async (m) => void mail.push(m)).retry(
+      new Date(startsAt.getTime() - 2 * 60 * 60_000),
+    );
+    expect(mail.filter((m) => m.to === "sam9@example.com")).toHaveLength(1);
+    expect(await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where })).toMatchObject({
+      remindersSent: 2,
+      remindersDelivered: 1,
+    });
   });
 
   it("doesn't remind a guardian who signed, or for a cancelled event", async () => {

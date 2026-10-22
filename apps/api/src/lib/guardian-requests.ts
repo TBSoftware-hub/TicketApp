@@ -112,6 +112,7 @@ export function guardianRequests({
       const request = await prisma.guardianSignatureRequest.findUniqueOrThrow({
         where: { id: requestId },
         select: {
+          id: true,
           guardianId: true,
           pendingMessages: true,
           emailSentAt: true,
@@ -137,7 +138,7 @@ export function guardianRequests({
             idempotencyKey: `guardian-request-${requestId}${round}`,
           });
           // Done only once it's recorded; a retry after a failed record reuses the idempotency key.
-          await sent(requestId, request.guardianId, "EMAIL", messages.email.to, messages.summary);
+          await sent(request, "EMAIL", messages.email.to, messages.summary);
           emailDone = true;
         } catch (err) {
           log.error({ err, requestId }, "Couldn't email the guardian signature request");
@@ -146,7 +147,7 @@ export function guardianRequests({
       if (!textDone && messages.text && texter) {
         try {
           await texter.send(messages.text);
-          await sent(requestId, request.guardianId, "SMS", messages.text.to, messages.summary);
+          await sent(request, "SMS", messages.text.to, messages.summary);
           textDone = true;
         } catch (err) {
           log.error({ err, requestId }, "Couldn't text the guardian signature request");
@@ -182,22 +183,37 @@ export function guardianRequests({
     });
   }
 
-  /** Records a message that went out, in the request and the notification log. */
+  /**
+   * Records a message that went out, in the request and the notification log. The delivery times
+   * outlast the round, and a reminder counts as delivered once it reaches either channel.
+   */
   async function sent(
-    requestId: string,
-    guardianId: string,
+    request: { id: string; guardianId: string },
     channel: "EMAIL" | "SMS",
     to: string,
     summary: string,
   ) {
     const at = new Date();
     await prisma.$transaction([
+      // Counted on the round's first channel to get through, before that's recorded below.
+      prisma.guardianSignatureRequest.updateMany({
+        where: {
+          id: request.id,
+          remindersSent: { gt: 0 },
+          emailSentAt: null,
+          textSentAt: null,
+        },
+        data: { remindersDelivered: { increment: 1 } },
+      }),
       prisma.guardianSignatureRequest.update({
-        where: { id: requestId },
-        data: channel === "EMAIL" ? { emailSentAt: at } : { textSentAt: at },
+        where: { id: request.id },
+        data:
+          channel === "EMAIL"
+            ? { emailSentAt: at, emailDeliveredAt: at }
+            : { textSentAt: at, textDeliveredAt: at },
       }),
       prisma.notification.create({
-        data: { guardianId, channel, to, body: summary, status: "SENT" },
+        data: { guardianId: request.guardianId, channel, to, body: summary, status: "SENT" },
       }),
     ]);
   }
@@ -295,7 +311,8 @@ export function guardianRequests({
   async function remind(now: Date) {
     try {
       const lastDay = new Date(now.getTime() + REMINDER_LAST_DAY_HOURS * 60 * 60_000);
-      // Each round resets the sent times, so the later of the two is when the last round went out.
+      // Delivery times survive a failed round, so a reminder that never arrived still leaves the
+      // last-day reminder to come.
       const due = await prisma.$queryRaw<{ id: string; remindersSent: number }[]>`
         SELECT r.id, r."remindersSent" FROM "GuardianSignatureRequest" r
         JOIN "Ticket" t ON t.id = r."ticketId"
@@ -312,14 +329,14 @@ export function guardianRequests({
           AND o.status = 'PAID'
           AND e.status <> 'CANCELLED'
           AND e."startsAt" > ${now}
-          AND GREATEST(r."emailSentAt", r."textSentAt") IS NOT NULL
+          AND GREATEST(r."emailDeliveredAt", r."textDeliveredAt") IS NOT NULL
           AND (
             -- Only the first reminder comes two days on; the second is kept for the last day.
             (r."remindersSent" = 0
-              AND GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_AFTER_HOURS * 60)})
+              AND GREATEST(r."emailDeliveredAt", r."textDeliveredAt") <= ${minutesBefore(now, REMINDER_AFTER_HOURS * 60)})
             OR (
               e."startsAt" <= ${lastDay}
-              AND GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_LAST_DAY_GAP_HOURS * 60)}
+              AND GREATEST(r."emailDeliveredAt", r."textDeliveredAt") <= ${minutesBefore(now, REMINDER_LAST_DAY_GAP_HOURS * 60)}
             )
           )
         ORDER BY r."createdAt"
