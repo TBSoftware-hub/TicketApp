@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MAX_GRADE, MIN_GRADE } from "./ticket-types";
-import { birthDateSchema, emergencyInfoSchema, guardianContactSchema } from "./guardians";
+import { birthDateSchema, guardianContactSchema } from "./guardians";
 import { checkoutWaiverSchema } from "./waivers";
 
 export const feePayerSchema = z.enum(["BUYER", "ORGANIZATION"]);
@@ -95,8 +95,11 @@ export const checkoutTicketSchema = z.object({
   dateOfBirth: birthDateSchema.nullable().optional(),
   /** Who signs for an attendee under 18; asked for alongside the date of birth. */
   guardian: guardianContactSchema.nullable().optional(),
-  /** Asked for when the ticket type wants an emergency contact and medical notes. */
-  emergency: emergencyInfoSchema.nullable().optional(),
+  /**
+   * Asked for when the ticket type wants an emergency contact and medical notes. Checked against
+   * `emergencyInfoSchema` once the ticket type is known, and ignored for types that don't ask.
+   */
+  emergency: z.unknown().optional(),
 });
 export type CheckoutTicket = z.infer<typeof checkoutTicketSchema>;
 

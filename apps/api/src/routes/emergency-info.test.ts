@@ -150,6 +150,26 @@ describe("emergency contact and medical notes", () => {
     });
   });
 
+  it("ignores anything sent for a ticket type that doesn't ask, even if it wouldn't pass", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      {
+        ticketTypeId: s.guest.id,
+        firstName: "Sam",
+        lastName: "Park",
+        emergency: { contactName: "", contactPhone: "" },
+      },
+    ]);
+    expect(res.statusCode).toBe(201);
+    const { orders } = (await s.call("GET", `${s.base}/orders`)).json() as {
+      orders: { tickets: { attendee: Record<string, string | null> }[] }[];
+    };
+    expect(orders[0]!.tickets[0]!.attendee).toMatchObject({
+      emergencyContactName: null,
+      emergencyContactPhone: null,
+    });
+  });
+
   it("can be turned on and off for a ticket type", async () => {
     const s = await trip();
     const url = `${s.base}/ticket-types/${s.guest.id}`;
