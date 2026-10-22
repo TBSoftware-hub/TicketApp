@@ -51,14 +51,16 @@ type Column = keyof typeof COLUMNS;
 const heading = (s: string) => s.trim().toLowerCase().replace(/[_.]+/g, " ").replace(/\s+/g, " ");
 
 /**
- * Splits CSV text into rows, following the quoting rules spreadsheets use. Returns the line a
- * quote was opened on when it's never closed, since everything after it would run into one cell.
+ * Splits CSV text into rows, following the quoting rules spreadsheets use. Quotes anywhere else
+ * are refused with the line they're on, since a stray one would run the rows after it into a cell.
  */
-function csvRows(text: string): { line: number; cells: string[] }[] | { unclosedQuote: number } {
+function csvRows(text: string): { line: number; cells: string[] }[] | { problem: string } {
   const rows: { line: number; cells: string[] }[] = [];
   let cells: string[] = [];
   let value = "";
   let quoted = false;
+  // Just past a quoted value's closing quote, where only a comma or line break may follow.
+  let closed = false;
   let line = 1;
   let rowLine = 1;
   let quoteLine = 1;
@@ -76,26 +78,36 @@ function csvRows(text: string): { line: number; cells: string[] }[] | { unclosed
         i++;
       } else if (ch === '"') {
         quoted = false;
+        closed = true;
       } else {
         if (ch === "\n") line++;
         value += ch;
       }
-    } else if (ch === '"') {
-      quoted = true;
-      quoteLine = line;
     } else if (ch === ",") {
       cells.push(value);
       value = "";
+      closed = false;
     } else if (ch === "\n" || ch === "\r") {
       if (ch === "\r" && text[i + 1] === "\n") i++;
       endRow();
+      closed = false;
       line++;
       rowLine = line;
+    } else if (closed || ch === '"') {
+      // A quote may only open a value, and nothing may follow the quote that closes one.
+      if (ch === '"' && !closed && value === "") {
+        quoted = true;
+        quoteLine = line;
+      } else {
+        return {
+          problem: `Line ${line}: a quote mark in the middle of a value. Put quotes around the whole value and double any quote inside it ("")`,
+        };
+      }
     } else {
       value += ch;
     }
   }
-  if (quoted) return { unclosedQuote: quoteLine };
+  if (quoted) return { problem: `Line ${quoteLine}: a quote mark opens here and never closes` };
   if (value !== "" || cells.length > 0) endRow();
   return rows;
 }
@@ -120,12 +132,7 @@ function parseGrade(value: string): number | null | "bad" {
  */
 export function parseRosterCsv(text: string): RosterParse {
   const rows = csvRows(text.replace(/^\uFEFF/, ""));
-  if ("unclosedQuote" in rows) {
-    return {
-      ok: false,
-      problems: [`Line ${rows.unclosedQuote}: a quote mark opens here and never closes`],
-    };
-  }
+  if ("problem" in rows) return { ok: false, problems: [rows.problem] };
   const [head, ...body] = rows;
   if (!head) return { ok: false, problems: ["The file is empty"] };
 

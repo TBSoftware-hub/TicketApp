@@ -19,7 +19,7 @@ function lockOrganization(tx: Prisma.TransactionClient, orgId: string) {
 }
 
 /** What's on file, without listing students: how many, in which grades, and since when. */
-async function rosterSummary(prisma: PrismaClient, orgId: string) {
+async function rosterSummary(prisma: Prisma.TransactionClient, orgId: string) {
   const org = await prisma.organization.findUniqueOrThrow({
     where: { id: orgId },
     select: { rosterImportedAt: true },
@@ -69,7 +69,7 @@ export async function rosterRoutes(app: FastifyInstance, { prisma }: { prisma: P
       }
 
       // The new roster replaces the old one in full, so students who've left drop off.
-      await prisma.$transaction(
+      return prisma.$transaction(
         async (tx) => {
           // One import at a time, so two can't interleave their rows.
           await lockOrganization(tx, orgId);
@@ -85,10 +85,11 @@ export async function rosterRoutes(app: FastifyInstance, { prisma }: { prisma: P
             where: { id: orgId },
             data: { rosterImportedAt: new Date() },
           });
+          // Read before the lock is let go, so it's this import's roster being described.
+          return rosterSummary(tx, orgId);
         },
         { timeout: 30_000 },
       );
-      return rosterSummary(prisma, orgId);
     },
   );
 

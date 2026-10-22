@@ -63,6 +63,22 @@ describe("parseRosterCsv", () => {
     });
   });
 
+  it("refuses a quote in the middle of a value, which would swallow the next row", () => {
+    const csv = 'id,first,last,notes\nS1,Sam,Lee,some "note\nS2,Jo,Park,other"\n';
+    expect(parseRosterCsv(csv)).toEqual({
+      ok: false,
+      problems: [
+        'Line 2: a quote mark in the middle of a value. Put quotes around the whole value and double any quote inside it ("")',
+      ],
+    });
+    expect(parseRosterCsv('id,first,last\nS1,"Sam"x,Lee\n').ok).toBe(false);
+    // Quotes done properly are fine.
+    expect(parseRosterCsv('id,first,last\nS1,"Sam ""Red""",Lee\n')).toEqual({
+      ok: true,
+      students: [{ studentId: "S1", firstName: 'Sam "Red"', lastName: "Lee", grade: null }],
+    });
+  });
+
   it("stops listing problems after twenty", () => {
     const rows = Array.from({ length: 25 }, (_, i) => `S${i},Sam,,9`);
     const parsed = parseRosterCsv(["id,first,last,grade", ...rows].join("\n"));
