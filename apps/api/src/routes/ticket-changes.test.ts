@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { orderConfirmations } from "../lib/confirmations";
 import { buildTestApp, uniqueSlug } from "../test-helpers";
 
 describe("editing, transferring and resending tickets", () => {
@@ -222,15 +223,54 @@ describe("editing, transferring and resending tickets", () => {
     });
     expect(moved.statusCode).toBe(201);
     const { comps } = (await s.call("GET", `${s.base}/comps`)).json();
+    expect(comps[0].tickets).toMatchObject([{ status: "VALID", attendee: { firstName: "Mo" } }]);
+  });
+
+  it("counts a transferred ticket once, in orders, door sales and cancellation emails", async () => {
+    const s = await school();
+    const door = (
+      await s.call("POST", `${s.base}/ticket-types`, {
+        name: "Door",
+        priceCents: 500,
+        maxPerOrder: 4,
+      })
+    ).json().ticketType.id as string;
+    const email = `jo-${randomUUID()}@example.com`;
+    const sale = {
+      saleKey: randomUUID(),
+      ticketTypeId: door,
+      quantity: 1,
+      firstName: "Jo",
+      lastName: "Park",
+      email,
+    };
+    const first = await s.call("POST", `${s.base}/door-sales`, sale);
+    expect(first.statusCode).toBe(201);
+    const orderId = first.json().sale.id as string;
+    const old = await t.prisma.ticket.findFirstOrThrow({ where: { orderId } });
+    const moved = await s.call("POST", `${s.base}/tickets/${old.id}/transfer`, {
+      firstName: "Al",
+      lastName: "Ng",
+    });
+    expect(moved.statusCode).toBe(201);
+    const issued = await t.prisma.ticket.findUniqueOrThrow({
+      where: { id: moved.json().ticket.id },
+    });
+    expect(issued.transferredFromId).toBe(old.id);
+
+    // A retry of the sale is still the same sale.
+    const again = await s.call("POST", `${s.base}/door-sales`, sale);
+    expect(again.statusCode).toBe(200);
+    expect(again.json().sale.tickets).toHaveLength(1);
+    const { orders } = (await s.call("GET", `${s.base}/orders`)).json();
+    const listed = orders.find((o: { id: string }) => o.id === orderId);
     expect(
-      comps[0].tickets.map((x: { status: string; attendee: { firstName: string } }) => [
-        x.status,
-        x.attendee.firstName,
-      ]),
-    ).toEqual([
-      ["VOID", "Dee"],
-      ["VALID", "Mo"],
-    ]);
+      listed.tickets.map((x: { transferredTo: { id: string } | null }) => x.transferredTo?.id),
+    ).toEqual([issued.id, undefined]);
+
+    expect((await s.call("POST", `${s.base}/orders/${orderId}/cancel`)).statusCode).toBe(200);
+    const notice = t.sent.findLast((m) => m.to === email && m.text.includes("cancelled"))!;
+    expect(notice.text).toContain("cancelled your ticket for Prom");
   });
 
   it("holds transfers of students-only tickets to the same rules as checkout", async () => {
@@ -359,9 +399,21 @@ describe("editing, transferring and resending tickets", () => {
       confirmationClaimedAt: null,
       confirmationAttempts: 0,
     });
-    // The key the retry will send is the order's new one.
-    expect((await view(fresh.orderId, pending.emailViewKey!)).statusCode).toBe(200);
+    // A confirmation that was handed the old key before the resend fails, such as a buyer
+    // opening their order just then, still sends the new one.
+    const confirmations = orderConfirmations({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void t.sent.push(m) },
+      webBaseUrl: "https://dashboard.test",
+      log: t.app.log,
+    });
+    await confirmations.confirm(fresh.orderId, fresh.key);
+    const retried = t.sent.findLast((m) => m.to === email)!;
+    const link = new URL(retried.text.match(/https:\S+/)![0]);
+    expect(link.searchParams.get("key")).toBe(pending.emailViewKey);
+    // The old link no longer opens the order, and the new one does.
     expect((await view(fresh.orderId, fresh.key)).statusCode).toBe(404);
+    expect((await view(fresh.orderId, pending.emailViewKey!)).statusCode).toBe(200);
 
     // One already tried may be held by the provider under its key, so retries stop and staff
     // send it from here.

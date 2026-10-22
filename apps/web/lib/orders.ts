@@ -12,6 +12,8 @@ export interface ManagedOrder {
   tickets: {
     id: string;
     status: "HELD" | "VALID" | "VOID";
+    /** Set when staff gave the ticket to someone else. */
+    transferredTo: { id: string } | null;
     ticketType: { name: string; studentsOnly: boolean; askEmergencyInfo: boolean };
     attendee: {
       firstName: string;

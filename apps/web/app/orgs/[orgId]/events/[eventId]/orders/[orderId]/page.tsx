@@ -65,7 +65,7 @@ export default async function OrderPage({
                   </a>
                 </>
               ) : (
-                open && <span className="muted"> · given to someone else</span>
+                t.transferredTo && <span className="muted"> · given to someone else</span>
               )}
             </li>
           ))}

@@ -23,8 +23,8 @@ const compFields = {
   createdAt: true,
   compedBy: { select: { name: true } },
   tickets: {
-    // Oldest first, so a comp given to someone else ends with whoever has it now.
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    // Whoever has it now, if it was given to someone else.
+    where: { transferredTo: { is: null } },
     select: {
       id: true,
       status: true,

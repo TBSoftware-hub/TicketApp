@@ -289,6 +289,7 @@ export async function ticketChangeRoutes(
           eventId,
           ticketTypeId: old.ticketTypeId,
           attendeeId: attendee.id,
+          transferredFromId: ticketId,
           waiversRequired: hasWaivers,
         },
         select: { id: true, orderId: true },

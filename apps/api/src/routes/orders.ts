@@ -39,6 +39,8 @@ const orderFields = {
     select: {
       id: true,
       status: true,
+      /** Set on a ticket staff gave to someone else; the order lists it as history. */
+      transferredTo: { select: { id: true } },
       ticketType: { select: { name: true } },
       attendee: {
         select: {
@@ -194,7 +196,8 @@ export async function orderRoutes(
         stripePaymentIntentId: true,
         buyerName: true,
         buyerEmail: true,
-        _count: { select: { tickets: true } },
+        // The tickets the buyer has, not ones given to someone else.
+        _count: { select: { tickets: { where: { transferredTo: { is: null } } } } },
       },
     });
     if (!order) throw new HttpError(404, "Order not found");

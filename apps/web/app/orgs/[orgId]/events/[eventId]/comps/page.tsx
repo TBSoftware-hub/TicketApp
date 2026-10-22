@@ -93,8 +93,7 @@ export default async function CompsPage({
           )}
           <ul className="cards">
             {comps.map((c) => {
-              // The holder now, after any transfer; a voided comp shows its last holder.
-              const ticket = c.tickets.find((t) => t.status === "VALID") ?? c.tickets.at(-1);
+              const ticket = c.tickets[0];
               const voided = c.status === "CANCELLED";
               return (
                 <li key={c.id} className="card row">

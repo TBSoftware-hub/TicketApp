@@ -145,7 +145,8 @@ export function orderConfirmations({
       // with a different message, which an edit to the event in between would cause.
       let snapshot = order.confirmationEmail as EmailSnapshot | null;
       if (!snapshot) {
-        const key = viewKey ?? order.emailViewKey;
+        // The stored key first: a resend may have replaced the one this caller was given.
+        const key = order.emailViewKey ?? viewKey;
         const { event } = order;
         const orderUrl = key ? orderLink(webBaseUrl, event, orderId, key) : null;
         // The claim only takes orders with an email.

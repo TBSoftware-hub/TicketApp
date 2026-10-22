@@ -24,7 +24,11 @@ const saleFields = {
   totalCents: true,
   createdAt: true,
   soldBy: { select: { name: true } },
-  tickets: { select: { ticketType: { select: { name: true } } } },
+  // The tickets as they are now, after any were given to someone else.
+  tickets: {
+    where: { transferredTo: { is: null } },
+    select: { ticketType: { select: { name: true } } },
+  },
 } as const;
 
 /** Tickets sold at the door for cash. Door staff can sell as well as scan. */
@@ -97,7 +101,11 @@ export async function doorSaleRoutes(
         select: {
           ...saleFields,
           eventId: true,
-          tickets: { select: { ticketTypeId: true, ticketType: { select: { name: true } } } },
+          // The tickets the sale issued, before any transfers.
+          tickets: {
+            where: { transferredFromId: null },
+            select: { ticketTypeId: true, ticketType: { select: { name: true } } },
+          },
         },
       });
       if (earlier) {
