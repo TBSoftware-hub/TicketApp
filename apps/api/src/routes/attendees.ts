@@ -249,8 +249,8 @@ export async function attendeeRoutes(app: FastifyInstance, { prisma }: { prisma:
   app.get("/orgs/:orgId/events/:eventId/attendees.csv", async (request, reply) => {
     const { orgId, eventId } = parse(paramsSchema, request.params);
     const { details, ...search } = parse(attendeeExportSchema, request.query);
-    // Contact details for every attendee and buyer leave with the file, so this is for managers.
-    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    // Door staff take it to the door, the same as the list, so this follows check-in too.
+    await requireOrgPermission(prisma, request, orgId, "checkin.scan");
     const event = await prisma.event.findFirst({
       where: { id: eventId, organizationId: orgId },
       select: { slug: true, organization: { select: { timezone: true } } },

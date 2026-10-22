@@ -391,7 +391,7 @@ describe("attendee list", () => {
     expect(rows.map((r) => r[header!.indexOf("First name")])).toEqual(["Ann", "Gus", "Jo"]);
   });
 
-  it("is for staff who work the door or manage the event, and the download for managers", async () => {
+  it("is for staff who work the door or manage the event, list and download alike", async () => {
     const s = await trip();
     const member = async (role: string) => {
       const email = `m-${randomUUID()}@example.com`;
@@ -409,12 +409,12 @@ describe("attendee list", () => {
     const as = (headers: Record<string, string>, path = "attendees") =>
       t.app.inject({ method: "GET", url: `${s.base}/${path}`, headers });
     const door = await member("DOOR_STAFF");
-    expect((await as(door)).statusCode).toBe(200);
-    expect((await as(await member("VIEWER"))).statusCode).toBe(403);
-    expect((await as((await t.signIn()).headers)).statusCode).toBe(404);
-    // The download carries everyone's contact details, so it's for staff who manage the event.
-    expect((await as(door, "attendees.csv")).statusCode).toBe(403);
-    expect((await as(await member("ADMIN"), "attendees.csv")).statusCode).toBe(200);
-    expect((await as((await t.signIn()).headers, "attendees.csv")).statusCode).toBe(404);
+    const viewer = await member("VIEWER");
+    const outsider = (await t.signIn()).headers;
+    for (const path of ["attendees", "attendees.csv", "attendees.csv?details=1"]) {
+      expect((await as(door, path)).statusCode).toBe(200);
+      expect((await as(viewer, path)).statusCode).toBe(403);
+      expect((await as(outsider, path)).statusCode).toBe(404);
+    }
   });
 });

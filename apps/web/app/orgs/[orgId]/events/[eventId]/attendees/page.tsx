@@ -219,8 +219,7 @@ export default async function AttendeesPage({
         )}
       </form>
 
-      {/* The download carries everyone's contact details, so it's for staff who manage events. */}
-      {roleCan(role, "events.manage") && totals.attendees > 0 && (
+      {totals.attendees > 0 && (
         <p className="muted">
           {filtered ? "Download the matches" : "Download everyone"}:{" "}
           <a href={download({})} download>
