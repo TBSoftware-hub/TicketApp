@@ -128,10 +128,23 @@ export async function orderRoutes(
     const waitingOnGuardians = await prisma.ticket.count({
       where: { eventId, order: { status: "PAID" }, ...awaitingGuardian },
     });
+    // What the waiver downloads would hold: valid tickets that carry waivers, and those signed.
+    const valid = { eventId, status: "VALID" as const, order: { status: "PAID" as const } };
+    const [waiverTickets, signedWaiverTickets] = await Promise.all([
+      prisma.ticket.count({
+        where: {
+          ...valid,
+          OR: [{ ticketType: { waivers: { some: {} } } }, { signatures: { some: {} } }],
+        },
+      }),
+      prisma.ticket.count({ where: { ...valid, signatures: { some: {} } } }),
+    ]);
     return {
       orders: orders.slice(0, ORDER_PAGE),
       more: orders.length > ORDER_PAGE,
       waitingOnGuardians,
+      waiverTickets,
+      signedWaiverTickets,
     };
   });
 

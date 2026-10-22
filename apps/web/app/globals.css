@@ -359,3 +359,19 @@ button.secondary {
   border-radius: 8px;
   background: color-mix(in srgb, currentColor 6%, transparent);
 }
+
+.downloads-card h2 {
+  margin: 0;
+}
+
+.downloads-card p {
+  margin: 0 0 8px;
+}
+
+.downloads {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}

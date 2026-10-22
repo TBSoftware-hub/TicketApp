@@ -61,16 +61,19 @@ export default async function OrdersPage({
   const search = query.size ? `?${query}` : "";
   const [eventRes, ordersRes] = await Promise.all([
     api<{ event: EventRecord }>(base, { token }),
-    api<{ orders: OrderRecord[]; more: boolean; waitingOnGuardians: number }>(
-      `${base}/orders${search}`,
-      { token },
-    ),
+    api<{
+      orders: OrderRecord[];
+      more: boolean;
+      waitingOnGuardians: number;
+      waiverTickets: number;
+      signedWaiverTickets: number;
+    }>(`${base}/orders${search}`, { token }),
   ]);
   if (eventRes.status === 404 || eventRes.status === 400) notFound();
   if (!("event" in eventRes.data)) throw new Error(`Couldn't load the event (${eventRes.status})`);
   if (!("orders" in ordersRes.data)) throw new Error(`Couldn't load orders (${ordersRes.status})`);
   const event = eventRes.data.event;
-  const { orders, more, waitingOnGuardians } = ordersRes.data;
+  const { orders, more, waitingOnGuardians, waiverTickets, signedWaiverTickets } = ordersRes.data;
   const date = new Intl.DateTimeFormat("en-US", {
     timeZone: org.timezone,
     month: "short",
@@ -117,6 +120,39 @@ export default async function OrdersPage({
             </a>
           )}
         </p>
+      )}
+
+      {waiverTickets > 0 && (
+        <section className="card downloads-card">
+          <h2>Waivers for vendors</h2>
+          <p className="muted">
+            {signedWaiverTickets} of {waiverTickets}{" "}
+            {waiverTickets === 1 ? "attendee has" : "attendees have"} signed. Send these to a venue
+            or tour company that needs proof.
+          </p>
+          <ul className="downloads">
+            {signedWaiverTickets > 0 && (
+              <li>
+                <a href={`${base}/orders/waivers.pdf`} download>
+                  Signed waivers (PDF)
+                </a>
+                <span className="muted"> · every signed waiver in one file</span>
+              </li>
+            )}
+            <li>
+              <a href={`${base}/orders/waivers.csv`} download>
+                Waiver list (CSV)
+              </a>
+              <span className="muted"> · who signed, when, and who still needs to</span>
+            </li>
+            <li>
+              <a href={`${base}/orders/waivers.csv?details=1`} download>
+                Waiver list with emergency info (CSV)
+              </a>
+              <span className="muted"> · adds emergency contacts and medical notes</span>
+            </li>
+          </ul>
+        </section>
       )}
 
       <form className="search-bar" role="search">
