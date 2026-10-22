@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { localDate } from "@ticketapp/shared";
 import { canonical } from "../lib/canonical";
+import { guardianRequests, MAX_GUARDIAN_REMINDERS } from "../lib/guardian-requests";
+import type { MailMessage } from "../lib/mailer";
 import type { TextMessage } from "../lib/texter";
 import { generateToken } from "../lib/tokens";
 import { buildTestApp, pdfText, uniqueSlug } from "../test-helpers";
@@ -447,6 +449,136 @@ describe("guardian signatures for minors", () => {
     const tampered = await t.app.inject({ method: "GET", url: staffUrl, headers: s.owner.headers });
     expect(await pdfText(tampered.rawPayload)).toContain(
       "Wording check: DOES NOT MATCH the stored waiver",
+    );
+  });
+
+  /**
+   * The test database keeps requests from earlier runs, which the reminder sweep would otherwise
+   * get to first; this marks every other unsigned request as already fully reminded.
+   */
+  async function remindOnly(orderIds: string[]) {
+    await t.prisma.guardianSignatureRequest.updateMany({
+      where: { signedAt: null, ticket: { orderId: { notIn: orderIds } } },
+      data: { remindersSent: MAX_GUARDIAN_REMINDERS },
+    });
+  }
+
+  it("shows who still has to sign, and reminds them with a link that also works", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({
+        dateOfBirth: minor,
+        guardian: { name: "Sam Park", email: "sam5@example.com", phone: "555 201 9999" },
+      }),
+    ]);
+    const { orderId, key } = res.json() as { orderId: string; key: string };
+    const first = tokenSentTo("sam5@example.com");
+    const request = await t.prisma.guardianSignatureRequest.findFirstOrThrow({
+      where: { ticket: { orderId } },
+    });
+
+    const staffOrders = async (query = "") =>
+      (
+        await t.app.inject({
+          method: "GET",
+          url: `${s.base}/orders${query}`,
+          headers: s.owner.headers,
+        })
+      ).json() as {
+        orders: { id: string; tickets: { guardianRequest: { signedAt: string | null } }[] }[];
+        waitingOnGuardians: number;
+      };
+    const buyerOrder = async () =>
+      (
+        await t.app.inject({ method: "POST", url: `/public/orders/${orderId}`, payload: { key } })
+      ).json().order.tickets[0].awaitingGuardian;
+    expect((await staffOrders()).waitingOnGuardians).toBe(1);
+    expect((await staffOrders("?waiting=1")).orders.map((o) => o.id)).toEqual([orderId]);
+    expect(await buyerOrder()).toBe("Sam Park");
+
+    const mail: MailMessage[] = [];
+    const sms: TextMessage[] = [];
+    const reminders = guardianRequests({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void mail.push(m) },
+      texter: { send: async (m) => void sms.push(m) },
+      log: t.app.log,
+      webBaseUrl: "https://dashboard.test",
+    });
+    const hours = (h: number) => new Date(Date.now() + h * 60 * 60_000);
+    await remindOnly([orderId]);
+    const remindersFor = () => mail.filter((m) => m.to === "sam5@example.com");
+
+    // Too soon after the first message.
+    await reminders.retry(hours(1));
+    expect(remindersFor()).toHaveLength(0);
+
+    // Two days on, a reminder with its own link, by email and text.
+    await reminders.retry(hours(49));
+    expect(remindersFor()).toHaveLength(1);
+    const reminder = remindersFor()[0]!;
+    expect(reminder.subject).toBe("Reminder: please sign for Jo to go to Museum Trip");
+    expect(reminder.text).toContain("Jo still needs a parent or guardian to sign");
+    expect(reminder.idempotencyKey).toBe(`guardian-request-${request.id}-reminder-1`);
+    expect(sms.findLast((m) => m.to === "+15552019999")?.body).toContain(
+      "reminder, Jo Park's ticket to Museum Trip still needs a parent or guardian to sign",
+    );
+    const second = new URL(reminder.text.match(/https:\S+/)![0]).searchParams.get("token")!;
+    expect(second).not.toBe(first);
+    expect((await view(first)).statusCode).toBe(200);
+    expect((await view(second)).statusCode).toBe(200);
+    const log = await t.prisma.notification.findMany({ where: { guardianId: request.guardianId } });
+    expect(log.filter((n) => n.body.startsWith("Reminded to sign"))).toHaveLength(2);
+
+    // Not again right away (sent times are real ones, so "right away" is now), but once more in
+    // the last day before the event, then no more.
+    await reminders.retry(hours(2));
+    expect(remindersFor()).toHaveLength(1);
+    const lastDay = new Date(startsAt.getTime() - 2 * 60 * 60_000);
+    await reminders.retry(lastDay);
+    expect(remindersFor()).toHaveLength(2);
+    expect(remindersFor()[1]!.idempotencyKey).toBe(`guardian-request-${request.id}-reminder-2`);
+    await reminders.retry(new Date(startsAt.getTime() - 60_000));
+    expect(remindersFor()).toHaveLength(2);
+    expect(
+      (await t.prisma.guardianSignatureRequest.findUniqueOrThrow({ where: { id: request.id } }))
+        .remindersSent,
+    ).toBe(2);
+
+    // Signing through the reminder's link settles it everywhere.
+    expect((await sign(second)).statusCode).toBe(200);
+    expect((await sign(first)).statusCode).toBe(409);
+    expect((await staffOrders()).waitingOnGuardians).toBe(0);
+    expect((await staffOrders("?waiting=1")).orders).toEqual([]);
+    expect(await buyerOrder()).toBeNull();
+  });
+
+  it("doesn't remind a guardian who signed, or for a cancelled event", async () => {
+    const s = await trip();
+    const signs = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam6@example.com" } }),
+    ]);
+    expect(signs.statusCode).toBe(201);
+    await sign(tokenSentTo("sam6@example.com"));
+    const cancelled = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam7@example.com" } }),
+    ]);
+    expect(cancelled.statusCode).toBe(201);
+    const { eventId } = await t.prisma.order.findUniqueOrThrow({
+      where: { id: cancelled.json().orderId },
+    });
+    await t.prisma.event.update({ where: { id: eventId }, data: { status: "CANCELLED" } });
+
+    await remindOnly([signs.json().orderId, cancelled.json().orderId]);
+    const mail: MailMessage[] = [];
+    await guardianRequests({
+      prisma: t.prisma,
+      mailer: { send: async (m) => void mail.push(m) },
+      log: t.app.log,
+      webBaseUrl: "https://dashboard.test",
+    }).retry(new Date(Date.now() + 49 * 60 * 60_000));
+    expect(mail.filter((m) => m.to === "sam6@example.com" || m.to === "sam7@example.com")).toEqual(
+      [],
     );
   });
 

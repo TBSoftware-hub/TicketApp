@@ -54,8 +54,10 @@ const NOT_FOUND = "This link doesn't work. Ask whoever bought the ticket to chec
  * over. Past that the link shows nothing, so it can't keep exposing the attendee's details.
  */
 async function findRequest(db: Prisma.TransactionClient, token: string, now = new Date()) {
-  const request = await db.guardianSignatureRequest.findUnique({
-    where: { tokenHash: hashToken(token) },
+  // The first link, or one sent with a reminder; they all keep working.
+  const tokenHash = hashToken(token);
+  const request = await db.guardianSignatureRequest.findFirst({
+    where: { OR: [{ tokenHash }, { links: { some: { tokenHash } } }] },
     select: requestFields,
   });
   if (!request || request.ticket.status !== "VALID" || request.ticket.order.status !== "PAID") {
@@ -148,9 +150,13 @@ export async function guardianSignatureRoutes(
       return prisma.$transaction(async (tx) => {
         // Locked so two tabs signing at once can't both record a signature.
         const [locked] = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM "GuardianSignatureRequest"
-          WHERE "tokenHash" = ${hashToken(input.token)}
-          FOR UPDATE`;
+          SELECT r.id FROM "GuardianSignatureRequest" r
+          WHERE r."tokenHash" = ${hashToken(input.token)}
+            OR EXISTS (
+              SELECT 1 FROM "GuardianSignatureLink" l
+              WHERE l."requestId" = r.id AND l."tokenHash" = ${hashToken(input.token)}
+            )
+          FOR UPDATE OF r`;
         if (!locked) throw new HttpError(404, NOT_FOUND);
         const now = new Date();
         const found = await findRequest(tx, input.token, now);

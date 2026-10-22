@@ -28,6 +28,11 @@ interface OrderRecord {
     ticketType: { name: string };
     attendee: { firstName: string; lastName: string };
     _count: { signatures: number };
+    guardianRequest: {
+      signedAt: string | null;
+      remindersSent: number;
+      guardian: { name: string };
+    } | null;
   }[];
 }
 
@@ -36,23 +41,28 @@ export default async function OrdersPage({
   searchParams,
 }: {
   params: Promise<{ orgId: string; eventId: string }>;
-  searchParams: Promise<{ q?: string; error?: string }>;
+  searchParams: Promise<{ q?: string; waiting?: string; error?: string }>;
 }) {
   const { orgId, eventId } = await params;
-  const { q = "", error } = await searchParams;
+  const { q = "", waiting: waitingParam, error } = await searchParams;
+  const waiting = waitingParam === "1";
   const { token, org, role } = await loadOrg(orgId);
   if (!roleCan(role, "events.manage")) redirect(`/orgs/${orgId}/events`);
   const base = `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}`;
-  const search = q ? `?${new URLSearchParams({ q })}` : "";
+  const query = new URLSearchParams({ ...(q ? { q } : {}), ...(waiting ? { waiting: "1" } : {}) });
+  const search = query.size ? `?${query}` : "";
   const [eventRes, ordersRes] = await Promise.all([
     api<{ event: EventRecord }>(base, { token }),
-    api<{ orders: OrderRecord[]; more: boolean }>(`${base}/orders${search}`, { token }),
+    api<{ orders: OrderRecord[]; more: boolean; waitingOnGuardians: number }>(
+      `${base}/orders${search}`,
+      { token },
+    ),
   ]);
   if (eventRes.status === 404 || eventRes.status === 400) notFound();
   if (!("event" in eventRes.data)) throw new Error(`Couldn't load the event (${eventRes.status})`);
   if (!("orders" in ordersRes.data)) throw new Error(`Couldn't load orders (${ordersRes.status})`);
   const event = eventRes.data.event;
-  const { orders, more } = ordersRes.data;
+  const { orders, more, waitingOnGuardians } = ordersRes.data;
   const date = new Intl.DateTimeFormat("en-US", {
     timeZone: org.timezone,
     month: "short",
@@ -82,7 +92,27 @@ export default async function OrdersPage({
         back to you.
       </p>
 
+      {(waitingOnGuardians > 0 || waiting) && (
+        <p className="notice" role="status">
+          {waitingOnGuardians === 0
+            ? "Every guardian has signed."
+            : `${waitingOnGuardians === 1 ? "1 ticket is" : `${waitingOnGuardians} tickets are`} waiting on a parent or guardian to sign. They're reminded automatically.`}{" "}
+          {waiting ? (
+            <a href={`${base}/orders${q ? `?${new URLSearchParams({ q })}` : ""}`}>
+              Show all orders
+            </a>
+          ) : (
+            <a
+              href={`${base}/orders?${new URLSearchParams({ ...(q ? { q } : {}), waiting: "1" })}`}
+            >
+              Show them
+            </a>
+          )}
+        </p>
+      )}
+
       <form className="search-bar" role="search">
+        {waiting && <input type="hidden" name="waiting" value="1" />}
         <input
           type="search"
           name="q"
@@ -103,7 +133,7 @@ export default async function OrdersPage({
       )}
 
       {orders.length === 0 ? (
-        <p className="muted">{q ? "No orders match that search." : "No orders yet."}</p>
+        <p className="muted">{q || waiting ? "No orders match that search." : "No orders yet."}</p>
       ) : (
         <ul className="cards">
           {orders.map((o) => {
@@ -118,6 +148,13 @@ export default async function OrdersPage({
                   {o.tickets.map((t) => (
                     <span key={t.id}>
                       {t.attendee.firstName} {t.attendee.lastName} · {t.ticketType.name}
+                      {t.status === "VALID" && t.guardianRequest && !t.guardianRequest.signedAt && (
+                        <span className="muted">
+                          {" · "}Waiting on {t.guardianRequest.guardian.name}
+                          {t.guardianRequest.remindersSent > 0 &&
+                            ` (reminded ${t.guardianRequest.remindersSent === 1 ? "once" : "twice"})`}
+                        </span>
+                      )}
                       {t._count.signatures > 0 && (
                         <>
                           {" · "}

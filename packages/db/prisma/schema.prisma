@@ -457,13 +457,13 @@ model TicketTypeWaiver {
 
 /// A link sent to a minor's guardian, by email or text, to sign the waivers their ticket needs.
 model GuardianSignatureRequest {
-  id               String    @id @default(uuid(7)) @db.Uuid
-  ticketId         String    @unique @db.Uuid
-  ticket           Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  guardianId       String    @db.Uuid
-  guardian         Guardian  @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+  id               String                  @id @default(uuid(7)) @db.Uuid
+  ticketId         String                  @unique @db.Uuid
+  ticket           Ticket                  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  guardianId       String                  @db.Uuid
+  guardian         Guardian                @relation(fields: [guardianId], references: [id], onDelete: Cascade)
   /// SHA-256 of the key in the signing link; the link is the guardian's only way in.
-  tokenHash        String    @unique
+  tokenHash        String                  @unique
   /// The email and text carrying the link, rendered at checkout and kept until they're sent, so
   /// every retry sends the same message. Cleared once sent or given up on.
   pendingMessages  Json?
@@ -473,12 +473,28 @@ model GuardianSignatureRequest {
   sendClaimedAt    DateTime?
   /// The first attempt. Retries stop a day later, while the email provider still remembers it.
   sendFirstTriedAt DateTime?
-  sendAttempts     Int       @default(0)
+  sendAttempts     Int                     @default(0)
+  /// Reminders queued so far. Each one resets the send fields above for its own round.
+  remindersSent    Int                     @default(0)
+  /// Links sent with reminders. Every link keeps working, so an older message still opens.
+  links            GuardianSignatureLink[]
   signedAt         DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
 
   @@index([guardianId])
+}
+
+/// A further link to the same signature request, sent with a reminder.
+model GuardianSignatureLink {
+  id        String                   @id @default(uuid(7)) @db.Uuid
+  requestId String                   @db.Uuid
+  request   GuardianSignatureRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the key in the link.
+  tokenHash String                   @unique
+  createdAt DateTime                 @default(now())
+
+  @@index([requestId])
 }
 
 enum SignerRole {

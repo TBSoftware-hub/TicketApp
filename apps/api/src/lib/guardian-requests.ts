@@ -3,6 +3,7 @@ import { formatEventTime } from "@ticketapp/shared";
 import type { FastifyBaseLogger } from "fastify";
 import type { Mailer } from "./mailer";
 import type { Texter } from "./texter";
+import { generateToken, hashToken } from "./tokens";
 
 /** A send that hasn't finished in this long was abandoned (say, by a restart) and can be retaken. */
 const CLAIM_MINUTES = 10;
@@ -13,6 +14,14 @@ export const MAX_GUARDIAN_REQUEST_ATTEMPTS = 5;
 /** The retry sweep only looks back this far for requests never tried, and at this many per run. */
 const RETRY_DAYS = 7;
 const RETRY_BATCH = 20;
+
+/** A guardian who hasn't signed is reminded at most this many times. */
+export const MAX_GUARDIAN_REMINDERS = 2;
+/** A reminder goes out once the last message has had this long to be acted on... */
+export const REMINDER_AFTER_HOURS = 48;
+/** ...or, once the event is this close, after a shorter wait. */
+export const REMINDER_LAST_DAY_HOURS = 24;
+const REMINDER_LAST_DAY_GAP_HOURS = 12;
 
 const minutesBefore = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000);
 
@@ -39,7 +48,10 @@ export interface GuardianMessages {
 export interface GuardianRequests {
   /** Sends the signing links for a paid order's minors. Never throws; failures are retried. */
   send(orderId: string): Promise<void>;
-  /** Tries again for recent requests whose messages haven't all gone out. */
+  /**
+   * Tries again for recent requests whose messages haven't all gone out, then reminds guardians
+   * who still haven't signed.
+   */
   retry(now?: Date): Promise<void>;
 }
 
@@ -48,11 +60,13 @@ export function guardianRequests({
   mailer,
   texter,
   log,
+  webBaseUrl,
 }: {
   prisma: PrismaClient;
   mailer: Mailer;
   texter?: Texter;
   log: FastifyBaseLogger;
+  webBaseUrl: string;
 }): GuardianRequests {
   async function sendOne(requestId: string) {
     const now = new Date();
@@ -101,6 +115,7 @@ export function guardianRequests({
           emailSentAt: true,
           textSentAt: true,
           sendAttempts: true,
+          remindersSent: true,
         },
       });
       const messages = request.pendingMessages as unknown as GuardianMessages | null;
@@ -114,7 +129,11 @@ export function guardianRequests({
       if (!emailDone && messages.email) {
         try {
           // The same key on every attempt, so a retry after an unclear failure isn't delivered twice.
-          await mailer.send({ ...messages.email, idempotencyKey: `guardian-request-${requestId}` });
+          const round = request.remindersSent ? `-reminder-${request.remindersSent}` : "";
+          await mailer.send({
+            ...messages.email,
+            idempotencyKey: `guardian-request-${requestId}${round}`,
+          });
           // Done only once it's recorded; a retry after a failed record reuses the idempotency key.
           await sent(requestId, request.guardianId, "EMAIL", messages.email.to, messages.summary);
           emailDone = true;
@@ -260,6 +279,130 @@ export function guardianRequests({
     } catch (err) {
       log.error({ err }, "Couldn't look for unsent guardian signature requests");
     }
+    await remind(now);
+  }
+
+  /**
+   * Sends a fresh link to guardians who haven't signed: two days after the last message, and
+   * again in the last day before the event, up to MAX_GUARDIAN_REMINDERS times.
+   */
+  async function remind(now: Date) {
+    try {
+      const lastDay = new Date(now.getTime() + REMINDER_LAST_DAY_HOURS * 60 * 60_000);
+      // Each round resets the sent times, so the later of the two is when the last round went out.
+      const due = await prisma.$queryRaw<{ id: string }[]>`
+        SELECT r.id FROM "GuardianSignatureRequest" r
+        JOIN "Ticket" t ON t.id = r."ticketId"
+        JOIN "Order" o ON o.id = t."orderId"
+        JOIN "Event" e ON e.id = t."eventId"
+        JOIN "Guardian" g ON g.id = r."guardianId"
+        WHERE r."signedAt" IS NULL
+          AND r."pendingMessages" IS NULL
+          -- Someone only reachable by text can't be reminded while texts are off.
+          AND (g.email IS NOT NULL OR (g.phone IS NOT NULL AND ${Boolean(texter)}))
+          AND r."remindersSent" < ${MAX_GUARDIAN_REMINDERS}
+          AND (r."sendClaimedAt" IS NULL OR r."sendClaimedAt" < ${minutesBefore(now, CLAIM_MINUTES)})
+          AND t.status = 'VALID'
+          AND o.status = 'PAID'
+          AND e.status <> 'CANCELLED'
+          AND e."startsAt" > ${now}
+          AND GREATEST(r."emailSentAt", r."textSentAt") IS NOT NULL
+          AND (
+            GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_AFTER_HOURS * 60)}
+            OR (
+              e."startsAt" <= ${lastDay}
+              AND GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_LAST_DAY_GAP_HOURS * 60)}
+            )
+          )
+        ORDER BY r."createdAt"
+        LIMIT ${RETRY_BATCH}`;
+      for (const { id } of due) {
+        try {
+          if (await queueReminder(id)) await sendOne(id);
+        } catch (err) {
+          log.error({ err, requestId: id }, "Couldn't remind the guardian to sign");
+        }
+      }
+    } catch (err) {
+      log.error({ err }, "Couldn't look for guardians to remind");
+    }
+  }
+
+  /** Renders a reminder with its own link and queues it, unless something got there first. */
+  async function queueReminder(requestId: string) {
+    const request = await prisma.guardianSignatureRequest.findUniqueOrThrow({
+      where: { id: requestId },
+      select: {
+        remindersSent: true,
+        guardian: { select: { name: true, email: true, phone: true } },
+        ticket: {
+          select: {
+            attendee: { select: { firstName: true, lastName: true } },
+            order: { select: { buyerName: true, buyerEmail: true } },
+            event: {
+              select: {
+                name: true,
+                startsAt: true,
+                endsAt: true,
+                organization: { select: { name: true, timezone: true } },
+              },
+            },
+            signatures: {
+              where: { signerRole: "ATTENDEE" },
+              select: { waiverTemplateId: true, templateVersion: true },
+            },
+          },
+        },
+      },
+    });
+    const { ticket } = request;
+    const versions = ticket.signatures.length
+      ? await prisma.waiverTemplateVersion.findMany({
+          where: {
+            requiresGuardianForMinors: true,
+            OR: ticket.signatures.map((s) => ({
+              waiverTemplateId: s.waiverTemplateId,
+              version: s.templateVersion,
+            })),
+          },
+          select: { title: true },
+          orderBy: { title: "asc" },
+        })
+      : [];
+    const token = generateToken();
+    const messages = renderGuardianRequest({
+      guardian: request.guardian,
+      buyer: { name: ticket.order.buyerName, email: ticket.order.buyerEmail ?? "" },
+      attendee: ticket.attendee,
+      event: ticket.event,
+      waiverTitles: versions.map((v) => v.title),
+      url: `${webBaseUrl}/sign?token=${encodeURIComponent(token)}`,
+      texts: Boolean(texter),
+      reminder: true,
+    });
+    if (!messages.email && !messages.text) return false;
+    return prisma.$transaction(async (tx) => {
+      // Only from the state just read, so two sweeps can't both queue the same reminder.
+      const { count } = await tx.guardianSignatureRequest.updateMany({
+        where: {
+          id: requestId,
+          signedAt: null,
+          pendingMessages: { equals: Prisma.DbNull },
+          remindersSent: request.remindersSent,
+        },
+        data: {
+          pendingMessages: messages as unknown as Prisma.InputJsonValue,
+          remindersSent: request.remindersSent + 1,
+          emailSentAt: null,
+          textSentAt: null,
+          sendAttempts: 0,
+          sendFirstTriedAt: null,
+        },
+      });
+      if (count === 0) return false;
+      await tx.guardianSignatureLink.create({ data: { requestId, tokenHash: hashToken(token) } });
+      return true;
+    });
   }
 
   return { send, retry };
@@ -292,6 +435,8 @@ export interface GuardianRequestDetails {
   url: string;
   /** Whether texts can be sent; without it a phone number gets no message. */
   texts: boolean;
+  /** A follow-up to a guardian who hasn't signed yet. */
+  reminder?: boolean;
 }
 
 /** The email and text asking a guardian to sign. */
@@ -304,15 +449,18 @@ export function renderGuardianRequest(d: GuardianRequestDetails): GuardianMessag
   const ownOrder = guardian.email !== null && guardian.email === d.buyer.email;
   const who = ownOrder ? "You" : d.buyer.name;
   const messages: GuardianMessages = {
-    summary: `Asked to sign ${titles} for ${fullName} (${event.name})`,
+    summary: `${d.reminder ? "Reminded" : "Asked"} to sign ${titles} for ${fullName} (${event.name})`,
   };
+  const ask = d.reminder
+    ? `${attendee.firstName} still needs a parent or guardian to sign ${titles}`
+    : `Because ${attendee.firstName} is under 18, a parent or guardian needs to sign ${titles}`;
   if (guardian.email) {
     const text = [
       `Hi ${guardian.name},`,
       "",
       `${who} got a ticket for ${fullName} to ${event.name} (${event.organization.name}), ${when}.`,
       "",
-      `Because ${attendee.firstName} is under 18, a parent or guardian needs to sign ${titles}. Read and sign here:`,
+      `${ask}. Read and sign here:`,
       d.url,
       "",
       "The link works until the event ends. If you weren't expecting this, you can ignore it.",
@@ -324,7 +472,7 @@ export function renderGuardianRequest(d: GuardianRequestDetails): GuardianMessag
       <p style="margin:0;color:#555">${escape(event.organization.name)}</p>
       <h1 style="margin:4px 0 12px;font-size:22px">${escape(event.name)}</h1>
       <p style="margin:0">${escape(when)}</p>
-      <p style="margin:16px 0">Hi ${escape(guardian.name)}, ${escape(who)} got a ticket for <strong>${escape(fullName)}</strong>. Because ${escape(attendee.firstName)} is under 18, a parent or guardian needs to sign ${escape(titles)}.</p>
+      <p style="margin:16px 0">Hi ${escape(guardian.name)}, ${escape(who)} got a ticket for <strong>${escape(fullName)}</strong>. ${escape(ask)}.</p>
       <p style="margin:16px 0"><a href="${escape(d.url)}" style="display:inline-block;padding:12px 20px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:6px">Read and sign</a></p>
       <p style="margin:16px 0;color:#555;font-size:14px">The link works until the event ends. If you weren't expecting this, you can ignore it.</p>
     </td></tr>
@@ -332,7 +480,7 @@ export function renderGuardianRequest(d: GuardianRequestDetails): GuardianMessag
 </body></html>`;
     messages.email = {
       to: guardian.email,
-      subject: `Please sign for ${attendee.firstName} to go to ${event.name}`,
+      subject: `${d.reminder ? "Reminder: please" : "Please"} sign for ${attendee.firstName} to go to ${event.name}`,
       text,
       html,
     };
@@ -340,7 +488,9 @@ export function renderGuardianRequest(d: GuardianRequestDetails): GuardianMessag
   if (guardian.phone && d.texts) {
     messages.text = {
       to: guardian.phone,
-      body: `${event.organization.name}: ${who} got a ticket for ${fullName} to ${event.name}. As their parent or guardian, please sign here: ${d.url}`,
+      body: d.reminder
+        ? `${event.organization.name}: reminder, ${fullName}'s ticket to ${event.name} still needs a parent or guardian to sign. Please sign here: ${d.url}`
+        : `${event.organization.name}: ${who} got a ticket for ${fullName} to ${event.name}. As their parent or guardian, please sign here: ${d.url}`,
     };
   }
   return messages;
