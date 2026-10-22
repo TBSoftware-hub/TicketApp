@@ -14,9 +14,9 @@ import { parse } from "../lib/validate";
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
 const orderParamsSchema = eventParamsSchema.extend({ orderId: z.uuid() });
 
-const SENDING_CONFIRMATION =
+export const SENDING_CONFIRMATION =
   "The confirmation email for this order is going out right now. Try again in a minute.";
-const SENDING_GUARDIAN_LINK =
+export const SENDING_GUARDIAN_LINK =
   "A guardian's signing link for this order is going out right now. Try again in a minute.";
 
 /** How many orders the dashboard lists at once; a search narrows it down. */
@@ -146,6 +146,37 @@ export async function orderRoutes(
       waiverTickets,
       signedWaiverTickets,
     };
+  });
+
+  // One order, with what staff need to change its tickets.
+  app.get("/orgs/:orgId/events/:eventId/orders/:orderId", async (request) => {
+    const { orgId, eventId, orderId } = parse(orderParamsSchema, request.params);
+    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    await findEvent(orgId, eventId);
+    const order = await prisma.order.findFirst({
+      where: { id: orderId, eventId },
+      select: {
+        ...orderFields,
+        tickets: {
+          ...orderFields.tickets,
+          select: {
+            ...orderFields.tickets.select,
+            attendee: {
+              select: { ...orderFields.tickets.select.attendee.select, studentId: true },
+            },
+            ticketType: {
+              select: { name: true, studentsOnly: true, askEmergencyInfo: true },
+            },
+          },
+        },
+      },
+    });
+    if (!order) throw new HttpError(404, "Order not found");
+    const org = await prisma.organization.findUniqueOrThrow({
+      where: { id: orgId },
+      select: { rosterImportedAt: true },
+    });
+    return { order, studentRoster: org.rosterImportedAt !== null };
   });
 
   // Cancels a paid order and voids its tickets, refunding the card in full if it was paid for.
