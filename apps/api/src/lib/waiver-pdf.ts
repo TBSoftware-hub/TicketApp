@@ -241,7 +241,8 @@ export async function waiverPdf(
     doc,
     await doc.embedFont(StandardFonts.Helvetica),
     await doc.embedFont(StandardFonts.HelveticaBold),
-    `${event.name} · ${attendeeName} · Ticket ${ticket.id} · Generated ${now.toISOString()}`,
+    // Kept to fixed-length identifiers so it always fits; the names are in the heading.
+    `Ticket ${ticket.id} · Generated ${now.toISOString()}`,
   );
 
   const versionOf = (s: { waiverTemplateId: string; templateVersion: number }) =>
@@ -276,7 +277,11 @@ export async function waiverPdf(
     if (attendee && fields.length > 0) {
       const answers = (attendee.answers ?? {}) as Record<string, unknown>;
       out.text("Answers", { bold: true, after: 2 });
-      for (const f of fields) out.text(`${f.label}: ${answerText(f, answers[f.id])}`, { after: 2 });
+      for (const f of fields) {
+        out.text(`${f.label}: ${answerText(f, answers[f.id])}`, { after: f.help ? 1 : 2 });
+        // Help text is part of what was signed, so the copy keeps it.
+        if (f.help) out.text(f.help, { size: 9, color: MUTED, after: 3 });
+      }
       out.gap(6);
     }
     for (const s of signatures) {

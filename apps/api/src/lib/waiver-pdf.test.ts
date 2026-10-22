@@ -10,7 +10,13 @@ describe("signed waiver PDFs", () => {
     title: "Dance Waiver",
     body: `Have fun 🎉 at the dance.\n\n${"Long wording. ".repeat(1000)}\n${"x".repeat(300)}`,
     fields: [
-      { id: "photo", label: "Photos are OK", type: "CHECKBOX", required: false },
+      {
+        id: "photo",
+        label: "Photos are OK",
+        type: "CHECKBOX",
+        required: false,
+        help: "Photos may appear in the yearbook.",
+      },
       { id: "allergy", label: "Allergies", type: "TEXT", required: false },
     ],
   };
@@ -67,13 +73,13 @@ describe("signed waiver PDFs", () => {
     expect(text).not.toContain("??");
     expect(text).toContain("Link sent to: ana@example.com\n");
     expect(text).toContain("Winter Formal, Dec 11, 2026, 7:00:00 PM CST");
-    expect(text).toContain("Photos are OK: Yes");
+    expect(text).toContain("Photos are OK: Yes\nPhotos may appear in the yearbook.");
     expect(text).toContain("Allergies: (left blank)");
     expect(text).toContain("IP address: Not recorded");
     expect(text).toContain("Signed at: 2026-11-01T15:30:00.000Z (Nov 1, 2026, 9:30:00 AM CST)");
     expect(text).toContain("Wording check: matches the stored waiver");
     expect(
-      text.split("\n").filter((l) => l.startsWith("Winter Formal · Zoë Kim")).length,
+      text.split("\n").filter((l) => l.startsWith("Ticket t1 · Generated ")).length,
     ).toBeGreaterThan(2);
   });
 
