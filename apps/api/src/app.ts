@@ -110,7 +110,13 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     webBaseUrl,
     log: app.log,
   });
-  const guardians = guardianRequests({ prisma: deps.prisma, mailer, texter, log: app.log });
+  const guardians = guardianRequests({
+    prisma: deps.prisma,
+    mailer,
+    texter,
+    log: app.log,
+    webBaseUrl,
+  });
   // A paid order's tickets go to the buyer, and its minors' signing links to their guardians.
   const confirm: ConfirmOrder = async (orderId, viewKey) => {
     await confirmations.confirm(orderId, viewKey);

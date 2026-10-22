@@ -34,6 +34,8 @@ interface PublicOrder {
     firstName: string;
     lastName: string;
     hasWaivers: boolean;
+    awaitingGuardian: string | null;
+    guardianLinkSent: boolean;
   }[];
 }
 
@@ -130,6 +132,12 @@ export default async function OrderPage({
                 </strong>
                 <span>{t.ticketTypeName}</span>
               </span>
+              {order.status === "PAID" && t.awaitingGuardian && (
+                <span className="muted">
+                  Waiting for {t.awaitingGuardian} to sign.
+                  {t.guardianLinkSent && " We've sent them a link to sign with."}
+                </span>
+              )}
               {t.hasWaivers && (
                 <a
                   href={`${eventPath}/orders/${encodeURIComponent(orderId)}/waivers/${encodeURIComponent(t.id)}?${new URLSearchParams({ key })}`}

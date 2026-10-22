@@ -67,6 +67,14 @@ const orderFields = {
       ticketType: { select: { name: true } },
       attendee: { select: { firstName: true, lastName: true } },
       _count: { select: { signatures: true } },
+      guardianRequest: {
+        select: {
+          signedAt: true,
+          emailDeliveredAt: true,
+          textDeliveredAt: true,
+          guardian: { select: { name: true } },
+        },
+      },
     },
   },
 } as const satisfies Prisma.OrderSelect;
@@ -91,6 +99,13 @@ function present({ event, tickets, ...order }: OrderRow) {
       lastName: t.attendee.lastName,
       /** Whether there's a signed-waiver PDF to download for it. */
       hasWaivers: t._count.signatures > 0,
+      /** The guardian who still has to sign for this ticket, if any. */
+      awaitingGuardian:
+        t.guardianRequest && !t.guardianRequest.signedAt ? t.guardianRequest.guardian.name : null,
+      /** Whether a signing link has reached that guardian yet. */
+      guardianLinkSent: Boolean(
+        t.guardianRequest?.emailDeliveredAt || t.guardianRequest?.textDeliveredAt,
+      ),
     })),
   };
 }

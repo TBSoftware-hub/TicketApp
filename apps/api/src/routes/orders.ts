@@ -42,9 +42,24 @@ const orderFields = {
       ticketType: { select: { name: true } },
       attendee: { select: { firstName: true, lastName: true } },
       _count: { select: { signatures: true } },
+      guardianRequest: {
+        select: {
+          signedAt: true,
+          remindersDelivered: true,
+          emailDeliveredAt: true,
+          textDeliveredAt: true,
+          guardian: { select: { name: true } },
+        },
+      },
     },
   },
 } as const satisfies Prisma.OrderSelect;
+
+/** A ticket that still needs its guardian to sign, and could still be used. */
+const awaitingGuardian = {
+  status: "VALID",
+  guardianRequest: { signedAt: null },
+} as const satisfies Prisma.TicketWhereInput;
 
 /** Orders staff manage from the dashboard. */
 export async function orderRoutes(
@@ -73,7 +88,7 @@ export async function orderRoutes(
   app.get("/orgs/:orgId/events/:eventId/orders", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
-    const { q } = parse(orderSearchSchema, request.query);
+    const { q, waiting } = parse(orderSearchSchema, request.query);
     await findEvent(orgId, eventId);
     const contains = (value: string) => ({ contains: value, mode: "insensitive" as const });
     const orders = await prisma.order.findMany({
@@ -95,12 +110,21 @@ export async function orderRoutes(
             { tickets: { some: { attendee: { lastName: contains(word) } } } },
           ],
         })),
+        ...(waiting ? { status: "PAID" as const, tickets: { some: awaitingGuardian } } : {}),
       },
       select: orderFields,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: ORDER_PAGE + 1,
     });
-    return { orders: orders.slice(0, ORDER_PAGE), more: orders.length > ORDER_PAGE };
+    // How many paid tickets are still waiting on a guardian, across the whole event.
+    const waitingOnGuardians = await prisma.ticket.count({
+      where: { eventId, order: { status: "PAID" }, ...awaitingGuardian },
+    });
+    return {
+      orders: orders.slice(0, ORDER_PAGE),
+      more: orders.length > ORDER_PAGE,
+      waitingOnGuardians,
+    };
   });
 
   // Cancels a paid order and voids its tickets, refunding the card in full if it was paid for.

@@ -8,4 +8,9 @@ export const orderSearchSchema = z.object({
     .max(100, "Keep the search under 100 characters")
     .optional()
     .transform((q) => q || undefined),
+  /** Only orders with a ticket still waiting on a guardian's signature. */
+  waiting: z
+    .enum(["1"])
+    .optional()
+    .transform((w) => w === "1"),
 });

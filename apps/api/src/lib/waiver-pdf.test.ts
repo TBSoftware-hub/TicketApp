@@ -58,8 +58,8 @@ describe("signed waiver PDFs", () => {
     ],
     // The email went out; the text didn't, so the phone number isn't listed as sent to.
     guardianRequest: {
-      emailSentAt: new Date("2026-11-01T15:31:00Z"),
-      textSentAt: null,
+      emailDeliveredAt: new Date("2026-11-01T15:31:00Z"),
+      textDeliveredAt: null,
       guardian: { email: "ana@example.com", phone: "+15552013344" },
     },
   };
