@@ -530,9 +530,10 @@ describe("guardian signatures for minors", () => {
     const log = await t.prisma.notification.findMany({ where: { guardianId: request.guardianId } });
     expect(log.filter((n) => n.body.startsWith("Reminded to sign"))).toHaveLength(2);
 
-    // Not again right away (sent times are real ones, so "right away" is now), but once more in
-    // the last day before the event, then no more.
+    // Not again right away (sent times are real ones, so "right away" is now), nor two days
+    // later: the second is kept for the last day before the event. Then no more.
     await reminders.retry(hours(2));
+    await reminders.retry(hours(98));
     expect(remindersFor()).toHaveLength(1);
     const lastDay = new Date(startsAt.getTime() - 2 * 60 * 60_000);
     await reminders.retry(lastDay);
@@ -551,6 +552,33 @@ describe("guardian signatures for minors", () => {
     expect((await staffOrders()).waitingOnGuardians).toBe(0);
     expect((await staffOrders("?waiting=1")).orders).toEqual([]);
     expect(await buyerOrder()).toBeNull();
+  });
+
+  it("drops a reminder that hasn't gone out by the time the event starts", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam8@example.com" } }),
+    ]);
+    const { orderId } = res.json() as { orderId: string };
+    await remindOnly([orderId]);
+    const sweep = (send: (m: MailMessage) => Promise<void>) =>
+      guardianRequests({ prisma: t.prisma, mailer: { send }, log: t.app.log, webBaseUrl: "x" });
+    const where = { ticket: { orderId } };
+
+    await sweep(async () => {
+      throw new Error("down");
+    }).retry(new Date(startsAt.getTime() - 2 * 60 * 60_000));
+    expect(await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where })).toMatchObject({
+      remindersSent: 1,
+      emailSentAt: null,
+    });
+
+    const mail: MailMessage[] = [];
+    await sweep(async (m) => void mail.push(m)).retry(new Date(startsAt.getTime() + 60_000));
+    expect(mail.filter((m) => m.to === "sam8@example.com")).toEqual([]);
+    expect(
+      (await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where })).pendingMessages,
+    ).toBeNull();
   });
 
   it("doesn't remind a guardian who signed, or for a cancelled event", async () => {

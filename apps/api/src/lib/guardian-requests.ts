@@ -102,6 +102,8 @@ export function guardianRequests({
           AND r."pendingMessages" IS NOT NULL
           AND r."signedAt" IS NULL
           AND r."sendAttempts" < ${MAX_GUARDIAN_REQUEST_ATTEMPTS}
+          -- A reminder is about getting it signed before the event, so it stops when the event starts.
+          AND (r."remindersSent" = 0 OR e."startsAt" > ${now})
           AND (r."sendClaimedAt" IS NULL OR r."sendClaimedAt" < ${claimExpired})
           AND (r."sendFirstTriedAt" IS NULL OR r."sendFirstTriedAt" > ${retriesEnd})`;
       });
@@ -229,6 +231,7 @@ export function guardianRequests({
                 // Once the event is over the link no longer works, so there's no point sending it.
                 { ticket: { event: { endsAt: { lte: now } } } },
                 { ticket: { event: { status: "CANCELLED" } } },
+                { remindersSent: { gt: 0 }, ticket: { event: { startsAt: { lte: now } } } },
                 { ticket: { order: { status: { in: ["CANCELLED", "REFUNDED"] } } } },
               ],
             },
@@ -267,8 +270,11 @@ export function guardianRequests({
                   sendFirstTriedAt: null,
                   createdAt: { gte: minutesBefore(now, RETRY_DAYS * 24 * 60) },
                 },
+                // A reminder is queued long after the request was made, so it isn't held to that.
+                { sendFirstTriedAt: null, remindersSent: { gt: 0 } },
               ],
             },
+            { OR: [{ remindersSent: 0 }, { ticket: { event: { startsAt: { gt: now } } } }] },
           ],
         },
         select: { id: true },
@@ -283,15 +289,15 @@ export function guardianRequests({
   }
 
   /**
-   * Sends a fresh link to guardians who haven't signed: two days after the last message, and
+   * Sends a fresh link to guardians who haven't signed: two days after the first message, and
    * again in the last day before the event, up to MAX_GUARDIAN_REMINDERS times.
    */
   async function remind(now: Date) {
     try {
       const lastDay = new Date(now.getTime() + REMINDER_LAST_DAY_HOURS * 60 * 60_000);
       // Each round resets the sent times, so the later of the two is when the last round went out.
-      const due = await prisma.$queryRaw<{ id: string }[]>`
-        SELECT r.id FROM "GuardianSignatureRequest" r
+      const due = await prisma.$queryRaw<{ id: string; remindersSent: number }[]>`
+        SELECT r.id, r."remindersSent" FROM "GuardianSignatureRequest" r
         JOIN "Ticket" t ON t.id = r."ticketId"
         JOIN "Order" o ON o.id = t."orderId"
         JOIN "Event" e ON e.id = t."eventId"
@@ -308,7 +314,9 @@ export function guardianRequests({
           AND e."startsAt" > ${now}
           AND GREATEST(r."emailSentAt", r."textSentAt") IS NOT NULL
           AND (
-            GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_AFTER_HOURS * 60)}
+            -- Only the first reminder comes two days on; the second is kept for the last day.
+            (r."remindersSent" = 0
+              AND GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_AFTER_HOURS * 60)})
             OR (
               e."startsAt" <= ${lastDay}
               AND GREATEST(r."emailSentAt", r."textSentAt") <= ${minutesBefore(now, REMINDER_LAST_DAY_GAP_HOURS * 60)}
@@ -316,9 +324,9 @@ export function guardianRequests({
           )
         ORDER BY r."createdAt"
         LIMIT ${RETRY_BATCH}`;
-      for (const { id } of due) {
+      for (const { id, remindersSent } of due) {
         try {
-          if (await queueReminder(id)) await sendOne(id);
+          if (await queueReminder(id, remindersSent)) await sendOne(id);
         } catch (err) {
           log.error({ err, requestId: id }, "Couldn't remind the guardian to sign");
         }
@@ -329,11 +337,10 @@ export function guardianRequests({
   }
 
   /** Renders a reminder with its own link and queues it, unless something got there first. */
-  async function queueReminder(requestId: string) {
+  async function queueReminder(requestId: string, round: number) {
     const request = await prisma.guardianSignatureRequest.findUniqueOrThrow({
       where: { id: requestId },
       select: {
-        remindersSent: true,
         guardian: { select: { name: true, email: true, phone: true } },
         ticket: {
           select: {
@@ -382,17 +389,17 @@ export function guardianRequests({
     });
     if (!messages.email && !messages.text) return false;
     return prisma.$transaction(async (tx) => {
-      // Only from the state just read, so two sweeps can't both queue the same reminder.
+      // Only from the round the sweep found due, so two sweeps can't both queue a reminder.
       const { count } = await tx.guardianSignatureRequest.updateMany({
         where: {
           id: requestId,
           signedAt: null,
           pendingMessages: { equals: Prisma.DbNull },
-          remindersSent: request.remindersSent,
+          remindersSent: round,
         },
         data: {
           pendingMessages: messages as unknown as Prisma.InputJsonValue,
-          remindersSent: request.remindersSent + 1,
+          remindersSent: round + 1,
           emailSentAt: null,
           textSentAt: null,
           sendAttempts: 0,
