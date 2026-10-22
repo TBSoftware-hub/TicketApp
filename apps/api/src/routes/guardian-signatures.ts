@@ -54,10 +54,15 @@ const NOT_FOUND = "This link doesn't work. Ask whoever bought the ticket to chec
  * over. Past that the link shows nothing, so it can't keep exposing the attendee's details.
  */
 async function findRequest(db: Prisma.TransactionClient, token: string, now = new Date()) {
-  // The first link, or one sent with a reminder; they all keep working.
+  // The first link, or one sent with a reminder; they all keep working. Each is its own unique
+  // lookup, so an unknown token costs two index probes however many requests there are.
   const tokenHash = hashToken(token);
-  const request = await db.guardianSignatureRequest.findFirst({
-    where: { OR: [{ tokenHash }, { links: { some: { tokenHash } } }] },
+  const link = await db.guardianSignatureLink.findUnique({
+    where: { tokenHash },
+    select: { requestId: true },
+  });
+  const request = await db.guardianSignatureRequest.findUnique({
+    where: link ? { id: link.requestId } : { tokenHash },
     select: requestFields,
   });
   if (!request || request.ticket.status !== "VALID" || request.ticket.order.status !== "PAID") {
@@ -152,9 +157,9 @@ export async function guardianSignatureRoutes(
         const [locked] = await tx.$queryRaw<{ id: string }[]>`
           SELECT r.id FROM "GuardianSignatureRequest" r
           WHERE r."tokenHash" = ${hashToken(input.token)}
-            OR EXISTS (
-              SELECT 1 FROM "GuardianSignatureLink" l
-              WHERE l."requestId" = r.id AND l."tokenHash" = ${hashToken(input.token)}
+            OR r.id = (
+              SELECT l."requestId" FROM "GuardianSignatureLink" l
+              WHERE l."tokenHash" = ${hashToken(input.token)}
             )
           FOR UPDATE OF r`;
         if (!locked) throw new HttpError(404, NOT_FOUND);

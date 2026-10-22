@@ -138,7 +138,7 @@ export function guardianRequests({
             idempotencyKey: `guardian-request-${requestId}${round}`,
           });
           // Done only once it's recorded; a retry after a failed record reuses the idempotency key.
-          await sent(request, "EMAIL", messages.email.to, messages.summary);
+          await sent(request, now, "EMAIL", messages.email.to, messages.summary);
           emailDone = true;
         } catch (err) {
           log.error({ err, requestId }, "Couldn't email the guardian signature request");
@@ -147,7 +147,7 @@ export function guardianRequests({
       if (!textDone && messages.text && texter) {
         try {
           await texter.send(messages.text);
-          await sent(request, "SMS", messages.text.to, messages.summary);
+          await sent(request, now, "SMS", messages.text.to, messages.summary);
           textDone = true;
         } catch (err) {
           log.error({ err, requestId }, "Couldn't text the guardian signature request");
@@ -184,33 +184,38 @@ export function guardianRequests({
   }
 
   /**
-   * Records a message that went out, in the request and the notification log. The delivery times
-   * outlast the round, and a reminder counts as delivered once it reaches either channel.
+   * Records a message that went out, in the request and the notification log. The round's send
+   * fields only change while this attempt still holds its claim on the same round: a send that
+   * finished after its claim expired mustn't mark a newer round as done. The delivery times are
+   * history, so they're kept either way, and a reminder counts as delivered once it reaches
+   * either channel.
    */
   async function sent(
-    request: { id: string; guardianId: string },
+    request: { id: string; guardianId: string; remindersSent: number },
+    claimedAt: Date,
     channel: "EMAIL" | "SMS",
     to: string,
     summary: string,
   ) {
     const at = new Date();
+    const ours = { id: request.id, remindersSent: request.remindersSent, sendClaimedAt: claimedAt };
     await prisma.$transaction([
       // Counted on the round's first channel to get through, before that's recorded below.
+      ...(request.remindersSent > 0
+        ? [
+            prisma.guardianSignatureRequest.updateMany({
+              where: { ...ours, emailSentAt: null, textSentAt: null },
+              data: { remindersDelivered: { increment: 1 } },
+            }),
+          ]
+        : []),
       prisma.guardianSignatureRequest.updateMany({
-        where: {
-          id: request.id,
-          remindersSent: { gt: 0 },
-          emailSentAt: null,
-          textSentAt: null,
-        },
-        data: { remindersDelivered: { increment: 1 } },
+        where: ours,
+        data: channel === "EMAIL" ? { emailSentAt: at } : { textSentAt: at },
       }),
       prisma.guardianSignatureRequest.update({
         where: { id: request.id },
-        data:
-          channel === "EMAIL"
-            ? { emailSentAt: at, emailDeliveredAt: at }
-            : { textSentAt: at, textDeliveredAt: at },
+        data: channel === "EMAIL" ? { emailDeliveredAt: at } : { textDeliveredAt: at },
       }),
       prisma.notification.create({
         data: { guardianId: request.guardianId, channel, to, body: summary, status: "SENT" },

@@ -641,6 +641,38 @@ describe("guardian signatures for minors", () => {
     });
   });
 
+  it("doesn't let a send that outlived its claim mark a newer reminder as sent", async () => {
+    const s = await trip();
+    const res = await s.checkout([
+      s.attendee({ dateOfBirth: minor, guardian: { name: "Sam", email: "sam10@example.com" } }),
+    ]);
+    const { orderId } = res.json() as { orderId: string };
+    await remindOnly([orderId]);
+    const where = { ticket: { orderId } };
+
+    // While the first reminder is still sending, its claim runs out, it's given up on, and the
+    // next reminder is queued in its place.
+    await guardianRequests({
+      prisma: t.prisma,
+      mailer: {
+        send: async () => {
+          await t.prisma.guardianSignatureRequest.updateMany({
+            where,
+            data: { sendClaimedAt: null, remindersSent: 2 },
+          });
+        },
+      },
+      log: t.app.log,
+      webBaseUrl: "x",
+    }).retry(new Date(Date.now() + 49 * 60 * 60_000));
+
+    const request = await t.prisma.guardianSignatureRequest.findFirstOrThrow({ where });
+    // The newer round still has its email to send; the late one is only kept as history.
+    expect(request).toMatchObject({ remindersSent: 2, remindersDelivered: 0, emailSentAt: null });
+    expect(request.emailDeliveredAt!.getTime()).toBeGreaterThan(request.createdAt.getTime());
+    expect(request.pendingMessages).not.toBeNull();
+  });
+
   it("doesn't remind a guardian who signed, or for a cancelled event", async () => {
     const s = await trip();
     const signs = await s.checkout([
