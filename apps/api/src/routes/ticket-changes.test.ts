@@ -258,7 +258,10 @@ describe("editing, transferring and resending tickets", () => {
     });
     expect(issued.transferredFromId).toBe(old.id);
 
-    // A retry of the sale is still the same sale.
+    // A retry of the sale is still the same sale, even once its email has been corrected.
+    const fixed = `jo-fixed-${randomUUID()}@example.com`;
+    const resent = await s.call("POST", `${s.base}/orders/${orderId}/resend`, { email: fixed });
+    expect(resent.statusCode).toBe(200);
     const again = await s.call("POST", `${s.base}/door-sales`, sale);
     expect(again.statusCode).toBe(200);
     expect(again.json().sale.tickets).toHaveLength(1);
@@ -269,7 +272,7 @@ describe("editing, transferring and resending tickets", () => {
     ).toEqual([issued.id, undefined]);
 
     expect((await s.call("POST", `${s.base}/orders/${orderId}/cancel`)).statusCode).toBe(200);
-    const notice = t.sent.findLast((m) => m.to === email && m.text.includes("cancelled"))!;
+    const notice = t.sent.findLast((m) => m.to === fixed && m.text.includes("cancelled"))!;
     expect(notice.text).toContain("cancelled your ticket for Prom");
   });
 

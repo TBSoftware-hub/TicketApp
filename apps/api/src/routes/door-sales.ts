@@ -104,7 +104,12 @@ export async function doorSaleRoutes(
           // The tickets the sale issued, before any transfers.
           tickets: {
             where: { transferredFromId: null },
-            select: { ticketTypeId: true, ticketType: { select: { name: true } } },
+            select: {
+              ticketTypeId: true,
+              ticketType: { select: { name: true } },
+              // The address the sale was made with. A resend can change the order's buyer email.
+              attendee: { select: { email: true } },
+            },
           },
         },
       });
@@ -117,9 +122,12 @@ export async function doorSaleRoutes(
         // wasn't recorded, so staff check the list before selling again.
         const same =
           earlier.buyerName === `${input.firstName} ${input.lastName}` &&
-          earlier.buyerEmail === (input.email ?? null) &&
           earlier.tickets.length === input.quantity &&
-          earlier.tickets.every((tk) => tk.ticketTypeId === input.ticketTypeId.toLowerCase());
+          earlier.tickets.every(
+            (tk) =>
+              tk.ticketTypeId === input.ticketTypeId.toLowerCase() &&
+              tk.attendee.email === (input.email ?? null),
+          );
         if (!same) {
           throw new HttpError(
             409,
