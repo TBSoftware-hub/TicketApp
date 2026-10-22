@@ -95,6 +95,11 @@ export const checkoutTicketSchema = z.object({
   dateOfBirth: birthDateSchema.nullable().optional(),
   /** Who signs for an attendee under 18; asked for alongside the date of birth. */
   guardian: guardianContactSchema.nullable().optional(),
+  /**
+   * Asked for when the ticket type wants an emergency contact and medical notes. Checked against
+   * `emergencyInfoSchema` once the ticket type is known, and ignored for types that don't ask.
+   */
+  emergency: z.unknown().optional(),
 });
 export type CheckoutTicket = z.infer<typeof checkoutTicketSchema>;
 

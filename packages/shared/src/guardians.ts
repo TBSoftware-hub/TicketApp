@@ -45,6 +45,12 @@ export function normalizePhone(input: string): string | null {
   return null;
 }
 
+/** A stored number as people write it: "(555) 201-3344" for US numbers, as stored otherwise. */
+export function formatPhone(phone: string): string {
+  const us = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(phone);
+  return us ? `(${us[1]}) ${us[2]}-${us[3]}` : phone;
+}
+
 /** A date of birth: a real calendar date, in the past, within a lifetime. */
 export const birthDateSchema = z
   .string()
@@ -94,6 +100,38 @@ export const guardianContactSchema = z
     message: "Give the parent or guardian's email or mobile number",
   });
 export type GuardianContact = z.infer<typeof guardianContactSchema>;
+
+export const MAX_MEDICAL_NOTES = 2000;
+
+/** Who to call in an emergency, and anything staff should know, for one attendee. */
+export const emergencyInfoSchema = z.object({
+  contactName: z
+    .string()
+    .trim()
+    .min(1, "Enter the emergency contact's name")
+    .max(80, "Keep the emergency contact's name under 80 characters"),
+  contactPhone: z
+    .string()
+    .max(30)
+    .transform((p, ctx) => {
+      const phone = normalizePhone(p);
+      if (!phone) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Enter a valid phone number for the emergency contact",
+        });
+        return z.NEVER;
+      }
+      return phone;
+    }),
+  medicalNotes: optional(
+    z
+      .string()
+      .trim()
+      .max(MAX_MEDICAL_NOTES, `Keep medical notes under ${MAX_MEDICAL_NOTES} characters`),
+  ),
+});
+export type EmergencyInfo = z.infer<typeof emergencyInfoSchema>;
 
 /** What a guardian sends to sign every waiver waiting on them for one attendee. */
 export const guardianSignSchema = z.object({

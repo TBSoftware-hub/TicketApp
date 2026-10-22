@@ -1,4 +1,4 @@
-import { roleCan } from "@ticketapp/shared";
+import { formatPhone, roleCan } from "@ticketapp/shared";
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { api } from "../../../../../../lib/api";
@@ -26,7 +26,13 @@ interface OrderRecord {
     id: string;
     status: "HELD" | "VALID" | "VOID";
     ticketType: { name: string };
-    attendee: { firstName: string; lastName: string };
+    attendee: {
+      firstName: string;
+      lastName: string;
+      emergencyContactName: string | null;
+      emergencyContactPhone: string | null;
+      medicalNotes: string | null;
+    };
     _count: { signatures: number };
     guardianRequest: {
       signedAt: string | null;
@@ -165,6 +171,30 @@ export default async function OrdersPage({
                           {" · "}
                           <a href={`${base}/orders/waivers/${encodeURIComponent(t.id)}`}>Waivers</a>
                         </>
+                      )}
+                      {/* Folded away, so medical details don't show to anyone glancing at the list. */}
+                      {(t.attendee.emergencyContactName || t.attendee.medicalNotes) && (
+                        <details className="emergency">
+                          <summary>Emergency info</summary>
+                          {t.attendee.emergencyContactName && (
+                            <span>
+                              Call {t.attendee.emergencyContactName}
+                              {t.attendee.emergencyContactPhone && (
+                                <>
+                                  {" at "}
+                                  <a href={`tel:${t.attendee.emergencyContactPhone}`}>
+                                    {formatPhone(t.attendee.emergencyContactPhone)}
+                                  </a>
+                                </>
+                              )}
+                            </span>
+                          )}
+                          <span className="notes">
+                            {t.attendee.medicalNotes
+                              ? `Medical notes: ${t.attendee.medicalNotes}`
+                              : "No medical notes"}
+                          </span>
+                        </details>
                       )}
                     </span>
                   ))}

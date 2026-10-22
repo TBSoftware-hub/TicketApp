@@ -58,6 +58,7 @@ export async function publicEventRoutes(
             minGrade: true,
             maxGrade: true,
             requiresApproval: true,
+            askEmergencyInfo: true,
             waivers: {
               orderBy: { waiverTemplate: { title: "asc" } },
               select: {

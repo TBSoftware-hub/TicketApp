@@ -325,6 +325,31 @@ button.secondary {
   border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
 }
 
+/* An attendee's emergency contact and medical notes, folded away on the staff orders list. */
+.emergency {
+  margin: 4px 0;
+}
+
+.emergency summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.emergency[open] {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.emergency > span {
+  display: block;
+  margin-top: 2px;
+}
+
+.emergency .notes {
+  white-space: pre-line;
+}
+
 .waiver-text {
   max-height: 220px;
   overflow-y: auto;

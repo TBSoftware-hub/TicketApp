@@ -2,6 +2,7 @@
 
 import {
   MAX_GRADE,
+  MAX_MEDICAL_NOTES,
   MIN_GRADE,
   birthDateSchema,
   isMinorAt,
@@ -31,6 +32,10 @@ interface Attendee {
   guardianName: string;
   guardianEmail: string;
   guardianPhone: string;
+  /** Asked for when the ticket type wants an emergency contact. */
+  emergencyName: string;
+  emergencyPhone: string;
+  medicalNotes: string;
 }
 
 type AttendeeField = Exclude<keyof Attendee, "waivers">;
@@ -44,6 +49,9 @@ const blank: Attendee = {
   guardianName: "",
   guardianEmail: "",
   guardianPhone: "",
+  emergencyName: "",
+  emergencyPhone: "",
+  medicalNotes: "",
 };
 const blankWaiver: WaiverDraft = { answers: {}, signature: "", agreed: false };
 const GRADES = Array.from({ length: MAX_GRADE - MIN_GRADE + 1 }, (_, i) => MIN_GRADE + i);
@@ -139,6 +147,13 @@ export function CheckoutForm({
                 phone: event.guardianTexts ? a.guardianPhone || null : null,
               }
             : null,
+        emergency: tt.askEmergencyInfo
+          ? {
+              contactName: a.emergencyName,
+              contactPhone: a.emergencyPhone,
+              medicalNotes: a.medicalNotes || null,
+            }
+          : null,
         waivers: tt.waiverIds.map((waiverId) => {
           const draft = a.waivers[waiverId] ?? blankWaiver;
           return {
@@ -305,6 +320,12 @@ export function CheckoutForm({
                         onChange={(field, value) => setField(tt.id, i, field, value)}
                       />
                     )}
+                    {tt.askEmergencyInfo && (
+                      <EmergencyFields
+                        attendee={a}
+                        onChange={(field, value) => setField(tt.id, i, field, value)}
+                      />
+                    )}
                     {tt.waiverIds.map((waiverId) => {
                       const waiver = waiverById.get(waiverId);
                       return (
@@ -442,6 +463,74 @@ function GuardianFields({
           I&apos;m their parent or guardian
         </button>
       </p>
+    </div>
+  );
+}
+
+/** Who to call if something happens at the event, and anything staff should know. */
+function EmergencyFields({
+  attendee: a,
+  onChange,
+}: {
+  attendee: Attendee;
+  onChange: (field: AttendeeField, value: string) => void;
+}) {
+  const first = a.firstName.trim() || "this attendee";
+  // The buyer is usually the person to call.
+  function useMine(event: MouseEvent<HTMLButtonElement>) {
+    const form = event.currentTarget.form;
+    const value = (name: string) => {
+      const input = form?.elements.namedItem(name);
+      return input instanceof HTMLInputElement ? input.value : "";
+    };
+    onChange("emergencyName", value("buyerName"));
+    onChange("emergencyPhone", value("buyerPhone"));
+  }
+  return (
+    <div className="waiver stack-tight">
+      <strong>In an emergency</strong>
+      <span className="muted hint">
+        Who staff should call if something happens to {first}. Only the school&apos;s event staff
+        see this.
+      </span>
+      <div className="row-fields">
+        <label>
+          Contact name
+          <input
+            required
+            maxLength={80}
+            autoComplete="off"
+            value={a.emergencyName}
+            onChange={(e) => onChange("emergencyName", e.target.value)}
+          />
+        </label>
+        <label>
+          Contact phone
+          <input
+            type="tel"
+            required
+            maxLength={30}
+            autoComplete="off"
+            value={a.emergencyPhone}
+            onChange={(e) => onChange("emergencyPhone", e.target.value)}
+          />
+        </label>
+      </div>
+      <p>
+        <button type="button" className="link" onClick={useMine}>
+          Use my name and phone
+        </button>
+      </p>
+      <label>
+        Medical notes <span className="muted">(optional)</span>
+        <textarea
+          rows={3}
+          maxLength={MAX_MEDICAL_NOTES}
+          placeholder="Allergies, conditions or medication staff should know about"
+          value={a.medicalNotes}
+          onChange={(e) => onChange("medicalNotes", e.target.value)}
+        />
+      </label>
     </div>
   );
 }

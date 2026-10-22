@@ -61,6 +61,7 @@ export default async function EditTicketTypePage({
           minGrade: tt.minGrade === null ? "" : String(tt.minGrade),
           maxGrade: tt.maxGrade === null ? "" : String(tt.maxGrade),
           requiresApproval: tt.requiresApproval,
+          askEmergencyInfo: tt.askEmergencyInfo,
           waiverIds: tt.waiverIds,
           salesStartAtUtc: tt.salesStartAt,
           salesEndAtUtc: tt.salesEndAt,

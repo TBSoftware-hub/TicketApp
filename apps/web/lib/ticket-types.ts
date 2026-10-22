@@ -12,6 +12,7 @@ export interface TicketTypeRecord {
   minGrade: number | null;
   maxGrade: number | null;
   requiresApproval: boolean;
+  askEmergencyInfo: boolean;
   waiverIds: string[];
   /** Valid tickets only; voided ones don't count. */
   sold: number;

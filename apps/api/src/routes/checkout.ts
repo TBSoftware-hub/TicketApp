@@ -4,6 +4,7 @@ import {
   checkEligibility,
   checkWaiverAnswers,
   checkoutSchema,
+  emergencyInfoSchema,
   isMinorAt,
   orderTotal,
   type Checkout,
@@ -290,10 +291,11 @@ export async function checkoutRoutes(
             minGrade: number | null;
             maxGrade: number | null;
             requiresApproval: boolean;
+            askEmergencyInfo: boolean;
           }[]
         >`
           SELECT id, name, "priceCents", quantity, "maxPerOrder", "salesStartAt", "salesEndAt",
-                 "studentsOnly", "minGrade", "maxGrade", "requiresApproval"
+                 "studentsOnly", "minGrade", "maxGrade", "requiresApproval", "askEmergencyInfo"
           FROM "TicketType"
           WHERE id = ANY(${typeIds}::uuid[]) AND "eventId" = ${event.id}::uuid
           FOR UPDATE`;
@@ -346,6 +348,18 @@ export async function checkoutRoutes(
             throw new HttpError(400, `${eligibility.reason} (${ticket.firstName})`);
           }
         }
+        // Only checked and kept when the ticket type asks for it; anything else sent is ignored.
+        const emergency = input.tickets.map((ticket) => {
+          if (!byId.get(ticket.ticketTypeId)!.askEmergencyInfo) return null;
+          if (ticket.emergency == null) {
+            throw new HttpError(400, `Give an emergency contact for ${ticket.firstName}`);
+          }
+          const checked = emergencyInfoSchema.safeParse(ticket.emergency);
+          if (!checked.success) {
+            throw new HttpError(400, `${checked.error.issues[0]!.message} (${ticket.firstName})`);
+          }
+          return checked.data;
+        });
 
         // Locked, so a waiver can't be reworded between this check and the signatures.
         const waivers = await tx.$queryRaw<WaiverToSign[]>`
@@ -488,6 +502,9 @@ export async function checkoutRoutes(
                     lastName: t.lastName,
                     grade: t.grade ?? null,
                     dateOfBirth: t.dateOfBirth ? new Date(t.dateOfBirth) : null,
+                    emergencyContactName: emergency[i]?.contactName ?? null,
+                    emergencyContactPhone: emergency[i]?.contactPhone ?? null,
+                    medicalNotes: emergency[i]?.medicalNotes ?? null,
                     ...(guardianRequests[i]
                       ? { guardians: { create: { guardianId: guardianRequests[i].guardianId } } }
                       : {}),
