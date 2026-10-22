@@ -50,14 +50,18 @@ type Column = keyof typeof COLUMNS;
 
 const heading = (s: string) => s.trim().toLowerCase().replace(/[_.]+/g, " ").replace(/\s+/g, " ");
 
-/** Splits CSV text into rows, following the quoting rules spreadsheets use. */
-function csvRows(text: string): { line: number; cells: string[] }[] {
+/**
+ * Splits CSV text into rows, following the quoting rules spreadsheets use. Returns the line a
+ * quote was opened on when it's never closed, since everything after it would run into one cell.
+ */
+function csvRows(text: string): { line: number; cells: string[] }[] | { unclosedQuote: number } {
   const rows: { line: number; cells: string[] }[] = [];
   let cells: string[] = [];
   let value = "";
   let quoted = false;
   let line = 1;
   let rowLine = 1;
+  let quoteLine = 1;
   const endRow = () => {
     cells.push(value);
     if (cells.some((c) => c.trim() !== "")) rows.push({ line: rowLine, cells });
@@ -78,6 +82,7 @@ function csvRows(text: string): { line: number; cells: string[] }[] {
       }
     } else if (ch === '"') {
       quoted = true;
+      quoteLine = line;
     } else if (ch === ",") {
       cells.push(value);
       value = "";
@@ -90,6 +95,7 @@ function csvRows(text: string): { line: number; cells: string[] }[] {
       value += ch;
     }
   }
+  if (quoted) return { unclosedQuote: quoteLine };
   if (value !== "" || cells.length > 0) endRow();
   return rows;
 }
@@ -114,6 +120,12 @@ function parseGrade(value: string): number | null | "bad" {
  */
 export function parseRosterCsv(text: string): RosterParse {
   const rows = csvRows(text.replace(/^\uFEFF/, ""));
+  if ("unclosedQuote" in rows) {
+    return {
+      ok: false,
+      problems: [`Line ${rows.unclosedQuote}: a quote mark opens here and never closes`],
+    };
+  }
   const [head, ...body] = rows;
   if (!head) return { ok: false, problems: ["The file is empty"] };
 

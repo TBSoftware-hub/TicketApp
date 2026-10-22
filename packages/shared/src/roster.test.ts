@@ -55,6 +55,14 @@ describe("parseRosterCsv", () => {
     });
   });
 
+  it("refuses a quote that never closes, rather than losing the rows after it", () => {
+    const csv = 'id,first,last,notes\nS1,Sam,Lee,"note\nS2,Jo,Park,other\n';
+    expect(parseRosterCsv(csv)).toEqual({
+      ok: false,
+      problems: ["Line 2: a quote mark opens here and never closes"],
+    });
+  });
+
   it("stops listing problems after twenty", () => {
     const rows = Array.from({ length: 25 }, (_, i) => `S${i},Sam,,9`);
     const parsed = parseRosterCsv(["id,first,last,grade", ...rows].join("\n"));

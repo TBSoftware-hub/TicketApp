@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@ticketapp/db";
+import type { Prisma, PrismaClient } from "@ticketapp/db";
 import { MAX_ROSTER_BYTES, parseRosterCsv, rosterImportSchema } from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -9,6 +9,14 @@ const paramsSchema = z.object({ orgId: z.uuid() });
 
 /** Rows per insert, well under Postgres's limit on query parameters. */
 const INSERT_BATCH = 5_000;
+
+/**
+ * Changes to the roster lock the organization row, and checkout takes a shared lock on it while
+ * it checks students, so a checkout sees either the whole old roster or the whole new one.
+ */
+function lockOrganization(tx: Prisma.TransactionClient, orgId: string) {
+  return tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
+}
 
 /** What's on file, without listing students: how many, in which grades, and since when. */
 async function rosterSummary(prisma: PrismaClient, orgId: string) {
@@ -64,7 +72,7 @@ export async function rosterRoutes(app: FastifyInstance, { prisma }: { prisma: P
       await prisma.$transaction(
         async (tx) => {
           // One import at a time, so two can't interleave their rows.
-          await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
+          await lockOrganization(tx, orgId);
           await tx.rosterStudent.deleteMany({ where: { organizationId: orgId } });
           for (let i = 0; i < parsed.students.length; i += INSERT_BATCH) {
             await tx.rosterStudent.createMany({
@@ -87,10 +95,12 @@ export async function rosterRoutes(app: FastifyInstance, { prisma }: { prisma: P
   app.delete("/orgs/:orgId/roster", async (request, reply) => {
     const { orgId } = parse(paramsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
-    await prisma.$transaction([
-      prisma.rosterStudent.deleteMany({ where: { organizationId: orgId } }),
-      prisma.organization.update({ where: { id: orgId }, data: { rosterImportedAt: null } }),
-    ]);
+    await prisma.$transaction(async (tx) => {
+      // The lock imports take and checkouts wait on, so removal waits its turn.
+      await lockOrganization(tx, orgId);
+      await tx.rosterStudent.deleteMany({ where: { organizationId: orgId } });
+      await tx.organization.update({ where: { id: orgId }, data: { rosterImportedAt: null } });
+    });
     return reply.code(204).send();
   });
 }

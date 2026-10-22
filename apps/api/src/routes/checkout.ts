@@ -244,7 +244,6 @@ export async function checkoutRoutes(
               stripeLivemode: true,
               cardFeePaidBy: true,
               serviceFeePaidBy: true,
-              rosterImportedAt: true,
             },
           },
         },
@@ -341,8 +340,13 @@ export async function checkoutRoutes(
           throw new HttpError(409, `Only ${eventRemaining} tickets are left for this event`);
         }
         // With a roster on file, students-only tickets go to students on it, in the grade it says.
-        const checksRoster = (type: { studentsOnly: boolean }) =>
-          type.studentsOnly && org.rosterImportedAt !== null;
+        // Read here, under a lock roster imports and removals wait on, so the roster can't change
+        // between this check and the order being saved. A key-share lock leaves other updates to
+        // the organization free.
+        const [rosterState] = await tx.$queryRaw<{ rosterImportedAt: Date | null }[]>`
+          SELECT "rosterImportedAt" FROM "Organization" WHERE id = ${org.id}::uuid FOR KEY SHARE`;
+        const hasRoster = rosterState?.rosterImportedAt != null;
+        const checksRoster = (type: { studentsOnly: boolean }) => type.studentsOnly && hasRoster;
         const rosterIds = [
           ...new Set(
             input.tickets
