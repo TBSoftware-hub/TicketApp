@@ -336,3 +336,60 @@ export async function waiverPdf(
 
   return doc.save();
 }
+
+/** One attendee on a bundle's cover page. */
+export interface BundleEntry {
+  name: string;
+  ticketTypeName: string;
+  status: string;
+}
+
+/**
+ * Every signed waiver for an event in one PDF, for a vendor: a cover page listing each attendee
+ * and where their waivers stand, then each ticket's signed-waiver PDF in turn.
+ */
+export async function waiverBundlePdf(
+  event: { name: string; startsAt: Date; organization: { name: string; timezone: string } },
+  entries: BundleEntry[],
+  ticketPdfs: Uint8Array[],
+  now = new Date(),
+): Promise<Uint8Array> {
+  const when = new Intl.DateTimeFormat("en-US", {
+    timeZone: event.organization.timezone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const doc = await PDFDocument.create();
+  doc.setTitle(`Signed waivers: ${event.name}`);
+  doc.setAuthor(event.organization.name);
+  doc.setProducer("TicketApp");
+  doc.setCreator("TicketApp");
+  doc.setCreationDate(now);
+  doc.setModificationDate(now);
+  const out = new Writer(
+    doc,
+    await doc.embedFont(StandardFonts.Helvetica),
+    await doc.embedFont(StandardFonts.HelveticaBold),
+    `Waiver bundle · Generated ${now.toISOString()}`,
+  );
+  out.text(event.organization.name, { size: 10, color: MUTED, after: 2 });
+  out.text("Signed waivers", { size: 20, bold: true, after: 6 });
+  out.text(`${event.name}, ${when.format(event.startsAt)}`, { size: 12, bold: true, after: 2 });
+  const signed = ticketPdfs.length;
+  out.text(
+    `${entries.length} ${entries.length === 1 ? "attendee" : "attendees"} · ` +
+      `${signed} with signed waivers in this file · Generated ${when.format(now)}`,
+    { color: MUTED },
+  );
+  out.rule();
+  for (const e of entries) {
+    out.text(`${e.name} · ${e.ticketTypeName}`, { bold: true, after: 1 });
+    out.text(e.status, { size: 9, color: MUTED, after: 6 });
+  }
+  for (const bytes of ticketPdfs) {
+    const part = await PDFDocument.load(bytes);
+    const pages = await doc.copyPages(part, part.getPageIndices());
+    for (const page of pages) doc.addPage(page);
+  }
+  return doc.save();
+}

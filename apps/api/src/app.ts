@@ -24,6 +24,7 @@ import { paymentRoutes } from "./routes/payments";
 import { promoCodeRoutes } from "./routes/promo-codes";
 import { publicEventRoutes } from "./routes/public-events";
 import { ticketTypeRoutes } from "./routes/ticket-types";
+import { waiverExportRoutes } from "./routes/waiver-exports";
 import { waiverPdfRoutes } from "./routes/waiver-pdfs";
 import { waiverRoutes } from "./routes/waivers";
 
@@ -149,6 +150,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(promoCodeRoutes, { prisma: deps.prisma });
   await app.register(waiverRoutes, { prisma: deps.prisma });
   await app.register(waiverPdfRoutes, { prisma: deps.prisma });
+  await app.register(waiverExportRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(doorSaleRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(orderRoutes, {
