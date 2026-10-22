@@ -194,10 +194,6 @@ export async function orderRoutes(
         totalCents: true,
         platformFeeCents: true,
         stripePaymentIntentId: true,
-        buyerName: true,
-        buyerEmail: true,
-        // The tickets the buyer has, not ones given to someone else.
-        _count: { select: { tickets: { where: { transferredTo: { is: null } } } } },
       },
     });
     if (!order) throw new HttpError(404, "Order not found");
@@ -231,20 +227,30 @@ export async function orderRoutes(
     }
 
     const refundedCents = refund ? order.totalCents : 0;
-    // A door sale with no email has nobody to tell.
-    const email = order.buyerEmail
-      ? cancellationEmail({
-          buyerName: order.buyerName,
-          buyerEmail: order.buyerEmail,
-          ticketCount: order._count.tickets,
-          refundedCents,
-          event: { name: event.name, organizationName: event.organization.name },
-        })
-      : null;
     const outcome = await prisma.$transaction(async (tx) => {
       // Waits for a guardian link being claimed, then checks no send is under way, so a link can't
       // go out for tickets this voids.
       await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId}::uuid FOR UPDATE`;
+      // Read under the lock, so an email corrected while the refund was made is the one told.
+      const recipient = await tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        select: {
+          buyerName: true,
+          buyerEmail: true,
+          // The tickets the buyer has, not ones given to someone else.
+          _count: { select: { tickets: { where: { transferredTo: { is: null } } } } },
+        },
+      });
+      // A door sale with no email has nobody to tell.
+      const email = recipient.buyerEmail
+        ? cancellationEmail({
+            buyerName: recipient.buyerName,
+            buyerEmail: recipient.buyerEmail,
+            ticketCount: recipient._count.tickets,
+            refundedCents,
+            event: { name: event.name, organizationName: event.organization.name },
+          })
+        : null;
       if (
         (await tx.guardianSignatureRequest.count({ where: sendingGuardianRequest(orderId) })) > 0
       ) {

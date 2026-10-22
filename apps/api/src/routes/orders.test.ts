@@ -198,6 +198,38 @@ describe("orders", () => {
     expect(page.cancelledAt).not.toBeNull();
   });
 
+  it("tells the corrected address when the email is fixed while the refund is made", async () => {
+    const shop = await onSale();
+    const order = await shop.paid();
+    const refund = stripe.payments.refund;
+    let resume!: () => void;
+    let refunding!: () => void;
+    const entered = new Promise<void>((r) => (refunding = r));
+    stripe.payments.refund = async (request) => {
+      refunding();
+      await new Promise<void>((r) => (resume = r));
+      return refund(request);
+    };
+    try {
+      const cancelling = shop.cancel(order.orderId);
+      await entered;
+      const fixed = buyer();
+      const resent = await t.app.inject({
+        method: "POST",
+        url: `${shop.base}/orders/${order.orderId}/resend`,
+        headers: shop.owner.headers,
+        payload: { email: fixed },
+      });
+      expect(resent.statusCode).toBe(200);
+      resume();
+      expect((await cancelling).statusCode).toBe(200);
+      expect(mailTo(fixed).filter((m) => m.subject.includes("refunded"))).toHaveLength(1);
+      expect(mailTo(order.buyerEmail).filter((m) => m.subject.includes("refunded"))).toEqual([]);
+    } finally {
+      stripe.payments.refund = refund;
+    }
+  });
+
   it("refunds once, however many times staff click", async () => {
     const shop = await onSale();
     const order = await shop.paid();
