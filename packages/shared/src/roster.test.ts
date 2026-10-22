@@ -107,5 +107,12 @@ describe("checkoutTicketSchema studentId", () => {
     expect(checkoutTicketSchema.parse({ ...base, studentId: " s-104 " }).studentId).toBe("S-104");
     expect(checkoutTicketSchema.parse({ ...base, studentId: "  " }).studentId).toBeNull();
     expect(checkoutTicketSchema.parse(base).studentId).toBeUndefined();
+    const longest = "A".repeat(40);
+    expect(checkoutTicketSchema.parse({ ...base, studentId: ` ${longest} ` }).studentId).toBe(
+      longest,
+    );
+    expect(checkoutTicketSchema.safeParse({ ...base, studentId: `${longest}A` }).success).toBe(
+      false,
+    );
   });
 });

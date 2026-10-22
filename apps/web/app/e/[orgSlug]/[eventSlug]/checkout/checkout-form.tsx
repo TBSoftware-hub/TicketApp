@@ -78,7 +78,22 @@ export function CheckoutForm({
   fees: FeeSettings;
 }) {
   const waiverById = new Map(waivers.map((w) => [w.id, w]));
-  const asksStudentId = (tt: PublicTicketType) => tt.studentsOnly && event.studentRoster;
+  // Staff can add or remove the roster while the page is open; a refused checkout rechecks it.
+  const [studentRoster, setStudentRoster] = useState(event.studentRoster);
+  const asksStudentId = (tt: PublicTicketType) => tt.studentsOnly && studentRoster;
+
+  /** Picks up a roster added or removed since the page loaded, keeping what's been typed. */
+  async function recheckRoster() {
+    const res = await fetch(
+      `${API_URL}/public/events/${encodeURIComponent(orgSlug)}/${encodeURIComponent(eventSlug)}`,
+    ).catch(() => null);
+    const data: unknown = await res?.json().catch(() => null);
+    if (data && typeof data === "object" && "event" in data) {
+      const roster = (data as { event: { studentRoster?: unknown } }).event.studentRoster;
+      if (typeof roster === "boolean") setStudentRoster(roster);
+    }
+  }
+
   /** Whether attendees with this ticket give a date of birth, so a guardian can sign for minors. */
   const asksAge = (tt: PublicTicketType) =>
     tt.waiverIds.some((id) => waiverById.get(id)?.requiresGuardianForMinors);
@@ -205,6 +220,7 @@ export function CheckoutForm({
       setError(
         res.status === 429 ? "Too many tries. Wait a minute and try again." : errorMessage(data),
       );
+      if (res.status === 400) await recheckRoster();
     } catch {
       setError(UNREACHABLE);
     }

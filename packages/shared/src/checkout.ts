@@ -93,8 +93,10 @@ export const checkoutTicketSchema = z.object({
   /** Asked for on students-only tickets when the organization has a roster to check it against. */
   studentId: z
     .string()
-    .max(MAX_STUDENT_ID_LENGTH, "That student ID is too long")
-    .transform((s) => normalizeStudentId(s) || null)
+    // Measured once trimmed, the same way roster imports measure it.
+    .transform(normalizeStudentId)
+    .pipe(z.string().max(MAX_STUDENT_ID_LENGTH, "That student ID is too long"))
+    .transform((s) => s || null)
     .nullable()
     .optional(),
   /** One entry for each waiver the ticket type asks for. */
