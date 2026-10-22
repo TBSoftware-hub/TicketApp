@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { checkoutTicketSchema, parseRosterCsv, sameName } from "./index";
+import {
+  MAX_ROSTER_BYTES,
+  checkoutTicketSchema,
+  parseRosterCsv,
+  rosterImportSchema,
+  sameName,
+} from "./index";
 
 describe("parseRosterCsv", () => {
   it("reads the usual columns in any order, ignoring the rest", () => {
@@ -114,5 +120,15 @@ describe("checkoutTicketSchema studentId", () => {
     expect(checkoutTicketSchema.safeParse({ ...base, studentId: `${longest}A` }).success).toBe(
       false,
     );
+  });
+});
+
+describe("rosterImportSchema", () => {
+  it("measures the file in bytes, not characters", () => {
+    // Three bytes each in UTF-8, so this is over the limit with a third as many characters.
+    const wide = "名".repeat(Math.floor(MAX_ROSTER_BYTES / 3) + 1);
+    expect(wide.length).toBeLessThan(MAX_ROSTER_BYTES);
+    expect(rosterImportSchema.safeParse({ csv: wide }).success).toBe(false);
+    expect(rosterImportSchema.safeParse({ csv: "名".repeat(1000) }).success).toBe(true);
   });
 });

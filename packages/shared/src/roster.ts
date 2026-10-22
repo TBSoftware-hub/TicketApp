@@ -196,6 +196,9 @@ export const rosterImportSchema = z.object({
   csv: z
     .string()
     .min(1, "Choose a CSV file")
-    .max(MAX_ROSTER_BYTES, "The file is too big. A roster CSV should be under 3 MB"),
+    // Measured in UTF-8 bytes, as the file was, since names in other scripts take several each.
+    .refine((csv) => new TextEncoder().encode(csv).length <= MAX_ROSTER_BYTES, {
+      message: "The file is too big. A roster CSV should be under 3 MB",
+    }),
 });
 export type RosterImport = z.infer<typeof rosterImportSchema>;
