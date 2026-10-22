@@ -11,6 +11,7 @@ import { guardianRequests } from "./lib/guardian-requests";
 import { createLogMailer, type Mailer } from "./lib/mailer";
 import type { Payments } from "./lib/payments";
 import { createLogTexter, type Texter } from "./lib/texter";
+import { attendeeRoutes } from "./routes/attendees";
 import { authRoutes } from "./routes/auth";
 import { checkoutRoutes } from "./routes/checkout";
 import { compRoutes } from "./routes/comps";
@@ -151,6 +152,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(waiverRoutes, { prisma: deps.prisma });
   await app.register(waiverPdfRoutes, { prisma: deps.prisma });
   await app.register(waiverExportRoutes, { prisma: deps.prisma });
+  await app.register(attendeeRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(doorSaleRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(orderRoutes, {

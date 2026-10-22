@@ -375,3 +375,45 @@ button.secondary {
   display: grid;
   gap: 6px;
 }
+
+/* Event-wide counts above the attendee list, each a shortcut to its filter. */
+.tallies {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.filters {
+  margin-bottom: 8px;
+}
+
+.attendee-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.presence {
+  font-size: 0.9rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.presence.inside {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.attention {
+  color: #a34a18;
+}
+
+@media (prefers-color-scheme: dark) {
+  .attention {
+    color: #f0a36b;
+  }
+}

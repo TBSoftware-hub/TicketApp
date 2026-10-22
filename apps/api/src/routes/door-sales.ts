@@ -137,6 +137,9 @@ export async function doorSaleRoutes(
         WHERE id = ${input.ticketTypeId}::uuid AND "eventId" = ${eventId}::uuid
         FOR UPDATE`;
       if (!ticketType) throw new HttpError(400, "Pick a ticket type from this event");
+      // Read once the lock is held, so a waiver change being saved right now is seen.
+      const hasWaivers =
+        (await tx.ticketTypeWaiver.count({ where: { ticketTypeId: input.ticketTypeId } })) > 0;
       // Staff at the door decide who gets in, so online sale windows and eligibility rules don't
       // apply, but the limits do.
       const seats = takesSeat;
@@ -182,6 +185,7 @@ export async function doorSaleRoutes(
               code: newTicketCode(),
               event: { connect: { id: eventId } },
               ticketType: { connect: { id: input.ticketTypeId } },
+              waiversRequired: hasWaivers,
               attendee: {
                 create: {
                   firstName: input.firstName,

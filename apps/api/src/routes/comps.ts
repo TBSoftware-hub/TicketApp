@@ -86,6 +86,9 @@ export async function compRoutes(
         WHERE id = ${input.ticketTypeId}::uuid AND "eventId" = ${eventId}::uuid
         FOR UPDATE`;
       if (!ticketType) throw new HttpError(400, "Pick a ticket type from this event");
+      // Read once the lock is held, so a waiver change being saved right now is seen.
+      const hasWaivers =
+        (await tx.ticketTypeWaiver.count({ where: { ticketTypeId: input.ticketTypeId } })) > 0;
       // Comps skip eligibility rules, but they still take a seat.
       const seats = takesSeat;
       if (ticketType.quantity !== null) {
@@ -118,6 +121,8 @@ export async function compRoutes(
               eventId,
               ticketTypeId: input.ticketTypeId,
               attendeeId: attendee.id,
+              // Nobody signs for a comp, so its waivers stay missing until they do.
+              waiversRequired: hasWaivers,
             },
           },
         },
