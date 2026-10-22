@@ -23,6 +23,8 @@ const compFields = {
   createdAt: true,
   compedBy: { select: { name: true } },
   tickets: {
+    // Oldest first, so a comp given to someone else ends with whoever has it now.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       id: true,
       status: true,
@@ -30,7 +32,7 @@ const compFields = {
       attendee: { select: { firstName: true, lastName: true } },
     },
   },
-} as const;
+} as const satisfies Prisma.OrderSelect;
 
 /** What the QR code encodes: 128 random bits, so it can't be guessed. */
 export const newTicketCode = () => randomBytes(16).toString("base64url");

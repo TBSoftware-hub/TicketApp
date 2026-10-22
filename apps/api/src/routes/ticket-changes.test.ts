@@ -198,6 +198,39 @@ describe("editing, transferring and resending tickets", () => {
     const again = await s.call("POST", url, { firstName: "Al", lastName: "Ng" });
     expect(again.statusCode).toBe(409);
     expect(again.json().error).toBe("This ticket has been cancelled or given to someone else");
+    const edit = await s.call("PATCH", `${s.base}/tickets/${ticketIds[0]}`, {
+      firstName: "Sam",
+      lastName: "Lee",
+      emergency: s.emergency,
+    });
+    expect(edit.statusCode).toBe(409);
+  });
+
+  it("shows a comp's new holder after a transfer", async () => {
+    const s = await school();
+    const comp = await s.call("POST", `${s.base}/comps`, {
+      ticketTypeId: s.guest,
+      firstName: "Dee",
+      lastName: "Jay",
+      email: `dj-${randomUUID()}@example.com`,
+    });
+    const ticketId = comp.json().comp.tickets[0].id as string;
+    const moved = await s.call("POST", `${s.base}/tickets/${ticketId}/transfer`, {
+      firstName: "Mo",
+      lastName: "Vee",
+      emergency: s.emergency,
+    });
+    expect(moved.statusCode).toBe(201);
+    const { comps } = (await s.call("GET", `${s.base}/comps`)).json();
+    expect(
+      comps[0].tickets.map((x: { status: string; attendee: { firstName: string } }) => [
+        x.status,
+        x.attendee.firstName,
+      ]),
+    ).toEqual([
+      ["VOID", "Dee"],
+      ["VALID", "Mo"],
+    ]);
   });
 
   it("holds transfers of students-only tickets to the same rules as checkout", async () => {

@@ -67,22 +67,16 @@ export async function ticketChangeRoutes(
   app: FastifyInstance,
   { prisma, mailer, webBaseUrl }: { prisma: PrismaClient; mailer: Mailer; webBaseUrl: string },
 ) {
+  /** Checks the ticket is this event's and still stands; changes check again under a lock. */
   const findTicket = async (orgId: string, eventId: string, ticketId: string) => {
     const ticket = await prisma.ticket.findFirst({
       where: { id: ticketId, eventId, event: { organizationId: orgId } },
-      select: {
-        status: true,
-        attendeeId: true,
-        attendee: { select: { studentId: true } },
-        order: { select: { status: true } },
-        ticketType: { select: { askEmergencyInfo: true, studentsOnly: true } },
-      },
+      select: { status: true, order: { select: { status: true } } },
     });
     if (!ticket) throw new HttpError(404, "Ticket not found");
     if (ticket.status !== "VALID" || ticket.order.status !== "PAID") {
       throw new HttpError(409, NOT_VALID);
     }
-    return ticket;
   };
 
   // Corrects the details on a ticket. The ticket and its QR code stay the same, so this is for
@@ -91,35 +85,55 @@ export async function ticketChangeRoutes(
     const { orgId, eventId, ticketId } = parse(ticketParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "events.manage");
     const input = parse(editAttendeeSchema, request.body);
-    const ticket = await findTicket(orgId, eventId, ticketId);
-    // A ticket matched to a student on the roster stays with that student.
-    const { studentId } = ticket.attendee;
-    if (studentId && ticket.ticketType.studentsOnly) {
-      const student = await prisma.rosterStudent.findUnique({
-        where: { organizationId_studentId: { organizationId: orgId, studentId } },
-        select: { lastName: true },
+    await findTicket(orgId, eventId, ticketId);
+    const attendee = await prisma.$transaction(async (tx) => {
+      // The lock transfers and cancelling take, so the ticket can't be replaced or voided while
+      // its details change.
+      await tx.$queryRaw`
+        SELECT o.id FROM "Ticket" t JOIN "Order" o ON o.id = t."orderId"
+        WHERE t.id = ${ticketId}::uuid FOR UPDATE OF o`;
+      const ticket = await tx.ticket.findUniqueOrThrow({
+        where: { id: ticketId },
+        select: {
+          status: true,
+          attendeeId: true,
+          attendee: { select: { studentId: true } },
+          order: { select: { status: true } },
+          ticketType: { select: { askEmergencyInfo: true, studentsOnly: true } },
+        },
       });
-      if (student && !sameName(student.lastName, input.lastName)) {
-        throw new HttpError(
-          400,
-          `The school's roster has student ID ${studentId} under a different last name. To give this ticket to someone else, transfer it`,
-        );
+      if (ticket.status !== "VALID" || ticket.order.status !== "PAID") {
+        throw new HttpError(409, NOT_VALID);
       }
-    }
-    const attendee = await prisma.attendee.update({
-      where: { id: ticket.attendeeId },
-      data: {
-        firstName: input.firstName,
-        lastName: input.lastName,
-        ...emergencyFields(ticket.ticketType.askEmergencyInfo, input.emergency, input.firstName),
-      },
-      select: {
-        firstName: true,
-        lastName: true,
-        emergencyContactName: true,
-        emergencyContactPhone: true,
-        medicalNotes: true,
-      },
+      // A ticket matched to a student on the roster stays with that student.
+      const { studentId } = ticket.attendee;
+      if (studentId && ticket.ticketType.studentsOnly) {
+        const student = await tx.rosterStudent.findUnique({
+          where: { organizationId_studentId: { organizationId: orgId, studentId } },
+          select: { lastName: true },
+        });
+        if (student && !sameName(student.lastName, input.lastName)) {
+          throw new HttpError(
+            400,
+            `The school's roster has student ID ${studentId} under a different last name. To give this ticket to someone else, transfer it`,
+          );
+        }
+      }
+      return tx.attendee.update({
+        where: { id: ticket.attendeeId },
+        data: {
+          firstName: input.firstName,
+          lastName: input.lastName,
+          ...emergencyFields(ticket.ticketType.askEmergencyInfo, input.emergency, input.firstName),
+        },
+        select: {
+          firstName: true,
+          lastName: true,
+          emergencyContactName: true,
+          emergencyContactPhone: true,
+          medicalNotes: true,
+        },
+      });
     });
     return { attendee };
   });
@@ -330,10 +344,33 @@ export async function ticketChangeRoutes(
     // Claimed the way the confirmation email claims an order, so the two can't both send, and
     // cancelling waits for this to finish.
     const order = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId}::uuid FOR UPDATE`;
+      const [locked] = await tx.$queryRaw<
+        { confirmationSentAt: Date | null; confirmationAttempts: number }[]
+      >`
+        SELECT "confirmationSentAt", "confirmationAttempts" FROM "Order"
+        WHERE id = ${orderId}::uuid FOR UPDATE`;
+      // A confirmation that hasn't gone out yet has the old link and maybe the old address, so it
+      // is settled here, with the claim, and never sent as it was even if this request dies.
+      let unsent: Prisma.OrderUpdateManyMutationInput = {};
+      if (!locked!.confirmationSentAt) {
+        unsent =
+          locked!.confirmationAttempts > 0
+            ? // Tried before, under an idempotency key the provider may keep for the old message
+              // and refuse a new one under, so retries stop and staff send it from here.
+              { confirmationAttempts: MAX_CONFIRMATION_ATTEMPTS, emailViewKey: null }
+            : // Never tried, so if this send fails the usual retries send it, to the new address
+              // with the new link.
+              { emailViewKey: key };
+      }
       const { count } = await tx.order.updateMany({
         where: { id: orderId, status: "PAID", ...notSendingConfirmation(claimedAt) },
-        data: { confirmationClaimedAt: claimedAt, buyerEmail: email, viewKeyHash: hashToken(key) },
+        data: {
+          confirmationClaimedAt: claimedAt,
+          buyerEmail: email,
+          viewKeyHash: hashToken(key),
+          confirmationEmail: Prisma.DbNull,
+          ...unsent,
+        },
       });
       if (count === 0) {
         const { status } = await tx.order.findUniqueOrThrow({
@@ -351,7 +388,6 @@ export async function ticketChangeRoutes(
           buyerName: true,
           totalCents: true,
           confirmationSentAt: true,
-          confirmationAttempts: true,
           event: { select: emailEventFields },
           tickets: {
             where: { status: "VALID" },
@@ -381,26 +417,17 @@ export async function ticketChangeRoutes(
       }
       sent = true;
     } finally {
-      // What becomes of a confirmation that hadn't gone out yet. Its saved message has the old link
-      // and maybe the old address, so it's never sent as it was.
-      let unsent: Prisma.OrderUpdateManyMutationInput;
-      if (order.confirmationSentAt) unsent = {};
-      // The tickets reached the buyer, so it never needs to go out.
-      else if (sent) unsent = { confirmationSentAt: new Date() };
-      // Tried before, under an idempotency key the provider may keep for the old message and
-      // refuse a new one under, so staff send it from here instead.
-      else if (order.confirmationAttempts > 0) {
-        unsent = { confirmationAttempts: MAX_CONFIRMATION_ATTEMPTS };
-      }
-      // Never tried, so the usual retries send it, to the new address with the new link.
-      else unsent = { emailViewKey: key };
       await prisma.order.updateMany({
         where: { id: orderId, confirmationClaimedAt: claimedAt },
         data: {
           confirmationClaimedAt: null,
-          emailViewKey: null,
-          confirmationEmail: Prisma.DbNull,
-          ...unsent,
+          // The tickets reached the buyer, so the confirmation never needs to go out.
+          ...(sent
+            ? {
+                emailViewKey: null,
+                ...(order.confirmationSentAt ? {} : { confirmationSentAt: new Date() }),
+              }
+            : {}),
         },
       });
     }
