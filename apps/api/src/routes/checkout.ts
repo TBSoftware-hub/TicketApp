@@ -93,22 +93,25 @@ function present({ event, tickets, ...order }: OrderRow) {
       organizationSlug: organization.slug,
       timezone: organization.timezone,
     },
-    tickets: tickets.map((t) => ({
-      id: t.id,
-      status: t.status,
-      ticketTypeName: t.ticketType.name,
-      firstName: t.attendee.firstName,
-      lastName: t.attendee.lastName,
-      /** Whether there's a signed-waiver PDF to download for it. */
-      hasWaivers: t._count.signatures > 0,
-      /** The guardian who still has to sign for this ticket, if any. */
-      awaitingGuardian:
-        t.guardianRequest && !t.guardianRequest.signedAt ? t.guardianRequest.guardian.name : null,
-      /** Whether a signing link has reached that guardian yet. */
-      guardianLinkSent: Boolean(
-        t.guardianRequest?.emailDeliveredAt || t.guardianRequest?.textDeliveredAt,
-      ),
-    })),
+    // A ticket voided on an order that stands was given to someone else, so it isn't the buyer's.
+    tickets: tickets
+      .filter((t) => order.status !== "PAID" || t.status !== "VOID")
+      .map((t) => ({
+        id: t.id,
+        status: t.status,
+        ticketTypeName: t.ticketType.name,
+        firstName: t.attendee.firstName,
+        lastName: t.attendee.lastName,
+        /** Whether there's a signed-waiver PDF to download for it. */
+        hasWaivers: t._count.signatures > 0,
+        /** The guardian who still has to sign for this ticket, if any. */
+        awaitingGuardian:
+          t.guardianRequest && !t.guardianRequest.signedAt ? t.guardianRequest.guardian.name : null,
+        /** Whether a signing link has reached that guardian yet. */
+        guardianLinkSent: Boolean(
+          t.guardianRequest?.emailDeliveredAt || t.guardianRequest?.textDeliveredAt,
+        ),
+      })),
   };
 }
 

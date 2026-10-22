@@ -128,7 +128,7 @@ describe("editing, transferring and resending tickets", () => {
   it("transfers a ticket to a new attendee with a new QR code, and emails it to them", async () => {
     const s = await school();
     // Both guest tickets are sold, and the transfer still goes through.
-    const { orderId, ticketIds } = await s.buy([
+    const { orderId, key, ticketIds } = await s.buy([
       { ticketTypeId: s.guest, firstName: "Sam", lastName: "Lee", emergency: s.emergency },
       { ticketTypeId: s.guest, firstName: "Kim", lastName: "Lee", emergency: s.emergency },
     ]);
@@ -178,6 +178,21 @@ describe("editing, transferring and resending tickets", () => {
     expect(mail.text).toContain("Hi Jo,");
     expect(mail.text).toContain("- Jo Park: Guest");
     expect(mail.inlineImages).toHaveLength(1);
+    // The claim taken while it was emailed is let go.
+    const order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.confirmationClaimedAt).toBeNull();
+    // The buyer's order page shows who has the tickets now.
+    const page = await t.app.inject({
+      method: "POST",
+      url: `/public/orders/${orderId}`,
+      payload: { key },
+    });
+    expect(
+      page
+        .json()
+        .order.tickets.map((x: { firstName: string }) => x.firstName)
+        .sort(),
+    ).toEqual(["Jo", "Kim"]);
 
     // The old ticket can't be edited or moved again.
     const again = await s.call("POST", url, { firstName: "Al", lastName: "Ng" });
@@ -287,24 +302,52 @@ describe("editing, transferring and resending tickets", () => {
     expect((await view(newKey)).statusCode).toBe(200);
   });
 
-  it("says when the email couldn't be sent, and leaves a confirmation still due to go out", async () => {
+  it("says when the email couldn't be sent, and leaves the confirmation to go out right", async () => {
     const s = await school();
-    t.mailFailures.remaining = 1;
-    const { orderId, buyerEmail } = await s.buy([
-      { ticketTypeId: s.guest, firstName: "Sam", lastName: "Lee", emergency: s.emergency },
-    ]);
-    const url = `${s.base}/orders/${orderId}/resend`;
-    t.mailFailures.remaining = 1;
-    const failed = await s.call("POST", url, { email: buyerEmail });
-    expect(failed.statusCode).toBe(502);
-    let order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-    expect(order.confirmationSentAt).toBeNull();
-    expect(order.confirmationClaimedAt).toBeNull();
+    const ticket = { ticketTypeId: s.guest, firstName: "Sam", lastName: "Lee" };
+    const view = (orderId: string, key: string) =>
+      t.app.inject({ method: "POST", url: `/public/orders/${orderId}`, payload: { key } });
 
-    expect((await s.call("POST", url, { email: buyerEmail })).statusCode).toBe(200);
-    order = await t.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    // A confirmation never tried goes out by the usual retries, with the new address and link.
+    const fresh = await s.buy([{ ...ticket, emergency: s.emergency }]);
+    await t.prisma.order.update({
+      where: { id: fresh.orderId },
+      data: { confirmationSentAt: null, confirmationAttempts: 0, confirmationFirstTriedAt: null },
+    });
+    const email = `fixed-${randomUUID()}@example.com`;
+    t.mailFailures.remaining = 1;
+    const failed = await s.call("POST", `${s.base}/orders/${fresh.orderId}/resend`, { email });
+    expect(failed.statusCode).toBe(502);
+    expect(failed.json().error).toBe("The email couldn't be sent. Try again in a minute.");
+    const pending = await t.prisma.order.findUniqueOrThrow({ where: { id: fresh.orderId } });
+    expect(pending).toMatchObject({
+      buyerEmail: email,
+      confirmationSentAt: null,
+      confirmationClaimedAt: null,
+      confirmationAttempts: 0,
+    });
+    // The key the retry will send is the order's new one.
+    expect((await view(fresh.orderId, pending.emailViewKey!)).statusCode).toBe(200);
+    expect((await view(fresh.orderId, fresh.key)).statusCode).toBe(404);
+
+    // One already tried may be held by the provider under its key, so retries stop and staff
+    // send it from here.
+    t.mailFailures.remaining = 1;
+    const tried = await s.buy([{ ...ticket, emergency: s.emergency }]);
+    const url = `${s.base}/orders/${tried.orderId}/resend`;
+    t.mailFailures.remaining = 1;
+    expect((await s.call("POST", url, { email: tried.buyerEmail })).statusCode).toBe(502);
+    let order = await t.prisma.order.findUniqueOrThrow({ where: { id: tried.orderId } });
+    expect(order).toMatchObject({
+      confirmationSentAt: null,
+      confirmationClaimedAt: null,
+      confirmationAttempts: 5,
+      emailViewKey: null,
+      confirmationEmail: null,
+    });
+    expect((await s.call("POST", url, { email: tried.buyerEmail })).statusCode).toBe(200);
+    order = await t.prisma.order.findUniqueOrThrow({ where: { id: tried.orderId } });
     expect(order.confirmationSentAt).not.toBeNull();
-    expect(order.emailViewKey).toBeNull();
   });
 
   it("is for staff who manage events, on orders that still stand", async () => {

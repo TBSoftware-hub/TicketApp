@@ -10,7 +10,12 @@ import {
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
-import { confirmationEmail, notSendingConfirmation, orderLink } from "../lib/confirmations";
+import {
+  MAX_CONFIRMATION_ATTEMPTS,
+  confirmationEmail,
+  notSendingConfirmation,
+  orderLink,
+} from "../lib/confirmations";
 import { HttpError } from "../lib/errors";
 import { sendingGuardianRequest } from "../lib/guardian-requests";
 import type { Mailer } from "../lib/mailer";
@@ -128,6 +133,7 @@ export async function ticketChangeRoutes(
     const input = parse(transferTicketSchema, request.body);
     await findTicket(orgId, eventId, ticketId);
 
+    const claimedAt = new Date();
     const issued = await prisma.$transaction(async (tx) => {
       // The lock cancelling takes, and that a guardian link's claim shares, so neither can
       // happen halfway through.
@@ -168,11 +174,11 @@ export async function ticketChangeRoutes(
       if (old.isInside) {
         throw new HttpError(409, "This ticket's holder is at the event now, so it can't be moved");
       }
-      const event = await tx.event.findUniqueOrThrow({
-        where: { id: eventId },
-        select: { status: true },
-      });
-      if (event.status === "CANCELLED") throw new HttpError(409, "This event is cancelled");
+      // Taken before the type's lock, as checkout takes the event's before its types', so the two
+      // can't each hold a lock the other is waiting for. Issuing the new ticket needs it anyway.
+      const [event] = await tx.$queryRaw<{ status: string }[]>`
+        SELECT status FROM "Event" WHERE id = ${eventId}::uuid FOR KEY SHARE`;
+      if (event!.status === "CANCELLED") throw new HttpError(409, "This event is cancelled");
 
       // The lock checkout takes on a type before counting a student's tickets, then the roster's.
       const [type] = await tx.$queryRaw<
@@ -254,6 +260,14 @@ export async function ticketChangeRoutes(
           ...emergency,
         },
       });
+      // Claimed while the new ticket is emailed, as a confirmation claims its order, so the
+      // ticket can't be cancelled or moved on while its QR code is on its way.
+      if (input.email) {
+        await tx.order.update({
+          where: { id: order.id },
+          data: { confirmationClaimedAt: claimedAt },
+        });
+      }
       return tx.ticket.create({
         data: {
           code: newTicketCode(),
@@ -263,7 +277,7 @@ export async function ticketChangeRoutes(
           attendeeId: attendee.id,
           waiversRequired: hasWaivers,
         },
-        select: { id: true },
+        select: { id: true, orderId: true },
       });
     });
 
@@ -288,9 +302,14 @@ export async function ticketChangeRoutes(
       } catch (err) {
         request.log.error({ err, ticketId: issued.id }, "Couldn't email the transferred ticket");
         emailed = false;
+      } finally {
+        await prisma.order.updateMany({
+          where: { id: issued.orderId, confirmationClaimedAt: claimedAt },
+          data: { confirmationClaimedAt: null },
+        });
       }
     }
-    return reply.code(201).send({ ticket: issued, emailed });
+    return reply.code(201).send({ ticket: { id: issued.id }, emailed });
   });
 
   // Sends an order's tickets again, to the buyer's email or a corrected one. The email carries a
@@ -332,6 +351,7 @@ export async function ticketChangeRoutes(
           buyerName: true,
           totalCents: true,
           confirmationSentAt: true,
+          confirmationAttempts: true,
           event: { select: emailEventFields },
           tickets: {
             where: { status: "VALID" },
@@ -361,15 +381,26 @@ export async function ticketChangeRoutes(
       }
       sent = true;
     } finally {
+      // What becomes of a confirmation that hadn't gone out yet. Its saved message has the old link
+      // and maybe the old address, so it's never sent as it was.
+      let unsent: Prisma.OrderUpdateManyMutationInput;
+      if (order.confirmationSentAt) unsent = {};
+      // The tickets reached the buyer, so it never needs to go out.
+      else if (sent) unsent = { confirmationSentAt: new Date() };
+      // Tried before, under an idempotency key the provider may keep for the old message and
+      // refuse a new one under, so staff send it from here instead.
+      else if (order.confirmationAttempts > 0) {
+        unsent = { confirmationAttempts: MAX_CONFIRMATION_ATTEMPTS };
+      }
+      // Never tried, so the usual retries send it, to the new address with the new link.
+      else unsent = { emailViewKey: key };
       await prisma.order.updateMany({
         where: { id: orderId, confirmationClaimedAt: claimedAt },
         data: {
           confirmationClaimedAt: null,
-          // A confirmation still waiting to go out has the old link and maybe the old address.
-          // Once the tickets have reached the buyer, it never needs to.
           emailViewKey: null,
           confirmationEmail: Prisma.DbNull,
-          ...(sent && !order.confirmationSentAt ? { confirmationSentAt: new Date() } : {}),
+          ...unsent,
         },
       });
     }
