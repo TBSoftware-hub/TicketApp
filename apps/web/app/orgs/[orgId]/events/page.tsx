@@ -48,8 +48,13 @@ export default async function EventsPage({ params }: { params: Promise<{ orgId: 
                 {STATUS_LABELS[e.status]}
                 {e.capacity !== null && ` · ${e.capacity} capacity`}
               </span>
-              {canSell && e.status === "PUBLISHED" && (
-                <a href={`/orgs/${orgId}/events/${e.id}/door`}>Door sales</a>
+              {canSell && (
+                <span className="links">
+                  <a href={`/orgs/${orgId}/events/${e.id}/attendees`}>Attendees</a>
+                  {e.status === "PUBLISHED" && (
+                    <a href={`/orgs/${orgId}/events/${e.id}/door`}>Door sales</a>
+                  )}
+                </span>
               )}
             </li>
           ))}
