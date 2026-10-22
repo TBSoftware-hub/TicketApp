@@ -77,13 +77,22 @@ async function loadExport(prisma: PrismaClient, orgId: string, eventId: string) 
   return { event, tickets };
 }
 
+/**
+ * The parent or guardian on a ticket: the name they signed with once they have, since it can
+ * differ from the name the buyer gave when inviting them.
+ */
+function guardianName(t: ExportTicket) {
+  const signed = t.signatures.find((s) => s.signerRole === "GUARDIAN");
+  return signed?.signerName ?? t.guardianRequest?.guardian.name;
+}
+
 /** Where a ticket's waivers stand, in a few words. */
 function waiverStatus(t: ExportTicket) {
   const attendeeSigned = t.signatures.some((s) => s.signerRole === "ATTENDEE");
   if (!attendeeSigned) return "Not signed";
   const request = t.guardianRequest;
   if (request && !request.signedAt) return `Waiting on ${request.guardian.name} to sign`;
-  return request ? `Signed, with ${request.guardian.name} as parent or guardian` : "Signed";
+  return request ? `Signed, with ${guardianName(t)} as parent or guardian` : "Signed";
 }
 
 /**
@@ -169,7 +178,7 @@ export async function waiverExportRoutes(
         attendee.map((s) => `${title(s)} (v${s.templateVersion})`).join("; "),
         attendee[0]?.signerName,
         localTime(attendee[0]?.signedAt, tz),
-        request?.guardian.name,
+        guardianName(t),
         [request?.guardian.email, request?.guardian.phone && formatPhone(request.guardian.phone)]
           .filter(Boolean)
           .join(", "),
@@ -208,7 +217,7 @@ export async function waiverExportRoutes(
     const versions = await versionsFor(prisma, signed);
     const now = new Date();
     const ticketPdfs: Uint8Array[] = [];
-    for (const t of signed) ticketPdfs.push(await waiverPdf(t, versions, now));
+    for (const t of signed) ticketPdfs.push(await waiverPdf(t, versions, now, { answers: false }));
     const pdf = await waiverBundlePdf(
       event,
       tickets.map((t) => ({

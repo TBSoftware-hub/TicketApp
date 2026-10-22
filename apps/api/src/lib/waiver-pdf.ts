@@ -215,11 +215,15 @@ function answerText(field: WaiverField, value: unknown) {
  * A ticket's signed waivers as a PDF: each waiver's wording in the version that was signed, the
  * answers given, who signed and when, then an audit trail with each signature's time, IP address,
  * browser and document hash, checked against the stored wording.
+ *
+ * With `answers: false` the answers are left out, and the copy says so: a vendor's copy, since
+ * answers to a waiver's questions can be medical.
  */
 export async function waiverPdf(
   ticket: TicketWaivers,
   versions: SignedVersion[],
   now = new Date(),
+  { answers: showAnswers = true }: { answers?: boolean } = {},
 ): Promise<Uint8Array> {
   const { event, attendee } = ticket;
   const { timezone } = event.organization;
@@ -274,7 +278,14 @@ export async function waiverPdf(
     const fields = (version.fields ?? []) as WaiverField[];
     // The attendee answers the questions; a guardian signs against those same answers.
     const attendee = signatures.find((s) => s.signerRole === "ATTENDEE");
-    if (attendee && fields.length > 0) {
+    if (attendee && fields.length > 0 && !showAnswers) {
+      out.text("Answers", { bold: true, after: 2 });
+      out.text(
+        `${fields.length === 1 ? "1 answer" : `${fields.length} answers`} left out of this copy, ` +
+          "since they can include medical details. The organizer has them on file.",
+        { size: 9, color: MUTED, after: 8 },
+      );
+    } else if (attendee && fields.length > 0) {
       const answers = (attendee.answers ?? {}) as Record<string, unknown>;
       out.text("Answers", { bold: true, after: 2 });
       for (const f of fields) {
@@ -379,8 +390,12 @@ export async function waiverBundlePdf(
   out.text(
     `${entries.length} ${entries.length === 1 ? "attendee" : "attendees"} · ` +
       `${signed} with signed waivers in this file · Generated ${when.format(now)}`,
-    { color: MUTED },
+    { color: MUTED, after: 2 },
   );
+  out.text("Answers to waiver questions are left out, since they can include medical details.", {
+    size: 9,
+    color: MUTED,
+  });
   out.rule();
   for (const e of entries) {
     out.text(`${e.name} · ${e.ticketTypeName}`, { bold: true, after: 1 });

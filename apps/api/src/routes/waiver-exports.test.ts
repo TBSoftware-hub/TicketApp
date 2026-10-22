@@ -50,7 +50,7 @@ describe("waiver exports for vendors", () => {
         title: "Field Trip Waiver",
         body: "I understand the risks of the trip.",
         requiresGuardianForMinors: true,
-        fields: [],
+        fields: [{ id: "allergy", label: "Allergies", type: "TEXT", required: false }],
       })
     ).json().waiver as { id: string; version: number };
     const student = (
@@ -68,7 +68,13 @@ describe("waiver exports for vendors", () => {
     await call("POST", `${base}/status`, { status: "PUBLISHED" });
 
     const signed = (signature: string) => [
-      { waiverId: waiver.id, version: waiver.version, answers: {}, signature, agreed: true },
+      {
+        waiverId: waiver.id,
+        version: waiver.version,
+        answers: { allergy: "Shellfish" },
+        signature,
+        agreed: true,
+      },
     ];
     const emergency = {
       contactName: "Pat Parent",
@@ -196,8 +202,34 @@ describe("waiver exports for vendors", () => {
     expect(text).toContain("Signed by Ann Adams (attendee)");
     expect(text).toContain("Signed by Jo Park (attendee)");
     expect(text).not.toContain("Gus");
-    // Medical notes stay out of the PDF.
+    // Medical notes, and answers to the waiver's questions, stay out of the PDF.
     expect(text).not.toContain("peanuts");
+    expect(text).not.toContain("Shellfish");
+    expect(text).toContain("1 answer left out of this copy, since they can include medical");
+  });
+
+  it("credits the guardian by the name they signed with", async () => {
+    const s = await trip();
+    const mail = t.sent.findLast((m) => m.to === "sam@example.com")!;
+    const token = new URL(mail.text.match(/https:\S+/)![0]).searchParams.get("token")!;
+    const signed = await t.app.inject({
+      method: "POST",
+      url: "/public/guardian-signatures/sign",
+      payload: { token, signature: "Samantha Park", agreed: true },
+    });
+    expect(signed.statusCode).toBe(200);
+
+    const [header, ...rows] = parseCsv(
+      (await s.call("GET", `${s.base}/waivers.csv`)).body.slice(1),
+    );
+    const jo = rows.find((r) => r[header!.indexOf("First name")] === "Jo")!;
+    expect(jo[header!.indexOf("Waiver status")]).toBe(
+      "Signed, with Samantha Park as parent or guardian",
+    );
+    expect(jo[header!.indexOf("Parent or guardian")]).toBe("Samantha Park");
+    expect(jo[header!.indexOf("Guardian signed at")]).not.toBe("");
+    const text = pdfText((await s.call("GET", `${s.base}/waivers.pdf`)).rawPayload);
+    expect(text).toContain("Signed, with Samantha Park as parent or guardian");
   });
 
   it("is for staff who manage the event", async () => {
