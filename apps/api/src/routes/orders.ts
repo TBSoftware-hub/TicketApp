@@ -14,9 +14,9 @@ import { parse } from "../lib/validate";
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
 const orderParamsSchema = eventParamsSchema.extend({ orderId: z.uuid() });
 
-const SENDING_CONFIRMATION =
+export const SENDING_CONFIRMATION =
   "The confirmation email for this order is going out right now. Try again in a minute.";
-const SENDING_GUARDIAN_LINK =
+export const SENDING_GUARDIAN_LINK =
   "A guardian's signing link for this order is going out right now. Try again in a minute.";
 
 /** How many orders the dashboard lists at once; a search narrows it down. */
@@ -39,6 +39,8 @@ const orderFields = {
     select: {
       id: true,
       status: true,
+      /** Set on a ticket staff gave to someone else; the order lists it as history. */
+      transferredTo: { select: { id: true } },
       ticketType: { select: { name: true } },
       attendee: {
         select: {
@@ -148,6 +150,37 @@ export async function orderRoutes(
     };
   });
 
+  // One order, with what staff need to change its tickets.
+  app.get("/orgs/:orgId/events/:eventId/orders/:orderId", async (request) => {
+    const { orgId, eventId, orderId } = parse(orderParamsSchema, request.params);
+    await requireOrgPermission(prisma, request, orgId, "events.manage");
+    await findEvent(orgId, eventId);
+    const order = await prisma.order.findFirst({
+      where: { id: orderId, eventId },
+      select: {
+        ...orderFields,
+        tickets: {
+          ...orderFields.tickets,
+          select: {
+            ...orderFields.tickets.select,
+            attendee: {
+              select: { ...orderFields.tickets.select.attendee.select, studentId: true },
+            },
+            ticketType: {
+              select: { name: true, studentsOnly: true, askEmergencyInfo: true },
+            },
+          },
+        },
+      },
+    });
+    if (!order) throw new HttpError(404, "Order not found");
+    const org = await prisma.organization.findUniqueOrThrow({
+      where: { id: orgId },
+      select: { rosterImportedAt: true },
+    });
+    return { order, studentRoster: org.rosterImportedAt !== null };
+  });
+
   // Cancels a paid order and voids its tickets, refunding the card in full if it was paid for.
   app.post("/orgs/:orgId/events/:eventId/orders/:orderId/cancel", async (request) => {
     const { orgId, eventId, orderId } = parse(orderParamsSchema, request.params);
@@ -161,9 +194,6 @@ export async function orderRoutes(
         totalCents: true,
         platformFeeCents: true,
         stripePaymentIntentId: true,
-        buyerName: true,
-        buyerEmail: true,
-        _count: { select: { tickets: true } },
       },
     });
     if (!order) throw new HttpError(404, "Order not found");
@@ -197,20 +227,30 @@ export async function orderRoutes(
     }
 
     const refundedCents = refund ? order.totalCents : 0;
-    // A door sale with no email has nobody to tell.
-    const email = order.buyerEmail
-      ? cancellationEmail({
-          buyerName: order.buyerName,
-          buyerEmail: order.buyerEmail,
-          ticketCount: order._count.tickets,
-          refundedCents,
-          event: { name: event.name, organizationName: event.organization.name },
-        })
-      : null;
     const outcome = await prisma.$transaction(async (tx) => {
       // Waits for a guardian link being claimed, then checks no send is under way, so a link can't
       // go out for tickets this voids.
       await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId}::uuid FOR UPDATE`;
+      // Read under the lock, so an email corrected while the refund was made is the one told.
+      const recipient = await tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        select: {
+          buyerName: true,
+          buyerEmail: true,
+          // The tickets the buyer has, not ones given to someone else.
+          _count: { select: { tickets: { where: { transferredTo: { is: null } } } } },
+        },
+      });
+      // A door sale with no email has nobody to tell.
+      const email = recipient.buyerEmail
+        ? cancellationEmail({
+            buyerName: recipient.buyerName,
+            buyerEmail: recipient.buyerEmail,
+            ticketCount: recipient._count.tickets,
+            refundedCents,
+            event: { name: event.name, organizationName: event.organization.name },
+          })
+        : null;
       if (
         (await tx.guardianSignatureRequest.count({ where: sendingGuardianRequest(orderId) })) > 0
       ) {

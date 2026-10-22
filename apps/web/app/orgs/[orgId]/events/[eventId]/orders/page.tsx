@@ -25,6 +25,8 @@ interface OrderRecord {
   tickets: {
     id: string;
     status: "HELD" | "VALID" | "VOID";
+    /** Set when staff gave the ticket to someone else. */
+    transferredTo: { id: string } | null;
     ticketType: { name: string };
     attendee: {
       firstName: string;
@@ -100,7 +102,8 @@ export default async function OrdersPage({
       <p className="muted">
         Cancelling an order voids its tickets and frees their seats. A card payment is refunded in
         full from your Stripe balance; Stripe keeps its processing fee, and the service fee comes
-        back to you.
+        back to you. Open an order by its buyer&apos;s name to fix a ticket, give it to someone
+        else, or send the tickets again.
       </p>
 
       {(waitingOnGuardians > 0 || waiting) && (
@@ -183,15 +186,22 @@ export default async function OrdersPage({
           {orders.map((o) => {
             const open = o.status === "PAID";
             const refunds = o.paymentMethod === "CARD" && o.totalCents > 0;
-            const count = o.tickets.length === 1 ? "1 ticket" : `${o.tickets.length} tickets`;
+            // Tickets given to someone else are listed as history, not counted again.
+            const held = o.tickets.filter((t) => !t.transferredTo).length;
+            const count = held === 1 ? "1 ticket" : `${held} tickets`;
             return (
               <li key={o.id} className="card row">
                 <span className="stack-tight">
-                  <strong className={open ? undefined : "muted struck"}>{o.buyerName}</strong>
+                  <strong className={open ? undefined : "muted struck"}>
+                    <a href={`${base}/orders/${encodeURIComponent(o.id)}`}>{o.buyerName}</a>
+                  </strong>
                   {o.buyerEmail && <span className="muted">{o.buyerEmail}</span>}
                   {o.tickets.map((t) => (
                     <span key={t.id}>
-                      {t.attendee.firstName} {t.attendee.lastName} · {t.ticketType.name}
+                      <span className={t.transferredTo ? "muted struck" : undefined}>
+                        {t.attendee.firstName} {t.attendee.lastName}
+                      </span>{" "}
+                      · {t.ticketType.name}
                       {t.status === "VALID" && t.guardianRequest && !t.guardianRequest.signedAt && (
                         <span className="muted">
                           {" · "}Waiting on {t.guardianRequest.guardian.name}

@@ -3,6 +3,7 @@
 import {
   createCompSchema,
   doorSaleSchema,
+  editAttendeeSchema,
   formatCents,
   createEventSchema,
   createInvitationSchema,
@@ -11,6 +12,8 @@ import {
   createTicketTypeSchema,
   MAX_ROSTER_BYTES,
   parseDollarsToCents,
+  resendOrderSchema,
+  transferTicketSchema,
   waiverTemplateSchema,
   zonedLocalToUtc,
 } from "@ticketapp/shared";
@@ -633,4 +636,110 @@ export async function removeRoster(formData: FormData) {
   revalidatePath(page);
   if (status !== 204) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
   redirect(page);
+}
+
+/** Which order and ticket a change is for, bound into the form's action. */
+export interface TicketRef {
+  orgId: string;
+  eventId: string;
+  orderId: string;
+  ticketId?: string;
+}
+
+const orderPage = ({ orgId, eventId, orderId }: TicketRef) =>
+  `/orgs/${orgId}/events/${eventId}/orders/${orderId}`;
+
+const ticketPath = ({ orgId, eventId, ticketId }: TicketRef) =>
+  `/orgs/${encodeURIComponent(orgId)}/events/${encodeURIComponent(eventId)}/tickets/${encodeURIComponent(ticketId ?? "")}`;
+
+/** The emergency fields, when the form had them. */
+function emergencyFrom(formData: FormData) {
+  if (!formData.has("emergencyName")) return undefined;
+  return {
+    contactName: String(formData.get("emergencyName") ?? ""),
+    contactPhone: String(formData.get("emergencyPhone") ?? ""),
+    medicalNotes: String(formData.get("medicalNotes") ?? ""),
+  };
+}
+
+function afterTicketChange(ref: TicketRef, done: string): never {
+  revalidatePath(`/orgs/${ref.orgId}/events/${ref.eventId}/orders`);
+  revalidatePath(orderPage(ref));
+  redirect(`${orderPage(ref)}?${new URLSearchParams({ done })}`);
+}
+
+/** Corrects the details on one ticket. */
+export async function editAttendee(
+  ref: TicketRef,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const parsed = editAttendeeSchema.safeParse({
+    firstName: formData.get("firstName"),
+    lastName: formData.get("lastName"),
+    emergency: emergencyFrom(formData),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+  const { status, data } = await api<{ attendee: { firstName: string; lastName: string } }>(
+    ticketPath(ref),
+    { method: "PATCH", token, body: parsed.data },
+  );
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200 || !("attendee" in data)) return { error: errorMessage(data) };
+  afterTicketChange(ref, `Saved ${data.attendee.firstName} ${data.attendee.lastName}'s details.`);
+}
+
+/** Gives one ticket to someone else, voiding the old QR code. */
+export async function transferTicket(
+  ref: TicketRef,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const grade = String(formData.get("grade") ?? "");
+  const parsed = transferTicketSchema.safeParse({
+    firstName: formData.get("firstName"),
+    lastName: formData.get("lastName"),
+    email: formData.get("email"),
+    grade: grade ? Number(grade) : null,
+    studentId: formData.get("studentId"),
+    emergency: emergencyFrom(formData),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+  const { status, data } = await api<{ emailed: boolean | null }>(`${ticketPath(ref)}/transfer`, {
+    method: "POST",
+    token,
+    body: parsed.data,
+  });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 201 || !("emailed" in data)) return { error: errorMessage(data) };
+  const who = `${parsed.data.firstName} ${parsed.data.lastName}`;
+  afterTicketChange(
+    ref,
+    data.emailed === null
+      ? `The ticket is now ${who}'s. The old QR code no longer works.`
+      : data.emailed
+        ? `The ticket is now ${who}'s, and it's on its way to ${parsed.data.email}. The old QR code no longer works.`
+        : `The ticket is now ${who}'s, but the email to ${parsed.data.email} couldn't be sent. Send the order's tickets again from here. The old QR code no longer works.`,
+  );
+}
+
+/** Sends an order's tickets again, to the buyer's email or a corrected one. */
+export async function resendOrder(
+  ref: TicketRef,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const parsed = resendOrderSchema.safeParse({ email: formData.get("email") });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
+  const path = `/orgs/${encodeURIComponent(ref.orgId)}/events/${encodeURIComponent(ref.eventId)}/orders/${encodeURIComponent(ref.orderId)}/resend`;
+  const { status, data } = await api(path, { method: "POST", token, body: parsed.data });
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200) return { error: errorMessage(data) };
+  afterTicketChange(ref, `Sent the tickets to ${parsed.data.email}.`);
 }

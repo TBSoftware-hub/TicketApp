@@ -31,6 +31,16 @@ export const notSendingConfirmation = (now = new Date()): Prisma.OrderWhereInput
   ],
 });
 
+/** The buyer's link to their order, which lets them see, cancel and download it. */
+export function orderLink(
+  webBaseUrl: string,
+  event: { slug: string; organization: { slug: string } },
+  orderId: string,
+  key: string,
+) {
+  return `${webBaseUrl}/e/${encodeURIComponent(event.organization.slug)}/${encodeURIComponent(event.slug)}/orders/${orderId}?key=${encodeURIComponent(key)}`;
+}
+
 export interface OrderConfirmations {
   /**
    * Emails a paid order's tickets to the buyer, once. Never throws: a failed send is logged and
@@ -135,11 +145,10 @@ export function orderConfirmations({
       // with a different message, which an edit to the event in between would cause.
       let snapshot = order.confirmationEmail as EmailSnapshot | null;
       if (!snapshot) {
-        const key = viewKey ?? order.emailViewKey;
+        // The stored key first: a resend may have replaced the one this caller was given.
+        const key = order.emailViewKey ?? viewKey;
         const { event } = order;
-        const orderUrl = key
-          ? `${webBaseUrl}/e/${encodeURIComponent(event.organization.slug)}/${encodeURIComponent(event.slug)}/orders/${orderId}?key=${encodeURIComponent(key)}`
-          : null;
+        const orderUrl = key ? orderLink(webBaseUrl, event, orderId, key) : null;
         // The claim only takes orders with an email.
         snapshot = renderConfirmation({ ...order, buyerEmail: order.buyerEmail ?? "", orderUrl });
         await prisma.order.updateMany({
@@ -235,7 +244,7 @@ export function orderConfirmations({
   return { confirm, retry };
 }
 
-interface ConfirmationOrder {
+export interface ConfirmationOrder {
   buyerName: string;
   buyerEmail: string;
   totalCents: number;

@@ -25,6 +25,7 @@ import { paymentRoutes } from "./routes/payments";
 import { promoCodeRoutes } from "./routes/promo-codes";
 import { publicEventRoutes } from "./routes/public-events";
 import { rosterRoutes } from "./routes/roster";
+import { ticketChangeRoutes } from "./routes/ticket-changes";
 import { ticketTypeRoutes } from "./routes/ticket-types";
 import { waiverExportRoutes } from "./routes/waiver-exports";
 import { waiverPdfRoutes } from "./routes/waiver-pdfs";
@@ -163,6 +164,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     notices,
     fees,
   });
+  await app.register(ticketChangeRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
   await app.register(paymentRoutes, { prisma: deps.prisma, payments: deps.payments, webBaseUrl });
   await app.register(memberRoutes, { prisma: deps.prisma, mailer, webBaseUrl });
 

@@ -341,28 +341,34 @@ enum TicketStatus {
 
 /// One per attendee. `code` is what the QR encodes; it is random, never guessable.
 model Ticket {
-  id              String                    @id @default(uuid(7)) @db.Uuid
-  code            String                    @unique
-  orderId         String                    @db.Uuid
-  order           Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  eventId         String                    @db.Uuid
-  event           Event                     @relation(fields: [eventId], references: [id], onDelete: Restrict)
-  ticketTypeId    String                    @db.Uuid
-  ticketType      TicketType                @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
-  attendeeId      String                    @db.Uuid
-  attendee        Attendee                  @relation(fields: [attendeeId], references: [id], onDelete: Restrict)
-  status          TicketStatus              @default(VALID)
+  id                String                    @id @default(uuid(7)) @db.Uuid
+  code              String                    @unique
+  orderId           String                    @db.Uuid
+  order             Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  eventId           String                    @db.Uuid
+  event             Event                     @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  ticketTypeId      String                    @db.Uuid
+  ticketType        TicketType                @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+  attendeeId        String                    @db.Uuid
+  attendee          Attendee                  @relation(fields: [attendeeId], references: [id], onDelete: Restrict)
+  status            TicketStatus              @default(VALID)
   /// Whether the ticket type asked for waivers when this ticket was issued. Waivers attached or
   /// removed later apply to new tickets only, so this is what decides if one is missing.
-  waiversRequired Boolean                   @default(false)
+  waiversRequired   Boolean                   @default(false)
   /// Denormalised from the latest scan so the door app can answer in one read.
-  isInside        Boolean                   @default(false)
-  createdAt       DateTime                  @default(now())
-  updatedAt       DateTime                  @updatedAt
-  signatures      WaiverSignature[]
-  scans           ScanEvent[]
+  isInside          Boolean                   @default(false)
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  signatures        WaiverSignature[]
+  scans             ScanEvent[]
   /// Set when the attendee is under 18 and a waiver needs their guardian's signature too.
-  guardianRequest GuardianSignatureRequest?
+  guardianRequest   GuardianSignatureRequest?
+  /// The ticket this one replaced when staff gave it to someone else. The old ticket is voided
+  /// and kept, with any waivers signed for it, so an order's current tickets are the ones no
+  /// other ticket has replaced.
+  transferredFromId String?                   @unique @db.Uuid
+  transferredFrom   Ticket?                   @relation("TicketTransfer", fields: [transferredFromId], references: [id], onDelete: Restrict)
+  transferredTo     Ticket?                   @relation("TicketTransfer")
 
   @@unique([eventId, attendeeId])
   @@index([eventId, isInside])

@@ -62,6 +62,8 @@ const orderFields = {
     },
   },
   tickets: {
+    // A ticket staff gave to someone else isn't the buyer's any more.
+    where: { transferredTo: { is: null } },
     orderBy: { createdAt: "asc" },
     select: {
       id: true,
