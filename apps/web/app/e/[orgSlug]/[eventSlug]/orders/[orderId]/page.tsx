@@ -28,7 +28,13 @@ interface PublicOrder {
     organizationName: string;
     timezone: string;
   };
-  tickets: { id: string; ticketTypeName: string; firstName: string; lastName: string }[];
+  tickets: {
+    id: string;
+    ticketTypeName: string;
+    firstName: string;
+    lastName: string;
+    hasWaivers: boolean;
+  }[];
 }
 
 export default async function OrderPage({
@@ -124,6 +130,13 @@ export default async function OrderPage({
                 </strong>
                 <span>{t.ticketTypeName}</span>
               </span>
+              {t.hasWaivers && (
+                <a
+                  href={`${eventPath}/orders/${encodeURIComponent(orderId)}/waivers/${encodeURIComponent(t.id)}?${new URLSearchParams({ key })}`}
+                >
+                  Signed waivers (PDF)
+                </a>
+              )}
             </li>
           ))}
         </ul>

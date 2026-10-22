@@ -66,6 +66,7 @@ const orderFields = {
       status: true,
       ticketType: { select: { name: true } },
       attendee: { select: { firstName: true, lastName: true } },
+      _count: { select: { signatures: true } },
     },
   },
 } as const satisfies Prisma.OrderSelect;
@@ -88,6 +89,8 @@ function present({ event, tickets, ...order }: OrderRow) {
       ticketTypeName: t.ticketType.name,
       firstName: t.attendee.firstName,
       lastName: t.attendee.lastName,
+      /** Whether there's a signed-waiver PDF to download for it. */
+      hasWaivers: t._count.signatures > 0,
     })),
   };
 }

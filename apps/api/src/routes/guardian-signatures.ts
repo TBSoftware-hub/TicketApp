@@ -6,6 +6,7 @@ import { waiverDocumentHash } from "../lib/canonical";
 import { HttpError } from "../lib/errors";
 import { hashToken } from "../lib/tokens";
 import { parse } from "../lib/validate";
+import { sendWaiverPdf } from "./waiver-pdfs";
 
 const viewSchema = z.object({ token: z.string().min(1).max(100) });
 
@@ -178,4 +179,11 @@ export async function guardianSignatureRoutes(
       });
     },
   );
+
+  // The guardian's copy of what was signed, for as long as their link works.
+  app.post("/public/guardian-signatures/waivers.pdf", async (request, reply) => {
+    const { token } = parse(viewSchema, request.body);
+    const found = await findRequest(prisma, token);
+    return sendWaiverPdf(prisma, reply, { id: found.ticket.id });
+  });
 }
