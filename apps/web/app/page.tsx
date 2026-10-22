@@ -46,7 +46,10 @@ export default async function HomePage() {
               <a href={`/orgs/${organization.id}/events`}>Events</a>
               <a href={`/orgs/${organization.id}/team`}>Team</a>
               {roleCan(role as Role, "events.manage") && (
-                <a href={`/orgs/${organization.id}/waivers`}>Waivers</a>
+                <>
+                  <a href={`/orgs/${organization.id}/waivers`}>Waivers</a>
+                  <a href={`/orgs/${organization.id}/roster`}>Roster</a>
+                </>
               )}
               {roleCan(role as Role, "org.manage") && (
                 <a href={`/orgs/${organization.id}/payouts`}>Payouts</a>

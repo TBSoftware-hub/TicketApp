@@ -11,6 +11,7 @@ import {
   paidTicketCount,
   promoCodeProblem,
   promoDiscountCents,
+  sameName,
   signatureMatches,
   ticketSaleStatus,
   type WaiverField,
@@ -235,6 +236,7 @@ export async function checkoutRoutes(
           endsAt: true,
           organization: {
             select: {
+              id: true,
               name: true,
               timezone: true,
               stripeAccountId: true,
@@ -337,17 +339,96 @@ export async function checkoutRoutes(
         if (eventRemaining !== null && input.tickets.length > eventRemaining) {
           throw new HttpError(409, `Only ${eventRemaining} tickets are left for this event`);
         }
-        for (const ticket of input.tickets) {
+        // With a roster on file, students-only tickets go to students on it, in the grade it says.
+        // Read here, under a lock roster imports and removals wait on, so the roster can't change
+        // between this check and the order being saved. A key-share lock leaves other updates to
+        // the organization free.
+        const [rosterState] = await tx.$queryRaw<{ rosterImportedAt: Date | null }[]>`
+          SELECT "rosterImportedAt" FROM "Organization" WHERE id = ${org.id}::uuid FOR KEY SHARE`;
+        const hasRoster = rosterState?.rosterImportedAt != null;
+        const checksRoster = (type: { studentsOnly: boolean }) => type.studentsOnly && hasRoster;
+        const rosterIds = [
+          ...new Set(
+            input.tickets
+              .filter((t) => checksRoster(byId.get(t.ticketTypeId)!) && t.studentId)
+              .map((t) => t.studentId!),
+          ),
+        ];
+        const roster = new Map(
+          rosterIds.length === 0
+            ? []
+            : (
+                await tx.rosterStudent.findMany({
+                  where: { organizationId: org.id, studentId: { in: rosterIds } },
+                  select: { studentId: true, lastName: true, grade: true },
+                })
+              ).map((s) => [s.studentId, s]),
+        );
+        // One ticket of each type per student, counting earlier orders. The type lock above keeps
+        // two checkouts from both getting one in.
+        const ticketKey = (typeId: string, studentId: string) => `${typeId} ${studentId}`;
+        const ticketed = new Set(
+          rosterIds.length === 0
+            ? []
+            : (
+                await tx.ticket.findMany({
+                  where: {
+                    ...takesSeat,
+                    eventId: event.id,
+                    ticketTypeId: { in: types.filter(checksRoster).map((t) => t.id) },
+                    attendee: { studentId: { in: rosterIds } },
+                  },
+                  select: { ticketTypeId: true, attendee: { select: { studentId: true } } },
+                })
+              ).map((t) => ticketKey(t.ticketTypeId, t.attendee.studentId!)),
+        );
+        const inThisOrder = new Set<string>();
+        const students = input.tickets.map((ticket) => {
           const type = byId.get(ticket.ticketTypeId)!;
+          let grade = ticket.grade ?? null;
+          let studentId: string | null = null;
+          if (checksRoster(type)) {
+            if (!ticket.studentId) {
+              throw new HttpError(400, `Enter ${ticket.firstName}'s student ID`);
+            }
+            const student = roster.get(ticket.studentId);
+            // The last name has to match too, so a student ID alone isn't enough to get a ticket.
+            if (!student || !sameName(student.lastName, ticket.lastName)) {
+              throw new HttpError(
+                400,
+                `The school's roster doesn't have student ID ${ticket.studentId} with the last name ${ticket.lastName}. Check both and try again`,
+              );
+            }
+            const key = ticketKey(type.id, student.studentId);
+            if (inThisOrder.has(key)) {
+              throw new HttpError(
+                400,
+                `Student ID ${student.studentId} is on more than one ${type.name} ticket`,
+              );
+            }
+            if (ticketed.has(key)) {
+              throw new HttpError(
+                409,
+                `Student ID ${student.studentId} already has a ${type.name} ticket`,
+              );
+            }
+            inThisOrder.add(key);
+            if (student.grade === null && (type.minGrade !== null || type.maxGrade !== null)) {
+              throw new HttpError(
+                400,
+                `The school's roster doesn't list ${ticket.firstName}'s grade, so ask the school to add it`,
+              );
+            }
+            grade = student.grade;
+            studentId = student.studentId;
+          }
           // Picking a students-only ticket is how the buyer says the attendee is a student.
-          const eligibility = checkEligibility(type, {
-            isStudent: type.studentsOnly,
-            grade: ticket.grade ?? null,
-          });
+          const eligibility = checkEligibility(type, { isStudent: type.studentsOnly, grade });
           if (!eligibility.eligible) {
             throw new HttpError(400, `${eligibility.reason} (${ticket.firstName})`);
           }
-        }
+          return { grade, studentId };
+        });
         // Only checked and kept when the ticket type asks for it; anything else sent is ignored.
         const emergency = input.tickets.map((ticket) => {
           if (!byId.get(ticket.ticketTypeId)!.askEmergencyInfo) return null;
@@ -500,7 +581,8 @@ export async function checkoutRoutes(
                   create: {
                     firstName: t.firstName,
                     lastName: t.lastName,
-                    grade: t.grade ?? null,
+                    grade: students[i]!.grade,
+                    studentId: students[i]!.studentId,
                     dateOfBirth: t.dateOfBirth ? new Date(t.dateOfBirth) : null,
                     emergencyContactName: emergency[i]?.contactName ?? null,
                     emergencyContactPhone: emergency[i]?.contactPhone ?? null,

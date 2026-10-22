@@ -53,6 +53,8 @@ export interface PublicEvent {
   serviceFeePaidBy: FeePayer;
   /** Whether a minor's guardian can be texted their signing link, not just emailed. */
   guardianTexts: boolean;
+  /** Whether students-only tickets ask for a student ID to look up on the school's roster. */
+  studentRoster: boolean;
 }
 
 /** Path of an event's public page, relative to the site. */

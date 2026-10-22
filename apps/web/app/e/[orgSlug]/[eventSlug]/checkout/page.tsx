@@ -73,6 +73,7 @@ export default async function CheckoutPage({
             startsAt: event.startsAt,
             timezone: event.timezone,
             guardianTexts: event.guardianTexts,
+            studentRoster: event.studentRoster,
           }}
           fees={{
             cardFeePaidBy: event.cardFeePaidBy,

@@ -9,6 +9,7 @@ import {
   createOrganizationSchema,
   createPromoCodeSchema,
   createTicketTypeSchema,
+  MAX_ROSTER_BYTES,
   parseDollarsToCents,
   waiverTemplateSchema,
   zonedLocalToUtc,
@@ -582,4 +583,54 @@ export async function deleteWaiver(formData: FormData) {
     redirect(`/orgs/${orgId}/waivers/${waiverId}?error=${encodeURIComponent(errorMessage(data))}`);
   }
   redirect(`/orgs/${orgId}/waivers`);
+}
+
+export interface RosterState extends FormState {
+  /** Each bad row, by its line in the file, when an import was refused. */
+  problems?: string[];
+  /** How many students the roster has after a good import. */
+  imported?: number;
+}
+
+export async function importRoster(
+  orgId: string,
+  _prev: RosterState,
+  formData: FormData,
+): Promise<RosterState> {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "Choose a CSV file" };
+  if (file.size > MAX_ROSTER_BYTES) {
+    return { error: "The file is too big. A roster CSV should be under 3 MB" };
+  }
+  const { status, data } = await api<{ roster: { students: number } }>(
+    `/orgs/${encodeURIComponent(orgId)}/roster`,
+    { method: "PUT", token, body: { csv: await file.text() } },
+  );
+  if (status === 401) redirect("/sign-in");
+  if (status !== 200 || !("roster" in data)) {
+    const problems =
+      typeof data === "object" && data && "problems" in data && Array.isArray(data.problems)
+        ? data.problems.map(String)
+        : undefined;
+    return { error: errorMessage(data), problems };
+  }
+  revalidatePath(`/orgs/${orgId}/roster`);
+  return { imported: data.roster.students };
+}
+
+export async function removeRoster(formData: FormData) {
+  const token = await getSessionToken();
+  if (!token) redirect("/sign-in");
+  const orgId = String(formData.get("orgId") ?? "");
+  const page = `/orgs/${orgId}/roster`;
+  const { status, data } = await api(`/orgs/${encodeURIComponent(orgId)}/roster`, {
+    method: "DELETE",
+    token,
+  });
+  if (status === 401) redirect("/sign-in");
+  revalidatePath(page);
+  if (status !== 204) redirect(`${page}?error=${encodeURIComponent(errorMessage(data))}`);
+  redirect(page);
 }

@@ -50,12 +50,16 @@ model Organization {
   cardFeePaidBy          FeePayer         @default(ORGANIZATION)
   /// Who covers the platform's per-ticket service fee.
   serviceFeePaidBy       FeePayer         @default(BUYER)
+  /// When staff last imported the student roster. Null means there's no roster, so student
+  /// tickets are judged on what the buyer says alone.
+  rosterImportedAt       DateTime?
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
   memberships            Membership[]
   invitations            Invitation[]
   events                 Event[]
   waiverTemplates        WaiverTemplate[]
+  rosterStudents         RosterStudent[]
 
   @@index([districtId])
 }
@@ -187,7 +191,8 @@ model TicketType {
   maxPerOrder      Int                @default(10)
   salesStartAt     DateTime?
   salesEndAt       DateTime?
-  /// Only students may buy. Checked against the buyer's details at checkout (and the roster, once E6.2 lands).
+  /// Only students may buy. Checked against the organization's roster at checkout when it has one,
+  /// otherwise against what the buyer says.
   studentsOnly     Boolean            @default(false)
   /// Inclusive grade range for students-only tickets; null means no limit on that side.
   minGrade         Int?
@@ -361,6 +366,22 @@ model Ticket {
 
   @@unique([eventId, attendeeId])
   @@index([eventId, isInside])
+}
+
+/// One student on the organization's roster, as the school's student information system lists them.
+/// Each import replaces the whole roster.
+model RosterStudent {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Trimmed and upper-cased, so buyers can type it either way.
+  studentId      String
+  firstName      String
+  lastName       String
+  grade          Int?
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, studentId])
 }
 
 // ─── Attendees and guardians ────────────────────────────────────────────────
