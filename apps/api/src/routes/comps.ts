@@ -81,8 +81,11 @@ export async function compRoutes(
       if (!event) throw new HttpError(404, "Event not found");
       if (event.status === "CANCELLED") throw new HttpError(409, "This event is cancelled");
       // Also lock the type, which is what a quantity edit locks before checking what's sold.
-      const [ticketType] = await tx.$queryRaw<{ quantity: number | null }[]>`
-        SELECT quantity FROM "TicketType"
+      const [ticketType] = await tx.$queryRaw<{ quantity: number | null; hasWaivers: boolean }[]>`
+        SELECT quantity,
+          EXISTS (SELECT 1 FROM "TicketTypeWaiver" w WHERE w."ticketTypeId" = "TicketType".id)
+            AS "hasWaivers"
+        FROM "TicketType"
         WHERE id = ${input.ticketTypeId}::uuid AND "eventId" = ${eventId}::uuid
         FOR UPDATE`;
       if (!ticketType) throw new HttpError(400, "Pick a ticket type from this event");
@@ -118,6 +121,8 @@ export async function compRoutes(
               eventId,
               ticketTypeId: input.ticketTypeId,
               attendeeId: attendee.id,
+              // Nobody signs for a comp, so its waivers stay missing until they do.
+              waiversRequired: ticketType.hasWaivers,
             },
           },
         },

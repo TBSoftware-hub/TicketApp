@@ -134,7 +134,7 @@ export async function orderRoutes(
       prisma.ticket.count({
         where: {
           ...valid,
-          OR: [{ ticketType: { waivers: { some: {} } } }, { signatures: { some: {} } }],
+          OR: [{ waiversRequired: true }, { signatures: { some: {} } }],
         },
       }),
       prisma.ticket.count({ where: { ...valid, signatures: { some: {} } } }),

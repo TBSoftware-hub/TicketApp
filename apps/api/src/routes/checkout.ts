@@ -510,6 +510,8 @@ export async function checkoutRoutes(
                       : {}),
                   },
                 },
+                // One signature per waiver the type asks for, so this is whether it asked.
+                waiversRequired: signatures[i]!.length > 0,
                 signatures: { create: signatures[i]! },
                 ...(guardianRequests[i]
                   ? {

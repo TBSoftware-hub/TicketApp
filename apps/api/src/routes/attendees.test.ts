@@ -26,7 +26,7 @@ describe("attendee list", () => {
     waiver: string;
     guardianName: string | null;
     checkIn: string;
-    lastScanAt: string | null;
+    checkInAt: string | null;
   }
 
   /**
@@ -57,7 +57,7 @@ describe("attendee list", () => {
     });
     const eventId = event.json().event.id as string;
     const base = `/orgs/${orgId}/events/${eventId}`;
-    const call = (method: "GET" | "POST", url: string, payload?: object) =>
+    const call = (method: "GET" | "POST" | "PATCH", url: string, payload?: object) =>
       t.app.inject({ method, url, headers: owner.headers, payload });
     const waiver = (
       await call("POST", `/orgs/${orgId}/waivers`, {
@@ -201,16 +201,74 @@ describe("attendee list", () => {
     const row = (name: string) => after.attendees.find((a) => a.firstName === name)!;
     expect(row("Ann").checkIn).toBe("inside");
     expect(row("Jo").checkIn).toBe("left");
-    expect(new Date(row("Jo").lastScanAt!).getTime()).toBeGreaterThan(Date.now() - 11 * 60_000);
+    const minutesAgo = (at: string | null) => (Date.now() - new Date(at!).getTime()) / 60_000;
+    expect(Math.round(minutesAgo(row("Ann").checkInAt))).toBe(30);
+    expect(Math.round(minutesAgo(row("Jo").checkInAt))).toBe(10);
     expect(row("Cal").checkIn).toBe("left");
     expect(row("Gus").checkIn).toBe("not-arrived");
-    expect(row("Gus").lastScanAt).toBeNull();
+    // Marked out with no check-out scan, so there's no time to show for leaving.
+    expect(row("Cal").checkInAt).toBeNull();
+    expect(row("Gus").checkInAt).toBeNull();
     expect(after.totals).toMatchObject({ inside: 1, left: 2 });
 
     expect(await s.names("?checkIn=inside")).toEqual(["Ann"]);
     expect(await s.names("?checkIn=left")).toEqual(["Cal", "Jo"]);
     expect(await s.names("?checkIn=not-arrived")).toEqual(["Gus"]);
     expect(await s.names("?checkIn=left&waiver=waiting")).toEqual(["Jo"]);
+  });
+
+  it("doesn't count a check-out scan without a way in as arriving", async () => {
+    const s = await trip();
+    const gus = (await s.list()).attendees.find((a) => a.firstName === "Gus")!;
+    await t.prisma.scanEvent.create({
+      data: {
+        eventId: s.eventId,
+        ticketId: gus.ticketId,
+        direction: "OUT",
+        outcome: "CHECKED_OUT",
+        scannedAt: new Date(),
+      },
+    });
+    const after = (await s.list()).attendees.find((a) => a.firstName === "Gus")!;
+    expect(after).toMatchObject({ checkIn: "not-arrived", checkInAt: null });
+    expect(await s.names("?checkIn=not-arrived")).toContain("Gus");
+  });
+
+  it("judges waivers by what the ticket asked for when it was issued", async () => {
+    const s = await trip();
+    const waiverId = (await s.call("GET", `/orgs/${s.orgId}/waivers`)).json().waivers[0]
+      .id as string;
+    // Add the waiver to Guest tickets, and take it off Student tickets.
+    expect(
+      (await s.call("PATCH", `${s.base}/ticket-types/${s.guest}`, { waiverIds: [waiverId] }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (await s.call("PATCH", `${s.base}/ticket-types/${s.student}`, { waiverIds: [] })).statusCode,
+    ).toBe(200);
+    // Gus bought before Guest asked for one; Cal's comp was issued while Student still did.
+    const { attendees } = await s.list();
+    const status = (name: string) => attendees.find((a) => a.firstName === name)!.waiver;
+    expect(status("Gus")).toBe("none");
+    expect(status("Cal")).toBe("missing");
+
+    // A Guest ticket issued now does need one.
+    await s.call("POST", `${s.base}/comps`, {
+      ticketTypeId: s.guest,
+      firstName: "Gia",
+      lastName: "Guest",
+      email: "gia@example.com",
+    });
+    const sale = await s.call("POST", `${s.base}/door-sales`, {
+      saleKey: randomUUID(),
+      ticketTypeId: s.guest,
+      quantity: 1,
+      firstName: "Dee",
+      lastName: "Door",
+    });
+    expect(sale.statusCode).toBe(201);
+    expect(await s.names("?waiver=missing")).toEqual(["Cal", "Dee", "Gia"]);
+    expect(await s.names("?waiver=none")).toEqual(["Gus"]);
   });
 
   it("leaves out cancelled tickets", async () => {

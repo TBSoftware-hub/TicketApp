@@ -24,7 +24,8 @@ interface AttendeeRow {
   waiver: AttendeeWaiverFilter;
   guardianName: string | null;
   checkIn: AttendeeCheckInFilter;
-  lastScanAt: string | null;
+  /** When they went in, if inside, or out, if checked out; null when not recorded. */
+  checkInAt: string | null;
 }
 
 interface AttendeeList {
@@ -108,7 +109,7 @@ export default async function AttendeesPage({
     return null;
   };
   const checkInText = (a: AttendeeRow) => {
-    const at = a.lastScanAt ? time.format(new Date(a.lastScanAt)) : null;
+    const at = a.checkInAt ? time.format(new Date(a.checkInAt)) : null;
     if (a.checkIn === "inside") return at ? `Inside since ${at}` : "Inside";
     if (a.checkIn === "left") return at ? `Checked out at ${at}` : "Checked out";
     return "Not arrived";

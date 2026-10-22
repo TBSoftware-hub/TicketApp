@@ -131,9 +131,12 @@ export async function doorSaleRoutes(
         throw new HttpError(409, "Publish the event before selling tickets");
       }
       const [ticketType] = await tx.$queryRaw<
-        { name: string; priceCents: number; quantity: number | null }[]
+        { name: string; priceCents: number; quantity: number | null; hasWaivers: boolean }[]
       >`
-        SELECT name, "priceCents", quantity FROM "TicketType"
+        SELECT name, "priceCents", quantity,
+          EXISTS (SELECT 1 FROM "TicketTypeWaiver" w WHERE w."ticketTypeId" = "TicketType".id)
+            AS "hasWaivers"
+        FROM "TicketType"
         WHERE id = ${input.ticketTypeId}::uuid AND "eventId" = ${eventId}::uuid
         FOR UPDATE`;
       if (!ticketType) throw new HttpError(400, "Pick a ticket type from this event");
@@ -182,6 +185,7 @@ export async function doorSaleRoutes(
               code: newTicketCode(),
               event: { connect: { id: eventId } },
               ticketType: { connect: { id: input.ticketTypeId } },
+              waiversRequired: ticketType.hasWaivers,
               attendee: {
                 create: {
                   firstName: input.firstName,

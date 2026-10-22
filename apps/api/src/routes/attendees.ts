@@ -31,14 +31,9 @@ const waiverWhere: Record<AttendeeWaiverFilter, Prisma.TicketWhereInput> = {
     OR: [{ guardianRequest: { is: null } }, { guardianRequest: { signedAt: { not: null } } }],
   },
   waiting: { ...attendeeSigned, guardianRequest: { signedAt: null } },
-  missing: {
-    ticketType: { waivers: { some: {} } },
-    signatures: { none: { signerRole: "ATTENDEE" } },
-  },
-  none: {
-    ticketType: { waivers: { none: {} } },
-    signatures: { none: { signerRole: "ATTENDEE" } },
-  },
+  // Judged by what the ticket type asked for when the ticket was issued, not what it asks now.
+  missing: { waiversRequired: true, signatures: { none: { signerRole: "ATTENDEE" } } },
+  none: { waiversRequired: false, signatures: { none: { signerRole: "ATTENDEE" } } },
 };
 
 const checkInWhere: Record<AttendeeCheckInFilter, Prisma.TicketWhereInput> = {
@@ -52,11 +47,14 @@ const attendeeFields = {
   attendee: {
     select: { firstName: true, lastName: true, email: true, grade: true },
   },
-  ticketType: { select: { id: true, name: true, _count: { select: { waivers: true } } } },
+  ticketType: { select: { id: true, name: true } },
+  waiversRequired: true,
   order: { select: { buyerName: true } },
   isInside: true,
   signatures: { where: { signerRole: "ATTENDEE" }, select: { id: true }, take: 1 },
   guardianRequest: { select: { signedAt: true, guardian: { select: { name: true } } } },
+  // Whether they ever got in, by the same test the filters use.
+  _count: { select: { scans: { where: admittingScan } } },
   // The last time they came in or went out, which is what door staff ask about.
   scans: {
     where: { OR: [admittingScan, { direction: "OUT", outcome: "CHECKED_OUT" }] },
@@ -70,12 +68,23 @@ type AttendeeTicket = Prisma.TicketGetPayload<{ select: typeof attendeeFields }>
 
 function waiverStatus(t: AttendeeTicket): AttendeeWaiverFilter {
   if (t.signatures.length > 0) return t.guardianRequest?.signedAt === null ? "waiting" : "signed";
-  return t.ticketType._count.waivers > 0 ? "missing" : "none";
+  return t.waiversRequired ? "missing" : "none";
 }
 
 function checkInStatus(t: AttendeeTicket): AttendeeCheckInFilter {
   if (t.isInside) return "inside";
-  return t.scans.length > 0 ? "left" : "not-arrived";
+  return t._count.scans > 0 ? "left" : "not-arrived";
+}
+
+/**
+ * When they went in, for someone inside, or out, for someone who left. Null when the latest door
+ * scan doesn't match, such as someone marked out with no check-out scan recorded.
+ */
+function checkInAt(t: AttendeeTicket, status: AttendeeCheckInFilter) {
+  const last = t.scans[0];
+  if (status === "inside" && last?.direction === "IN") return last.scannedAt;
+  if (status === "left" && last?.direction === "OUT") return last.scannedAt;
+  return null;
 }
 
 /** Everyone coming to an event, one row per ticket, for staff to look people up. */
@@ -143,19 +152,22 @@ export async function attendeeRoutes(app: FastifyInstance, { prisma }: { prisma:
     ]);
 
     return {
-      attendees: tickets.slice(0, ATTENDEE_PAGE).map((t) => ({
-        ticketId: t.id,
-        firstName: t.attendee.firstName,
-        lastName: t.attendee.lastName,
-        email: t.attendee.email,
-        grade: t.attendee.grade,
-        ticketType: { id: t.ticketType.id, name: t.ticketType.name },
-        buyerName: t.order.buyerName,
-        waiver: waiverStatus(t),
-        guardianName: t.guardianRequest?.guardian.name ?? null,
-        checkIn: checkInStatus(t),
-        lastScanAt: t.scans[0]?.scannedAt ?? null,
-      })),
+      attendees: tickets.slice(0, ATTENDEE_PAGE).map((t) => {
+        const checkIn = checkInStatus(t);
+        return {
+          ticketId: t.id,
+          firstName: t.attendee.firstName,
+          lastName: t.attendee.lastName,
+          email: t.attendee.email,
+          grade: t.attendee.grade,
+          ticketType: { id: t.ticketType.id, name: t.ticketType.name },
+          buyerName: t.order.buyerName,
+          waiver: waiverStatus(t),
+          guardianName: t.guardianRequest?.guardian.name ?? null,
+          checkIn,
+          checkInAt: checkInAt(t, checkIn),
+        };
+      }),
       more: tickets.length > ATTENDEE_PAGE,
       totals: { attendees: total, signed, waiting, missing, inside, left },
       ticketTypes,

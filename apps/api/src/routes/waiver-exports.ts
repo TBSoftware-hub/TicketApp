@@ -50,7 +50,7 @@ type ExportTicket = Prisma.TicketGetPayload<{ select: typeof exportFields }>;
 
 /**
  * The event's attendees whose tickets carry waivers: tickets that will get someone in (valid, on a
- * paid order) whose type asks for waivers or that have signatures anyway. Sorted as a vendor would
+ * paid order) whose type asked for waivers when issued, or that have signatures anyway. Sorted as a vendor would
  * look someone up, by last name.
  */
 async function loadExport(prisma: PrismaClient, orgId: string, eventId: string) {
@@ -69,7 +69,7 @@ async function loadExport(prisma: PrismaClient, orgId: string, eventId: string) 
       eventId,
       status: "VALID",
       order: { status: "PAID" },
-      OR: [{ ticketType: { waivers: { some: {} } } }, { signatures: { some: {} } }],
+      OR: [{ waiversRequired: true }, { signatures: { some: {} } }],
     },
     select: exportFields,
     orderBy: [{ attendee: { lastName: "asc" } }, { attendee: { firstName: "asc" } }, { id: "asc" }],
