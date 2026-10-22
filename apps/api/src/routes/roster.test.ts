@@ -150,6 +150,18 @@ describe("student roster", () => {
       { firstName: "Gus", studentId: null, grade: null },
       { firstName: "Sam", studentId: "S-100", grade: 11 },
     ]);
+
+    // One ticket of each type per student, across orders, until the first is cancelled.
+    const again = await s.buy([{ ...sam, studentId: "S-100" }]);
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toBe("Student ID S-100 already has a Prom ticket");
+    // A different ticket type is fine.
+    expect((await s.buy([{ ...sam, ticketTypeId: s.dance, studentId: "S-100" }])).statusCode).toBe(
+      201,
+    );
+    const cancel = await s.call("POST", `${s.base}/orders/${ok.json().orderId}/cancel`);
+    expect(cancel.statusCode).toBe(200);
+    expect((await s.buy([{ ...sam, studentId: "S-100" }])).statusCode).toBe(201);
   });
 
   it("goes back to the buyer's word once the roster is removed", async () => {

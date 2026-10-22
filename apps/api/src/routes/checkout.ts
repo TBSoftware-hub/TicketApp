@@ -360,7 +360,24 @@ export async function checkoutRoutes(
                 })
               ).map((s) => [s.studentId, s]),
         );
-        const ticketed = new Set<string>();
+        // One ticket of each type per student, counting earlier orders. The type lock above keeps
+        // two checkouts from both getting one in.
+        const ticketKey = (typeId: string, studentId: string) => `${typeId} ${studentId}`;
+        const ticketed = new Set(
+          rosterIds.length === 0
+            ? []
+            : (
+                await tx.ticket.findMany({
+                  where: {
+                    ...takesSeat,
+                    ticketTypeId: { in: types.filter(checksRoster).map((t) => t.id) },
+                    attendee: { studentId: { in: rosterIds } },
+                  },
+                  select: { ticketTypeId: true, attendee: { select: { studentId: true } } },
+                })
+              ).map((t) => ticketKey(t.ticketTypeId, t.attendee.studentId!)),
+        );
+        const inThisOrder = new Set<string>();
         const students = input.tickets.map((ticket) => {
           const type = byId.get(ticket.ticketTypeId)!;
           let grade = ticket.grade ?? null;
@@ -377,14 +394,20 @@ export async function checkoutRoutes(
                 `The school's roster doesn't have student ID ${ticket.studentId} with the last name ${ticket.lastName}. Check both and try again`,
               );
             }
-            const key = `${type.id} ${student.studentId}`;
-            if (ticketed.has(key)) {
+            const key = ticketKey(type.id, student.studentId);
+            if (inThisOrder.has(key)) {
               throw new HttpError(
                 400,
                 `Student ID ${student.studentId} is on more than one ${type.name} ticket`,
               );
             }
-            ticketed.add(key);
+            if (ticketed.has(key)) {
+              throw new HttpError(
+                409,
+                `Student ID ${student.studentId} already has a ${type.name} ticket`,
+              );
+            }
+            inThisOrder.add(key);
             if (student.grade === null && (type.minGrade !== null || type.maxGrade !== null)) {
               throw new HttpError(
                 400,
