@@ -26,6 +26,7 @@ const ticketTypeFields = {
   minGrade: true,
   maxGrade: true,
   requiresApproval: true,
+  askEmergencyInfo: true,
   waivers: { select: { waiverTemplateId: true }, orderBy: { waiverTemplate: { title: "asc" } } },
   _count: { select: { tickets: { where: { status: "VALID" } } } },
   // Any ticket at all, voided ones included, keeps the type from being deleted.

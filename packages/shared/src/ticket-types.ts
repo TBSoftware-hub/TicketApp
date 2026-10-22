@@ -25,6 +25,8 @@ const ticketTypeFields = z.object({
   minGrade: grade.nullable().optional(),
   maxGrade: grade.nullable().optional(),
   requiresApproval: z.boolean().optional(),
+  /** Each attendee gives an emergency contact and any medical notes at checkout. */
+  askEmergencyInfo: z.boolean().optional(),
   /** Waivers every attendee with this ticket signs at checkout. */
   waiverIds: z.array(z.uuid()).max(10, "A ticket can ask for at most 10 waivers").optional(),
 });

@@ -20,6 +20,8 @@ export interface PublicTicketType {
   minGrade: number | null;
   maxGrade: number | null;
   requiresApproval: boolean;
+  /** Each attendee gives an emergency contact and any medical notes. */
+  askEmergencyInfo: boolean;
   /** Waivers each attendee with this ticket signs at checkout. */
   waiverIds: string[];
   saleStatus: SaleStatus;

@@ -290,10 +290,11 @@ export async function checkoutRoutes(
             minGrade: number | null;
             maxGrade: number | null;
             requiresApproval: boolean;
+            askEmergencyInfo: boolean;
           }[]
         >`
           SELECT id, name, "priceCents", quantity, "maxPerOrder", "salesStartAt", "salesEndAt",
-                 "studentsOnly", "minGrade", "maxGrade", "requiresApproval"
+                 "studentsOnly", "minGrade", "maxGrade", "requiresApproval", "askEmergencyInfo"
           FROM "TicketType"
           WHERE id = ANY(${typeIds}::uuid[]) AND "eventId" = ${event.id}::uuid
           FOR UPDATE`;
@@ -345,7 +346,13 @@ export async function checkoutRoutes(
           if (!eligibility.eligible) {
             throw new HttpError(400, `${eligibility.reason} (${ticket.firstName})`);
           }
+          if (type.askEmergencyInfo && !ticket.emergency) {
+            throw new HttpError(400, `Give an emergency contact for ${ticket.firstName}`);
+          }
         }
+        // Only kept when the ticket type asks for it.
+        const emergencyFor = (ticket: Checkout["tickets"][number]) =>
+          byId.get(ticket.ticketTypeId)!.askEmergencyInfo ? (ticket.emergency ?? null) : null;
 
         // Locked, so a waiver can't be reworded between this check and the signatures.
         const waivers = await tx.$queryRaw<WaiverToSign[]>`
@@ -488,6 +495,9 @@ export async function checkoutRoutes(
                     lastName: t.lastName,
                     grade: t.grade ?? null,
                     dateOfBirth: t.dateOfBirth ? new Date(t.dateOfBirth) : null,
+                    emergencyContactName: emergencyFor(t)?.contactName ?? null,
+                    emergencyContactPhone: emergencyFor(t)?.contactPhone ?? null,
+                    medicalNotes: emergencyFor(t)?.medicalNotes ?? null,
                     ...(guardianRequests[i]
                       ? { guardians: { create: { guardianId: guardianRequests[i].guardianId } } }
                       : {}),

@@ -16,6 +16,7 @@ export interface TicketTypeFormValues {
   minGrade: string;
   maxGrade: string;
   requiresApproval: boolean;
+  askEmergencyInfo: boolean;
   waiverIds: string[];
   /** Stored instants of an existing ticket type, so unchanged times are saved exactly as they were. */
   salesStartAtUtc?: string | null;
@@ -189,6 +190,21 @@ export function TicketTypeForm({
         </label>
         <p className="muted hint">
           Use approval for guest passes, so staff can check a guest before their ticket is valid.
+        </p>
+      </fieldset>
+      <fieldset className="stack-tight">
+        <legend>Attendee details</legend>
+        <label className="choice">
+          <input
+            type="checkbox"
+            name="askEmergencyInfo"
+            defaultChecked={initial.askEmergencyInfo}
+          />
+          Ask for an emergency contact and medical notes
+        </label>
+        <p className="muted hint">
+          Each attendee gives a contact name and phone number, plus any allergies, conditions or
+          medication. Only staff who manage the event can see them.
         </p>
       </fieldset>
       <fieldset className="stack-tight">

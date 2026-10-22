@@ -194,6 +194,8 @@ model TicketType {
   maxGrade         Int?
   /// Guest passes: each purchase waits for staff approval before the ticket is valid.
   requiresApproval Boolean            @default(false)
+  /// Each attendee gives an emergency contact, and any medical notes, at checkout.
+  askEmergencyInfo Boolean            @default(false)
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
   tickets          Ticket[]
@@ -361,20 +363,23 @@ model Ticket {
 // ─── Attendees and guardians ────────────────────────────────────────────────
 
 model Attendee {
-  id               String             @id @default(uuid(7)) @db.Uuid
-  firstName        String
-  lastName         String
-  email            String?
-  phone            String?
-  dateOfBirth      DateTime?          @db.Date
-  grade            Int?
-  studentId        String?
-  emergencyContact String?
-  medicalNotes     String?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
-  tickets          Ticket[]
-  guardians        AttendeeGuardian[]
+  id                    String             @id @default(uuid(7)) @db.Uuid
+  firstName             String
+  lastName              String
+  email                 String?
+  phone                 String?
+  dateOfBirth           DateTime?          @db.Date
+  grade                 Int?
+  studentId             String?
+  /// Who to call if something happens at the event, when the ticket type asks.
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  /// Allergies, conditions or medication staff should know about. Only staff see it.
+  medicalNotes          String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  tickets               Ticket[]
+  guardians             AttendeeGuardian[]
 }
 
 model Guardian {

@@ -40,7 +40,15 @@ const orderFields = {
       id: true,
       status: true,
       ticketType: { select: { name: true } },
-      attendee: { select: { firstName: true, lastName: true } },
+      attendee: {
+        select: {
+          firstName: true,
+          lastName: true,
+          emergencyContactName: true,
+          emergencyContactPhone: true,
+          medicalNotes: true,
+        },
+      },
       _count: { select: { signatures: true } },
       guardianRequest: {
         select: {

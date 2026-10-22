@@ -50,6 +50,7 @@ export default async function NewTicketTypePage({
           minGrade: "",
           maxGrade: "",
           requiresApproval: false,
+          askEmergencyInfo: false,
           waiverIds: [],
         }}
         waivers={waiverChoices(waivers)}

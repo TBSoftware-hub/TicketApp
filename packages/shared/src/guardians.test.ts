@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ageOn,
   birthDateSchema,
+  emergencyInfoSchema,
+  formatPhone,
   guardianContactSchema,
   isMinorAt,
   localDate,
@@ -58,5 +60,25 @@ describe("guardian contacts", () => {
     expect(parse({ name: "Pat Park", phone: "12" }).error?.issues[0]?.message).toBe(
       "Enter a valid mobile number for the parent or guardian",
     );
+  });
+});
+
+describe("emergency info", () => {
+  it("normalizes the contact's phone and drops blank medical notes", () => {
+    expect(
+      emergencyInfoSchema.parse({
+        contactName: " Pat ",
+        contactPhone: "555-201-3344",
+        medicalNotes: "  ",
+      }),
+    ).toEqual({ contactName: "Pat", contactPhone: "+15552013344", medicalNotes: null });
+    expect(emergencyInfoSchema.safeParse({ contactName: "Pat", contactPhone: "12" }).success).toBe(
+      false,
+    );
+  });
+
+  it("writes US numbers the usual way", () => {
+    expect(formatPhone("+15552013344")).toBe("(555) 201-3344");
+    expect(formatPhone("+447700900123")).toBe("+447700900123");
   });
 });
