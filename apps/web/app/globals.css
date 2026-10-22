@@ -417,3 +417,22 @@ button.secondary {
     color: #f0a36b;
   }
 }
+
+/* An example of the file a form expects, such as the roster CSV. */
+.sample {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
+/* A notice with a list under it, such as the rows a roster import refused. */
+.notice > p:first-child {
+  margin-top: 0;
+}
+
+.notice > ul:last-child {
+  margin-bottom: 0;
+}

@@ -42,6 +42,7 @@ export async function publicEventRoutes(
             stripeLivemode: true,
             cardFeePaidBy: true,
             serviceFeePaidBy: true,
+            rosterImportedAt: true,
           },
         },
         ticketTypes: {
@@ -105,6 +106,8 @@ export async function publicEventRoutes(
         serviceFeePaidBy: organization.serviceFeePaidBy,
         // Whether a minor's guardian can be texted their signing link, not just emailed.
         guardianTexts: texts,
+        // Students-only tickets ask for a student ID, which checkout looks up on the school's roster.
+        studentRoster: organization.rosterImportedAt !== null,
       },
       // Counts stay private; buyers only see whether they can buy.
       ticketTypes: ticketTypes.map(({ _count, quantity, waivers, ...tt }) => ({

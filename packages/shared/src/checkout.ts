@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_STUDENT_ID_LENGTH, normalizeStudentId } from "./roster";
 import { MAX_GRADE, MIN_GRADE } from "./ticket-types";
 import { birthDateSchema, guardianContactSchema } from "./guardians";
 import { checkoutWaiverSchema } from "./waivers";
@@ -87,6 +88,13 @@ export const checkoutTicketSchema = z.object({
     .int()
     .min(MIN_GRADE, `Grades go from ${MIN_GRADE} to ${MAX_GRADE}`)
     .max(MAX_GRADE, `Grades go from ${MIN_GRADE} to ${MAX_GRADE}`)
+    .nullable()
+    .optional(),
+  /** Asked for on students-only tickets when the organization has a roster to check it against. */
+  studentId: z
+    .string()
+    .max(MAX_STUDENT_ID_LENGTH, "That student ID is too long")
+    .transform((s) => normalizeStudentId(s) || null)
     .nullable()
     .optional(),
   /** One entry for each waiver the ticket type asks for. */

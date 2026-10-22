@@ -25,6 +25,8 @@ interface Attendee {
   firstName: string;
   lastName: string;
   grade: string;
+  /** Asked for on students-only tickets when the school has a roster to look it up on. */
+  studentId: string;
   /** What's been filled in on each of the ticket's waivers, by waiver ID. */
   waivers: Record<string, WaiverDraft>;
   /** Asked for when a waiver needs a guardian to sign for minors. */
@@ -44,6 +46,7 @@ const blank: Attendee = {
   firstName: "",
   lastName: "",
   grade: "",
+  studentId: "",
   waivers: {},
   dateOfBirth: "",
   guardianName: "",
@@ -71,10 +74,11 @@ export function CheckoutForm({
   eventSlug: string;
   ticketTypes: PublicTicketType[];
   waivers: PublicWaiver[];
-  event: { startsAt: string; timezone: string; guardianTexts: boolean };
+  event: { startsAt: string; timezone: string; guardianTexts: boolean; studentRoster: boolean };
   fees: FeeSettings;
 }) {
   const waiverById = new Map(waivers.map((w) => [w.id, w]));
+  const asksStudentId = (tt: PublicTicketType) => tt.studentsOnly && event.studentRoster;
   /** Whether attendees with this ticket give a date of birth, so a guardian can sign for minors. */
   const asksAge = (tt: PublicTicketType) =>
     tt.waiverIds.some((id) => waiverById.get(id)?.requiresGuardianForMinors);
@@ -137,7 +141,9 @@ export function CheckoutForm({
         ticketTypeId: tt.id,
         firstName: a.firstName,
         lastName: a.lastName,
-        grade: a.grade ? Number(a.grade) : null,
+        // With a roster the school's records give the grade, so the buyer isn't asked.
+        grade: !asksStudentId(tt) && a.grade ? Number(a.grade) : null,
+        studentId: asksStudentId(tt) ? a.studentId : null,
         dateOfBirth: asksAge(tt) ? a.dateOfBirth || null : null,
         guardian:
           asksAge(tt) && isMinor(a)
@@ -234,7 +240,10 @@ export function CheckoutForm({
           {ticketTypes.map((tt) => {
             const who = whoCanBuy(tt);
             const list = attendees[tt.id] ?? [];
-            const needsGrade = tt.studentsOnly && (tt.minGrade !== null || tt.maxGrade !== null);
+            const needsGrade =
+              tt.studentsOnly &&
+              !asksStudentId(tt) &&
+              (tt.minGrade !== null || tt.maxGrade !== null);
             const grades = GRADES.filter(
               (g) =>
                 (tt.minGrade === null || g >= tt.minGrade) &&
@@ -299,6 +308,18 @@ export function CheckoutForm({
                               </option>
                             ))}
                           </select>
+                        </label>
+                      )}
+                      {asksStudentId(tt) && (
+                        <label>
+                          Student ID
+                          <input
+                            required
+                            maxLength={40}
+                            autoComplete="off"
+                            value={a.studentId}
+                            onChange={(e) => setField(tt.id, i, "studentId", e.target.value)}
+                          />
                         </label>
                       )}
                       {asksAge(tt) && (

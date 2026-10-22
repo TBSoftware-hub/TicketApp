@@ -12,6 +12,7 @@ export * from "./orders";
 export * from "./orgs";
 export * from "./promo-codes";
 export * from "./roles";
+export * from "./roster";
 export * from "./scan";
 export * from "./slug";
 export * from "./ticket-types";
