@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { attendeeCheckInFilterSchema, attendeeWaiverFilterSchema } from "./attendees";
 import { scanDirectionSchema } from "./scan";
 
 const timestamp = z.union([z.string(), z.date()]).pipe(z.coerce.date());
@@ -49,31 +50,46 @@ export function formatDoorEventTime(
 export const scanOverrideSchema = z.enum(["waiver_missing", "reentry_denied"]);
 export type ScanOverride = z.infer<typeof scanOverrideSchema>;
 
-/** What the door app sends when it reads a ticket's QR code. */
-export const doorScanSchema = z.object({
-  /** Made by the app once per scan and sent again on a retry, so a retry can't double-count. */
-  scanKey: z.uuid(),
-  // Apps from before check-out only ever scanned people in.
-  direction: scanDirectionSchema.default("in"),
-  // Scanners can pick up stray whitespace. Any QR code at all may be held up, such as a long
-  // web address or contact card, and is answered as not a ticket, so the limit is generous.
-  code: z.string().trim().min(1, "Scan a ticket's QR code").max(4096, "That isn't a ticket code"),
-  /**
-   * Sent when staff let someone in despite a blocking answer; kept on the scan's record. It only
-   * lets them in past the answer named by `override`, so a reason given for a missing waiver
-   * can't wave someone back in at a lock-in event.
-   */
-  overrideReason: z
-    .string()
-    .trim()
-    .min(3, "Say why you're letting them in")
-    .max(500, "Keep the reason under 500 characters")
-    // Postgres text can't hold a zero byte, so a reason with one couldn't be kept on the record.
-    .refine((reason) => !reason.includes("\u0000"), "Retype the reason")
-    .optional(),
-  // Apps from before re-entry rules only ever overrode a missing waiver.
-  override: scanOverrideSchema.default("waiver_missing"),
-});
+/**
+ * What the door app sends when it reads a ticket's QR code, or when staff pick someone found by
+ * name: one or the other, never both.
+ */
+export const doorScanSchema = z
+  .object({
+    /** Made by the app once per scan and sent again on a retry, so a retry can't double-count. */
+    scanKey: z.uuid(),
+    // Apps from before check-out only ever scanned people in.
+    direction: scanDirectionSchema.default("in"),
+    // Scanners can pick up stray whitespace. Any QR code at all may be held up, such as a long
+    // web address or contact card, and is answered as not a ticket, so the limit is generous.
+    code: z
+      .string()
+      .trim()
+      .min(1, "Scan a ticket's QR code")
+      .max(4096, "That isn't a ticket code")
+      .optional(),
+    /** The ticket staff picked from a lookup by name, for someone without their QR code. */
+    ticketId: z.uuid().optional(),
+    /**
+     * Sent when staff let someone in despite a blocking answer; kept on the scan's record. It only
+     * lets them in past the answer named by `override`, so a reason given for a missing waiver
+     * can't wave someone back in at a lock-in event.
+     */
+    overrideReason: z
+      .string()
+      .trim()
+      .min(3, "Say why you're letting them in")
+      .max(500, "Keep the reason under 500 characters")
+      // Postgres text can't hold a zero byte, so a reason with one couldn't be kept on the record.
+      .refine((reason) => !reason.includes("\u0000"), "Retype the reason")
+      .optional(),
+    // Apps from before re-entry rules only ever overrode a missing waiver.
+    override: scanOverrideSchema.default("waiver_missing"),
+  })
+  .refine((scan) => (scan.code === undefined) !== (scan.ticketId === undefined), {
+    message: "Scan a ticket's QR code",
+    path: ["code"],
+  });
 export type DoorScan = z.infer<typeof doorScanSchema>;
 
 /** Why a scanned code won't get anyone in. */
@@ -248,4 +264,47 @@ export function describeScan(result: DoorScanResult, timeZone: string): ScanDisp
         lines: [SCAN_INVALID_TEXT[result.reason]],
       };
   }
+}
+
+/** Door staff looking someone up by name, for a guest who can't show their QR code. */
+export const doorLookupSchema = z.object({
+  q: z
+    .string()
+    .trim()
+    .min(2, "Type at least two letters of their name")
+    .max(100, "Keep the search under 100 characters"),
+});
+export type DoorLookup = z.infer<typeof doorLookupSchema>;
+
+/** Most people a lookup lists; more than that and staff are asked to type more of the name. */
+export const DOOR_LOOKUP_LIMIT = 20;
+
+/** Someone a lookup by name found: enough to tell two people with the same name apart. */
+export const doorLookupTicketSchema = z.object({
+  ticketId: z.uuid(),
+  attendeeName: z.string(),
+  ticketTypeName: z.string(),
+  grade: z.number().int().nullable(),
+  checkIn: attendeeCheckInFilterSchema,
+  waiver: attendeeWaiverFilterSchema,
+});
+export type DoorLookupTicket = z.infer<typeof doorLookupTicketSchema>;
+
+export const doorLookupResultSchema = z.object({
+  tickets: z.array(doorLookupTicketSchema),
+  /** More people matched than are listed. */
+  more: z.boolean(),
+});
+export type DoorLookupResult = z.infer<typeof doorLookupResultSchema>;
+
+/** The short status shown beside each name a lookup finds, and the colour it reads in. */
+export function describeLookupTicket(ticket: DoorLookupTicket): {
+  tone: ScanDisplay["tone"];
+  status: string;
+} {
+  if (ticket.checkIn === "inside") return { tone: "warn", status: "Already inside" };
+  if (ticket.checkIn === "left") return { tone: "warn", status: "Checked out" };
+  if (ticket.waiver === "missing") return { tone: "stop", status: "Waiver missing" };
+  if (ticket.waiver === "waiting") return { tone: "stop", status: "Waiting on guardian" };
+  return { tone: "go", status: "Not arrived" };
 }

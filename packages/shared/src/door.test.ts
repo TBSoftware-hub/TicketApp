@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeLookupTicket,
   describeScan,
+  doorLookupSchema,
   doorEventTiming,
   doorScanResultSchema,
   doorScanSchema,
@@ -238,5 +240,44 @@ describe("doorScanSchema", () => {
     expect(doorScanSchema.safeParse({ scanKey, code: "abc", direction: "sideways" }).success).toBe(
       false,
     );
+  });
+
+  it("takes a ticket picked from a lookup instead of a code, but not both or neither", () => {
+    const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
+    const ticketId = "01a16685-93bb-72a0-ade3-a9d89f418404";
+    expect(doorScanSchema.parse({ scanKey, ticketId })).toMatchObject({ ticketId });
+    expect(doorScanSchema.safeParse({ scanKey }).success).toBe(false);
+    expect(doorScanSchema.safeParse({ scanKey, code: "abc", ticketId }).success).toBe(false);
+    expect(doorScanSchema.safeParse({ scanKey, ticketId: "abc" }).success).toBe(false);
+  });
+});
+
+describe("doorLookupSchema", () => {
+  it("trims the name and asks for at least two letters", () => {
+    expect(doorLookupSchema.parse({ q: " sam lee " })).toEqual({ q: "sam lee" });
+    expect(doorLookupSchema.safeParse({ q: " s " }).success).toBe(false);
+    expect(doorLookupSchema.safeParse({ q: "x".repeat(101) }).success).toBe(false);
+  });
+});
+
+describe("describeLookupTicket", () => {
+  const ticket = {
+    ticketId: "01a16685-93bb-72a0-ade3-a9d89f418404",
+    attendeeName: "Sam Lee",
+    ticketTypeName: "Guest",
+    grade: 11,
+  };
+
+  it("says first whether they're inside or left, then whether their waiver holds them up", () => {
+    const at = (checkIn: "inside" | "left" | "not-arrived", waiver: "missing" | "signed") =>
+      describeLookupTicket({ ...ticket, checkIn, waiver });
+    expect(at("inside", "missing")).toEqual({ tone: "warn", status: "Already inside" });
+    expect(at("left", "missing")).toEqual({ tone: "warn", status: "Checked out" });
+    expect(at("not-arrived", "missing")).toEqual({ tone: "stop", status: "Waiver missing" });
+    expect(at("not-arrived", "signed")).toEqual({ tone: "go", status: "Not arrived" });
+    expect(describeLookupTicket({ ...ticket, checkIn: "not-arrived", waiver: "waiting" })).toEqual({
+      tone: "stop",
+      status: "Waiting on guardian",
+    });
   });
 });
