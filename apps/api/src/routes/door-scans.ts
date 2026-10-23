@@ -90,7 +90,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           });
         // A retry of the scan that let them in or out, sent because its answer was lost, gets that
         // answer again: staff never saw the green, so "already checked in" would send the holder
-        // away. A retry racing its original waits on the ticket's row, so it finds the scan too.
+        // away. A retry racing its original waits on the ticket's row lock, so it finds the scan too.
         const replayed = async (ticketId: string) => {
           const earlier = await tx.scanEvent.findUnique({
             where: { scanKey },
@@ -143,47 +143,9 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           await record(null, "INVALID_TICKET");
           return { outcome: "invalid_ticket", reason: ticket ? "other_event" : "unknown" };
         }
-        const reason = invalidReason(ticket);
-
-        if (direction === "out") {
-          const { attendee, ticketType } = await tx.ticket.findUniqueOrThrow({
-            where: { id: ticket.id },
-            select: {
-              attendee: { select: { firstName: true, lastName: true } },
-              ticketType: { select: { name: true } },
-            },
-          });
-          const details = {
-            attendeeName: `${attendee.firstName} ${attendee.lastName}`,
-            ticketTypeName: ticketType.name,
-          };
-          // Someone inside is let out whatever has happened to their ticket since it got them in.
-          // Only one of two devices checking out the same ticket at once records it.
-          const { count } = await tx.ticket.updateMany({
-            where: { id: ticket.id, isInside: true },
-            data: { isInside: false },
-          });
-          if (count === 1 || (await replayed(ticket.id))) {
-            if (count === 1) await record(ticket.id, "CHECKED_OUT");
-            return {
-              outcome: "checked_out",
-              ticket: details,
-              reentryAllowed: event.reentryAllowed,
-            };
-          }
-          if (reason) {
-            await record(ticket.id, "INVALID_TICKET");
-            return { outcome: "invalid_ticket", reason };
-          }
-          await record(ticket.id, "NOT_INSIDE");
-          return { outcome: "not_inside", ticket: details, leftAt: await lastCheckOut(ticket.id) };
-        }
-
-        if (reason) {
-          await record(ticket.id, "INVALID_TICKET");
-          return { outcome: "invalid_ticket", reason };
-        }
-
+        // Scans of the same ticket take turns from here, so whether they're inside, whether they
+        // left, and what that lets them do can't change under a scan that's deciding.
+        await tx.$queryRaw`SELECT id FROM "Ticket" WHERE id = ${ticket.id}::uuid FOR UPDATE`;
         const { attendee, ticketType, isInside, ...waiver } = await tx.ticket.findUniqueOrThrow({
           where: { id: ticket.id },
           select: {
@@ -199,6 +161,36 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           attendeeName: `${attendee.firstName} ${attendee.lastName}`,
           ticketTypeName: ticketType.name,
         };
+        const checkedOut = {
+          outcome: "checked_out",
+          ticket: details,
+          reentryAllowed: event.reentryAllowed,
+        } as const;
+        // A retry gets its first answer whatever has happened since, such as them going back out.
+        if (await replayed(ticket.id)) {
+          return direction === "in" ? { outcome: "admitted", ticket: details } : checkedOut;
+        }
+        const reason = invalidReason(ticket);
+
+        if (direction === "out") {
+          // Someone inside is let out whatever has happened to their ticket since it got them in.
+          if (isInside) {
+            await tx.ticket.update({ where: { id: ticket.id }, data: { isInside: false } });
+            await record(ticket.id, "CHECKED_OUT");
+            return checkedOut;
+          }
+          if (reason) {
+            await record(ticket.id, "INVALID_TICKET");
+            return { outcome: "invalid_ticket", reason };
+          }
+          await record(ticket.id, "NOT_INSIDE");
+          return { outcome: "not_inside", ticket: details, leftAt: await lastCheckOut(ticket.id) };
+        }
+
+        if (reason) {
+          await record(ticket.id, "INVALID_TICKET");
+          return { outcome: "invalid_ticket", reason };
+        }
 
         // Someone who checked out is coming back: the event's re-entry rule decides, and their
         // waiver isn't asked about again, since it got them in once already.
@@ -220,17 +212,13 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           leftAt && !event.reentryAllowed ? "REENTRY_DENIED" : missing ? "WAIVER_MISSING" : null;
 
         // Only one of two devices scanning the same ticket at once gets to let them in; the other
-        // waits on the row and then finds them already inside.
-        const { count } = await tx.ticket.updateMany({
-          where: { id: ticket.id, status: "VALID", isInside: false },
-          data: { isInside: true },
-        });
-        if (count === 1) {
+        // waits on the row lock above and then finds them already inside.
+        if (!isInside) {
+          await tx.ticket.update({ where: { id: ticket.id }, data: { isInside: true } });
           if (overridden) await record(ticket.id, overridden, overrideReason ?? null);
           else await record(ticket.id, "ADMITTED");
           return { outcome: "admitted", ticket: details };
         }
-        if (await replayed(ticket.id)) return { outcome: "admitted", ticket: details };
         const admitted = await tx.scanEvent.findFirst({
           where: {
             ticketId: ticket.id,

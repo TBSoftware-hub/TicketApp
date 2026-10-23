@@ -740,6 +740,69 @@ describe("door scanner", () => {
       expect((await p.send(code, { scanKey: outKey })).statusCode).toBe(409);
     });
 
+    it("keeps out someone whose check-out lands while their check-in is deciding", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      let scanning: ReturnType<typeof p.scan> | undefined;
+      // A check-out holds the ticket's row while it marks them out; a check-in that read them as
+      // inside meanwhile must not then let them back in past the lock-in.
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Ticket" WHERE id = ${ticketId}::uuid FOR UPDATE`;
+        scanning = p.scan(code);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.ticket.update({ where: { id: ticketId }, data: { isInside: false } });
+        await tx.scanEvent.create({
+          data: {
+            eventId: p.prom.eventId,
+            ticketId,
+            direction: "OUT",
+            outcome: "CHECKED_OUT",
+            staffUserId: p.owner.userId,
+            scannedAt: new Date(),
+          },
+        });
+      });
+      expect((await scanning!).json().outcome).toBe("reentry_denied");
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+    });
+
+    it("replays a check-out retried after they came back in", async () => {
+      const p = await party();
+      await allowReentry(p);
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      const scanKey = randomUUID();
+      const first = (await p.send(code, { ...out, scanKey })).json();
+      await p.scan(code);
+      expect((await p.send(code, { ...out, scanKey })).json()).toEqual(first);
+      // The retry changes nothing: they're still inside.
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        true,
+      );
+    });
+
+    it("replays an admission retried after they checked out", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      const scanKey = randomUUID();
+      const first = (await p.send(code, { scanKey })).json();
+      expect(first.outcome).toBe("admitted");
+      await p.send(code, out);
+      expect((await p.send(code, { scanKey })).json()).toEqual(first);
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+      // With re-entry on, the retry still only replays rather than letting them in again.
+      await allowReentry(p);
+      expect((await p.send(code, { scanKey })).json()).toEqual(first);
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+    });
+
     it("turns away a code that isn't a ticket on the way out too", async () => {
       const p = await party();
       expect((await p.send("nope", out)).json()).toEqual({
