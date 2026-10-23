@@ -336,6 +336,14 @@ describe("door scanner", () => {
     expect((await p.scan(vcard)).json()).toEqual({ outcome: "invalid_ticket", reason: "unknown" });
   });
 
+  it("turns away a QR code with a zero byte in it, and records the scan", async () => {
+    const p = await party();
+    const res = await p.scan("abc\u0000def");
+    expect(res.json()).toEqual({ outcome: "invalid_ticket", reason: "unknown" });
+    const scans = await t.prisma.scanEvent.findMany({ where: { eventId: p.prom.eventId } });
+    expect(scans).toMatchObject([{ ticketId: null, outcome: "INVALID_TICKET" }]);
+  });
+
   it("needs a scan key, so retries can be told apart from new scans", async () => {
     const p = await party();
     const { code } = await p.comp("Uma");

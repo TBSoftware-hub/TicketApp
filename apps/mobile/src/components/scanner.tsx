@@ -19,6 +19,8 @@ import { colors, ui } from "@/lib/theme";
 const ADMITTED_SHOWN_MS = 2500;
 /** The camera is usually still on the code just answered; ignore it for this long afterwards. */
 const SAME_CODE_IGNORED_MS = 5000;
+/** How long a check may take before staff are offered Try again or Skip. */
+const SCAN_TIMEOUT_MS = 10_000;
 
 /** What was scanned: the code, and the key a retry of the same scan sends again. */
 interface Scan {
@@ -73,6 +75,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
       call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
         method: "POST",
         body: { scanKey: key, code },
+        // A stalled network shows Try again, which resends the same key, rather than hanging.
+        timeoutMs: SCAN_TIMEOUT_MS,
       })
         .then((res) => {
           if (!mounted.current) return;

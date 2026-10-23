@@ -62,6 +62,13 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
             },
           });
 
+        // Postgres text can't hold a zero byte, and no ticket code has one: answer it before the
+        // lookups, which would fail on it.
+        if (code.includes("\u0000")) {
+          await record(null, "INVALID_TICKET");
+          return { outcome: "invalid_ticket", reason: "unknown" };
+        }
+
         // Shares the order's lock with other scans but waits on a cancel or transfer, which take it
         // for update: a ticket can't be voided while it lets someone in, or moved once they're inside.
         // The ticket is read in a second statement, after the lock is held: a transfer changes ticket
