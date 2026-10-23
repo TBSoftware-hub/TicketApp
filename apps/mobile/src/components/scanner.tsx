@@ -150,7 +150,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
           void offline.answered(scan, result);
           show(describeScan(result, event.organization.timezone));
         } catch (err) {
-          if (err instanceof ApiError && err.status === 0) {
+          // A screen closed meanwhile can't show the answer, so it mustn't let anyone in or out.
+          if (err instanceof ApiError && err.status === 0 && mounted.current) {
             // The scan may have reached TicketApp before the connection went: one saved here goes
             // with the same key, so it can't count twice.
             offline.unreachable();

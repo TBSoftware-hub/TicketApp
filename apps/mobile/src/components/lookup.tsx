@@ -44,7 +44,7 @@ export function Lookup({
   onCancel: () => void;
 }) {
   const { call } = useSession();
-  const { offline, search, unreachable } = useOffline();
+  const { offline, search, unreachable, refused } = useOffline();
   const [name, setName] = useState("");
   const [found, setFound] = useState<Found | null>(null);
   const [searching, setSearching] = useState(false);
@@ -78,6 +78,9 @@ export function Lookup({
           if (current) setFound({ q, result: doorLookupResultSchema.parse(res) });
         })
         .catch((err: unknown) => {
+          // TicketApp won't let this account work the event, or it can't be worked any more: its
+          // saved list mustn't answer for it either, whatever name is typed now.
+          if (err instanceof ApiError && [403, 404, 409].includes(err.status)) refused(event.id);
           if (!current) return;
           if (err instanceof ApiError && err.status === 0) {
             unreachable();
@@ -94,7 +97,7 @@ export function Lookup({
       current = false;
       clearTimeout(timer);
     };
-  }, [q, call, event, offline, search, unreachable]);
+  }, [q, call, event, offline, search, unreachable, refused]);
 
   return (
     <View style={[styles.lookup, { minHeight }]}>

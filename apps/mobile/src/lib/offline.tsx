@@ -172,16 +172,17 @@ function parseList(raw: string | null): SavedList | null {
   }
 }
 
+/**
+ * The queue as saved, empty when there's no file yet. A file that can't be read as one throws:
+ * it's left as it is, and scanning waits, rather than scans after it overtaking the ones in it.
+ */
 function parseSaved(raw: string | null): Saved {
-  try {
-    const value = raw ? (JSON.parse(raw) as Partial<Saved>) : {};
-    return {
-      scans: Array.isArray(value.scans) ? value.scans : [],
-      problems: Array.isArray(value.problems) ? value.problems : [],
-    };
-  } catch {
-    return { scans: [], problems: [] };
+  if (raw === null) return { scans: [], problems: [] };
+  const value = JSON.parse(raw) as Partial<Saved> | null;
+  if (!value || !Array.isArray(value.scans) || !Array.isArray(value.problems)) {
+    throw new Error("The saved scans can't be read");
   }
+  return { scans: value.scans, problems: value.problems };
 }
 
 /**
@@ -310,9 +311,10 @@ export function OfflineProvider({ children }: PropsWithChildren) {
    */
   const dropList = useCallback(
     (eventId: string) => {
+      // A download on its way, even the first, mustn't bring the list back.
+      drops.current++;
       if (list.current?.eventId !== eventId) return;
       list.current = null;
-      drops.current++;
       void writeFile(DOOR_LIST_FILE, null).catch(() => undefined);
       rerender();
     },
