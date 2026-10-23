@@ -10,9 +10,10 @@ export const colors = {
   line: "#d9ddd7",
   error: "#a3312a",
   placeholder: "#9aa39c",
-  /** Scan results, chosen to read at a glance under gym lights: go, already used, and stop. */
+  /** Scan results, chosen to read at a glance under gym lights: go, already used, and stop. Each
+   * keeps white text above 4.5:1 contrast. */
   go: "#1f7a4d",
-  warn: "#b26a00",
+  warn: "#a15f00",
   stop: "#b3261e",
 };
 

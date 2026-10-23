@@ -8,7 +8,7 @@ import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "ex
 import * as Haptics from "expo-haptics";
 import * as Linking from "expo-linking";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Button } from "@/components/button";
 import { ApiError, UNREACHABLE } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -30,7 +30,7 @@ const HAPTIC: Record<ScanDisplay["tone"], Haptics.NotificationFeedbackType> = {
 /** The camera, reading ticket QR codes for `event` one at a time and showing each answer over it. */
 export function Scanner({ event }: { event: DoorEvent }) {
   const { call } = useSession();
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission, getPermission] = useCameraPermissions();
   const [shown, setShown] = useState<Shown | null>(null);
   const [busy, setBusy] = useState(false);
   const [torch, setTorch] = useState(false);
@@ -47,6 +47,14 @@ export function Scanner({ event }: { event: DoorEvent }) {
     },
     [],
   );
+
+  // Staff who turn camera access on in Settings come back to the app without it restarting.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void getPermission();
+    });
+    return () => subscription.remove();
+  }, [getPermission]);
 
   const check = useCallback(
     (code: string) => {
