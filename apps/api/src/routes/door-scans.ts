@@ -292,19 +292,24 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
     await requireOrgPermission(prisma, request, orgId, "checkin.scan");
     const { reentryAllowed } = await openEvent(prisma, orgId, eventId);
     const fetchedAt = new Date();
-    const [tickets, checkOuts] = await Promise.all([
-      prisma.ticket.findMany({
-        where: comingTo(eventId),
-        orderBy: byName,
-        select: { ...attendeeFields, code: true },
-      }),
-      // When each person last checked out, which is what keeps them out at an event without re-entry.
-      prisma.scanEvent.groupBy({
-        by: ["ticketId"],
-        where: { eventId, direction: "OUT", outcome: "CHECKED_OUT" },
-        _max: { scannedAt: true },
-      }),
-    ]);
+    // One snapshot for both reads, so someone checked out between them can't show as having left
+    // with no time they left, which would let them back in at an event without re-entry.
+    const [tickets, checkOuts] = await prisma.$transaction(
+      [
+        prisma.ticket.findMany({
+          where: comingTo(eventId),
+          orderBy: byName,
+          select: { ...attendeeFields, code: true },
+        }),
+        // When each person last checked out, which keeps them out at an event without re-entry.
+        prisma.scanEvent.groupBy({
+          by: ["ticketId"],
+          where: { eventId, direction: "OUT", outcome: "CHECKED_OUT" },
+          _max: { scannedAt: true },
+        }),
+      ],
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
     const leftAt = new Map(checkOuts.map((c) => [c.ticketId, c._max.scannedAt]));
     return {
       reentryAllowed,

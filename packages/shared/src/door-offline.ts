@@ -161,3 +161,19 @@ export const OFFLINE_NOT_ON_LIST: ScanDisplay = {
     "This device is offline and the code isn't on its list. It may not be a ticket, or it was bought after the list was saved.",
   ],
 };
+
+/** What staff see for a scan made offline after the event's end time. */
+export const OFFLINE_EVENT_ENDED: ScanDisplay = {
+  tone: "stop",
+  title: "This event has ended",
+  lines: ["Tickets can't be checked after the event's end time."],
+};
+
+/** What staff see when the device couldn't save a scan to send later, so it doesn't count. */
+export const OFFLINE_NOT_SAVED: ScanDisplay = {
+  tone: "stop",
+  title: "Couldn't save this scan",
+  lines: [
+    "This device is offline and couldn't save the scan to send later, so it hasn't counted. Free up space on the phone, or try again once the connection is back.",
+  ],
+};

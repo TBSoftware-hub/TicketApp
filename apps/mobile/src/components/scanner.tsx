@@ -25,6 +25,9 @@ import { colors, ui } from "@/lib/theme";
 const ADMITTED_SHOWN_MS = 2500;
 /** The camera is usually still on the code just answered; ignore it for this long afterwards. */
 const SAME_CODE_IGNORED_MS = 5000;
+/** Shown when scans saved offline are still to send and there's no list to check this one on. */
+const PENDING_NO_LIST =
+  "This device is still sending scans saved offline and has no saved list to check this one against. Try again once they've gone.";
 /** How long a check may take before staff are offered Try again or Skip. */
 const SCAN_TIMEOUT_MS = 10_000;
 
@@ -93,8 +96,11 @@ export function Scanner({ event }: { event: DoorEvent }) {
   }, [getPermission]);
 
   const check = useCallback(
-    (scan: Scan) => {
+    (sent: Scan) => {
       if (inFlight.current) return;
+      // Timed from when staff scanned it, not from when a slow connection gave up, and kept for a
+      // retry of the same scan.
+      const scan = { ...sent, at: sent.at ?? Date.now() };
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
@@ -120,6 +126,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
           if (offline.isOffline()) {
             const display = await offline.answer(scan);
             if (display) return show(display);
+            // Sent now, this scan could reach TicketApp ahead of the earlier ones it follows.
+            if (offline.hasPending()) return fail(PENDING_NO_LIST);
           }
           const { code, ticketId, direction, key, override, overrideReason } = scan;
           const result = doorScanResultSchema.parse(
