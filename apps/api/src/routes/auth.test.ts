@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { reviewSignInFromEnv } from "../app";
 import { buildTestApp } from "../test-helpers";
 
 describe("staff sign-in", () => {
@@ -357,6 +358,95 @@ describe("door app sign-in setup", () => {
       process.env.NODE_ENV = env;
       await t.close();
     }
+  });
+});
+
+describe("app store review sign-in", () => {
+  const review = { email: `review-${randomUUID()}@example.com`, code: "246810" };
+  const verify = (t: Awaited<ReturnType<typeof buildTestApp>>, email: string, code: string) =>
+    t.app.inject({ method: "POST", url: "/auth/verify-code", payload: { email, code } });
+
+  it("issues the fixed code to the review address and signs it in", async () => {
+    const t = await buildTestApp({ reviewSignIn: review });
+    try {
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/sign-in-code",
+        payload: { email: review.email.toUpperCase() },
+      });
+      expect(res.statusCode).toBe(202);
+      expect(t.sent.findLast((m) => m.to === review.email)!.subject).toContain("246 810");
+      expect((await verify(t, review.email, "246 810")).statusCode).toBe(200);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("only works after a code is asked for, and once per code", async () => {
+    const email = `review-once-${randomUUID()}@example.com`;
+    const t = await buildTestApp({ reviewSignIn: { email, code: "135790" } });
+    try {
+      expect((await verify(t, email, "135790")).statusCode).toBe(400);
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      expect((await verify(t, email, "135790")).statusCode).toBe(200);
+      expect((await verify(t, email, "135790")).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("gives every other address a random code", async () => {
+    const t = await buildTestApp({ reviewSignIn: review });
+    try {
+      const email = `not-review-${randomUUID()}@example.com`;
+      const codes = new Set<string>();
+      for (let i = 0; i < 3; i++) {
+        await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+        codes.add(t.sent.findLast((m) => m.to === email)!.subject.slice(0, 7));
+      }
+      expect(codes.has("246 810")).toBe(false);
+      expect((await verify(t, email, review.code)).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("still locks the review address after five wrong codes", async () => {
+    const email = `review-lock-${randomUUID()}@example.com`;
+    const t = await buildTestApp({ reviewSignIn: { email, code: "246810" } });
+    try {
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      for (let i = 0; i < 5; i++) await verify(t, email, "000000");
+      expect((await verify(t, email, "246810")).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe("reviewSignInFromEnv", () => {
+  it("is off when neither variable is set", () => {
+    expect(reviewSignInFromEnv({})).toBeUndefined();
+  });
+
+  it("normalizes the address and code", () => {
+    expect(
+      reviewSignInFromEnv({
+        REVIEW_SIGN_IN_EMAIL: " Review@Example.com ",
+        REVIEW_SIGN_IN_CODE: "246 810",
+      }),
+    ).toEqual({ email: "review@example.com", code: "246810" });
+  });
+
+  it("refuses half a setting or a code that isn't six digits", () => {
+    expect(() => reviewSignInFromEnv({ REVIEW_SIGN_IN_EMAIL: "review@example.com" })).toThrow();
+    expect(() => reviewSignInFromEnv({ REVIEW_SIGN_IN_CODE: "246810" })).toThrow();
+    expect(() =>
+      reviewSignInFromEnv({
+        REVIEW_SIGN_IN_EMAIL: "review@example.com",
+        REVIEW_SIGN_IN_CODE: "1234",
+      }),
+    ).toThrow();
   });
 });
 

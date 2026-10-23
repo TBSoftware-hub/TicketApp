@@ -91,19 +91,34 @@ function hashCode(key: string, email: string, code: string) {
   return createHmac("sha256", key).update(`${email}:${code}`).digest("hex");
 }
 
+/** An address whose door app code is fixed, for app store review. */
+export interface ReviewSignIn {
+  email: string;
+  code: string;
+}
+
 export interface AuthRouteOptions {
   prisma: PrismaClient;
   mailer: Mailer;
   webBaseUrl: string;
   /** Key for sign-in code hashes; without one, code sign-in is switched off. */
   signInCodeKey?: string;
+  /** The app store review account, whose code never changes; every other limit still applies. */
+  reviewSignIn?: ReviewSignIn;
   /** Sign-in link requests allowed per client IP per minute. */
   magicLinkPerIpPerMinute: number;
 }
 
 export async function authRoutes(
   app: FastifyInstance,
-  { prisma, mailer, webBaseUrl, signInCodeKey, magicLinkPerIpPerMinute }: AuthRouteOptions,
+  {
+    prisma,
+    mailer,
+    webBaseUrl,
+    signInCodeKey,
+    reviewSignIn,
+    magicLinkPerIpPerMinute,
+  }: AuthRouteOptions,
 ) {
   function codeKey() {
     if (!signInCodeKey) {
@@ -176,7 +191,10 @@ export async function authRoutes(
   app.post("/auth/sign-in-code", signInRequestLimit, async (request, reply) => {
     const { email } = parse(signInCodeRequestSchema, request.body);
     const key = codeKey();
-    const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+    const code =
+      reviewSignIn?.email === email
+        ? reviewSignIn.code
+        : randomInt(0, 1_000_000).toString().padStart(6, "0");
     const link = await prisma.$transaction(async (tx) => {
       await lockEmail(tx, email);
       await checkIssueLimit(tx, email);

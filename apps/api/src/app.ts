@@ -1,7 +1,7 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import type { PrismaClient } from "@ticketapp/db";
-import type { HealthResponse } from "@ticketapp/shared";
+import { verifySignInCodeSchema, type HealthResponse } from "@ticketapp/shared";
 import Fastify, { type FastifyServerOptions } from "fastify";
 import { HttpError } from "./lib/errors";
 import { cancellationNotices } from "./lib/cancellations";
@@ -12,7 +12,7 @@ import { createLogMailer, type Mailer } from "./lib/mailer";
 import type { Payments } from "./lib/payments";
 import { createLogTexter, type Texter } from "./lib/texter";
 import { attendeeRoutes } from "./routes/attendees";
-import { authRoutes } from "./routes/auth";
+import { authRoutes, type ReviewSignIn } from "./routes/auth";
 import { checkoutRoutes } from "./routes/checkout";
 import { compRoutes } from "./routes/comps";
 import { doorSaleRoutes } from "./routes/door-sales";
@@ -48,6 +48,11 @@ export interface AppDeps {
    * sign-in is switched off; elsewhere a fixed development key is used.
    */
   signInCodeKey?: string;
+  /**
+   * A staff address whose door app code is always this one, so app store reviewers can sign in
+   * without reading our email. Read from REVIEW_SIGN_IN_EMAIL and REVIEW_SIGN_IN_CODE when left out.
+   */
+  reviewSignIn?: ReviewSignIn;
   /** Sign-in link requests allowed per client IP per minute (default 10). */
   magicLinkPerIpPerMinute?: number;
   /** Checkouts started per client IP per minute (default 30). */
@@ -57,6 +62,23 @@ export interface AppDeps {
    * not yet handed back after a refund; off when left out.
    */
   retryMs?: number;
+}
+
+/**
+ * The review sign-in from the environment. Setting only one of the pair, or a code that isn't six
+ * digits, stops the API starting rather than leaving reviewers locked out without anyone noticing.
+ */
+export function reviewSignInFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ReviewSignIn | undefined {
+  const email = env.REVIEW_SIGN_IN_EMAIL?.trim();
+  const code = env.REVIEW_SIGN_IN_CODE?.trim();
+  if (!email && !code) return undefined;
+  const parsed = verifySignInCodeSchema.safeParse({ email, code });
+  if (!parsed.success) {
+    throw new Error("REVIEW_SIGN_IN_EMAIL and REVIEW_SIGN_IN_CODE must be an email and six digits");
+  }
+  return parsed.data;
 }
 
 export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}) {
@@ -108,6 +130,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
       deps.signInCodeKey ??
       process.env.SIGN_IN_CODE_KEY ??
       (process.env.NODE_ENV === "production" ? undefined : "development-sign-in-code-key"),
+    reviewSignIn: deps.reviewSignIn ?? reviewSignInFromEnv(),
     magicLinkPerIpPerMinute: deps.magicLinkPerIpPerMinute ?? 10,
   });
   await app.register(orgRoutes, { prisma: deps.prisma });

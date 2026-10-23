@@ -1,0 +1,132 @@
+# Releasing the door app
+
+The door app in `apps/mobile` is built, signed and uploaded by EAS (Expo Application Services),
+so nobody needs Xcode or Android Studio. The order is: internal testing first (TestFlight and a
+Play internal testing track), then a store release once it has worked at a real door.
+
+Everything here runs from `apps/mobile`. Use `npx eas-cli@latest` wherever the Expo docs say
+`eas`.
+
+## What's already set up in the repo
+
+- `eas.json` has two build profiles. `preview` makes an install-anywhere build (an APK on Android)
+  for a quick look on one phone. `production` makes store builds, and its build numbers count up
+  on their own (kept by EAS, so they never go backwards).
+- `eas.json` sends Android uploads to the **internal testing** track, so `eas submit` never
+  reaches the public by accident.
+- `app.json` answers Apple's export compliance question (the app only uses HTTPS, so no
+  non-exempt encryption) and strips Android permissions the app doesn't use (draw over other apps,
+  read and write storage), which keeps the Play data safety form short.
+- `.env.production` bakes the production API address into store builds. A build always talks to
+  the address it was built with, so if the API moves to `api.myschooltix.com`, change that file
+  first and make a new build.
+- The API has a review sign-in (below) so Apple's and Google's reviewers can get past the email
+  code.
+
+## One-time setup (Tim)
+
+These need your accounts and cards, so they can't be done from the repo.
+
+1. **Apple Developer Program** ($99 a year) at developer.apple.com, enrolled as an organization if
+   you want the seller name to be the company rather than you. Organization enrollment needs a
+   D-U-N-S number and can take a week or two, so start this first.
+2. **Google Play Console** ($25 once) at play.google.com/console. New personal accounts must run a
+   closed test with at least 12 testers for 14 days before they can publish to production;
+   organization accounts don't. Another reason to register as an organization.
+3. **Expo account** (free) at expo.dev. Then, in `apps/mobile`:
+
+   ```bash
+   npx eas-cli@latest login
+   npx eas-cli@latest init
+   ```
+
+   `init` adds an `extra.eas.projectId` (and `owner`) to `app.json`. Commit that change, or send
+   Claude the project ID and it will.
+
+4. **App Store Connect**: create the app under **Apps > +**. Bundle ID `com.tbsoftware.ticketapp`
+   (EAS registers it on the first iOS build if it isn't there yet). The store name must be unique
+   across the App Store, and "TicketApp" is likely taken, so pick something like "MySchoolTix
+   Door". The name on the home screen stays "TicketApp" unless we change `app.json`.
+5. **Play Console**: **Create app**, then fill in the **App content** section (privacy policy,
+   app access, ads, content rating, target audience, data safety). Package name
+   `com.tbsoftware.ticketapp`.
+
+Signing is handled by EAS. On the first build it offers to create the iOS distribution
+certificate and provisioning profile (sign in with your Apple ID when asked) and the Android
+upload keystore. Say yes to each; EAS keeps them, so no keys live in the repo or on a laptop.
+
+## Internal testing
+
+```bash
+npx eas-cli@latest build --platform all --profile production
+npx eas-cli@latest submit --platform ios --latest
+npx eas-cli@latest submit --platform android --latest
+```
+
+- **iOS**: `submit` uploads to App Store Connect. After Apple's processing (10 to 30 minutes), the
+  build shows in **TestFlight**. Add yourself and door staff under **Internal Testing**; they
+  install the TestFlight app and accept the invite. Internal testers need no Apple review.
+- **Android**: the very first upload has to be done by hand in the Play Console (Google's rule).
+  Download the `.aab` from the build page on expo.dev and upload it under **Testing > Internal
+  testing > Create new release**. After that, `eas submit` works, using a Google service account
+  key: follow the link `eas submit` prints to create one, and keep the JSON file out of the repo.
+  Add testers by email list on the internal testing page and share the opt-in link.
+
+Each new build gets the next build number automatically. Bump `version` in `app.json` (for
+example to `1.0.1`) only when you want a new version number in the store.
+
+## Review sign-in
+
+Store reviewers need to sign in, but the door app emails a six-digit code, which they can't read.
+Set these two on Render (**ticketapp-api > Environment**) while a review is open:
+
+- `REVIEW_SIGN_IN_EMAIL`: an address you own, for example `appreview@myschooltix.com`
+- `REVIEW_SIGN_IN_CODE`: any six digits
+
+That address's code is then always the one you set. Everything else about sign-in still applies:
+the reviewer still taps **Email me a code**, the code works once per request, and five wrong guesses
+lock the address for 15 minutes. The API refuses to start if only one of the two is set, or the
+code isn't six digits.
+
+Give the review address door access to a demo event only. Create a demo organization in the
+dashboard with an event dated in the future, a few tickets (one with a missing waiver shows the
+override), and invite the review address as door staff. Never add it to a real school.
+
+In the review notes for both stores, give the email and code and say: "Tap Email me a code, then
+enter the code below and tap Sign in. Pick the demo event, then use Look up by name to admit an attendee, as the camera
+scans printed tickets." Attach a PDF of a demo ticket if you want them to try the scanner.
+
+Remove both variables when the review is approved.
+
+## Store listing
+
+- **Privacy policy URL**: both stores require one. The site doesn't have a privacy page yet.
+- **Data the app collects** (for Apple's privacy labels and Play's data safety form): the staff
+  member's email address, for sign-in and app functionality, linked to them, not used for
+  tracking, encrypted in transit. Scan records (who was admitted, when and by whom) are app
+  functionality data. No analytics, ads or third-party tracking.
+- **Account deletion**: both stores ask whether users can delete their account. Staff accounts
+  are made by the school inviting them, so answer that accounts are managed by the organization,
+  and give a contact address for deletion requests. If a reviewer pushes back, we add a delete
+  option.
+- **Screenshots**: iPhone 6.9-inch (1320 x 2868) is the only size Apple requires. The app also
+  runs on iPad (`supportsTablet`), so Apple asks for 13-inch iPad screenshots too. Play needs at
+  least two phone screenshots.
+- **Category**: Business (or Utilities). **Content rating**: everyone; no user-generated content
+  is shared publicly.
+
+## Store release
+
+Once internal testing has been through a real event:
+
+- **iOS**: in App Store Connect, open the app's version page, pick the TestFlight build, fill in
+  the review notes above and **Submit for Review**. Reviews usually take a day or two. Choose
+  manual release if you want to pick the day it goes live.
+- **Android**: in the Play Console, **promote** the internal testing release to **Production**
+  (or to a closed test first, if the account needs the 12-tester run), then **Send for review**.
+
+## Later builds
+
+JavaScript-only changes still need a new build and submit with the setup above; over-the-air
+updates (`eas update`) aren't set up. Any change to native modules, permissions or `app.json` always
+needs a new build.
