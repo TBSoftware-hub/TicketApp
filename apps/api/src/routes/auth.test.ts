@@ -373,6 +373,24 @@ describe("door app sign-in with an emailed code", () => {
     expect(res.statusCode).toBe(429);
   });
 
+  it("locks an address without an account after five wrong codes, like one with", async () => {
+    const lockout = async (email: string) => {
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      for (let i = 0; i < 5; i++) await verify(email, "000000");
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/sign-in-code",
+        payload: { email },
+      });
+      return { status: res.statusCode, body: res.json() };
+    };
+    const known = `door-known-${randomUUID()}@example.com`;
+    await staffAccount(t, known);
+    const unknown = await lockout(`door-unknown-${randomUUID()}@example.com`);
+    expect(unknown.status).toBe(429);
+    expect(unknown).toEqual(await lockout(known));
+  });
+
   it("refuses a code whose account was removed after it was sent", async () => {
     const email = `door-gone-${randomUUID()}@example.com`;
     const code = await requestCode(email);

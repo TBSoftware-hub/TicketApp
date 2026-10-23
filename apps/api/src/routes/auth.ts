@@ -217,8 +217,9 @@ export async function authRoutes(
           email,
           // Never sent anywhere: a code row can only be redeemed through /auth/verify-code.
           tokenHash: hashToken(generateToken()),
-          // Without an account there's no code to redeem; the row still counts toward the limit.
-          codeHash: hasAccount ? hashCode(key, email, code) : null,
+          // Without an account the code is never sent, but the row still takes wrong guesses and
+          // counts toward the limits, so lockouts can't tell who has an account.
+          codeHash: hashCode(key, email, code),
           failedAttempts,
           expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
         },

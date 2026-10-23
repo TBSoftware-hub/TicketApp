@@ -68,13 +68,20 @@ npx eas-cli@latest submit --platform android --latest
 ```
 
 - **iOS**: `submit` uploads to App Store Connect. After Apple's processing (10 to 30 minutes), the
-  build shows in **TestFlight**. Add yourself and door staff under **Internal Testing**; they
-  install the TestFlight app and accept the invite. Internal testers need no Apple review.
+  build shows in **TestFlight**. **Internal Testing** is only for people added as users of your
+  App Store Connect team (up to 100), so use it for yourself and anyone helping run the app; those
+  builds need no Apple review. For door staff and volunteers, make an **External Testing** group
+  and invite them by email or a public link. The first build sent to an external group goes
+  through Beta App Review (usually a day), so the review sign-in below has to be set up by then.
 - **Android**: the very first upload has to be done by hand in the Play Console (Google's rule).
   Download the `.aab` from the build page on expo.dev and upload it under **Testing > Internal
   testing > Create new release**. After that, `eas submit` works, using a Google service account
   key: follow the link `eas submit` prints to create one, and keep the JSON file out of the repo.
-  Add testers by email list on the internal testing page and share the opt-in link.
+  Until the app's first production release, Google only accepts uploads as drafts, so `eas.json`
+  submits with `releaseStatus: draft`: open the internal testing release in the Play Console and
+  tap **Review release > Start rollout** after each submit. Once the app is live, Claude can
+  switch that to `completed` so submits roll out on their own. Add testers by email list on the
+  internal testing page and share the opt-in link.
 
 Each new build gets the next build number automatically. Bump `version` in `app.json` (for
 example to `1.0.1`) only when you want a new version number in the store.
@@ -84,7 +91,9 @@ example to `1.0.1`) only when you want a new version number in the store.
 Store reviewers need to sign in, but the door app emails a six-digit code, which they can't read.
 Set these two on Render (**ticketapp-api > Environment**) while a review is open:
 
-- `REVIEW_SIGN_IN_EMAIL`: an address you own, for example `appreview@myschooltix.com`
+- `REVIEW_SIGN_IN_EMAIL`: an address you own that isn't easy to guess, for example
+  `appreview-k7q2@myschooltix.com`. Anyone who knows it can lock it for 15 minutes with wrong
+  codes, so share it only in the review notes.
 - `REVIEW_SIGN_IN_CODE`: any six digits
 
 That address's code is then always the one you set. Everything else about sign-in still applies:
@@ -118,7 +127,9 @@ Remove both variables when the review is approved.
   any other address is emailed a note to ask their school for an invite. Apple's in-app deletion
   rule and Google's deletion page rule apply to apps that let people create accounts, so when the
   forms ask, answer that the app doesn't create accounts: they're made by the organization on the
-  web. If a reviewer still asks, give a contact address for deletion requests.
+  web. Reviewers sometimes ask anyway, so give a deletion contact address up front: in Play's data
+  safety form (the account deletion URL can be a short page on the site that says to email it) and
+  in Apple's review notes.
 - **Screenshots**: iPhone 6.9-inch (1320 x 2868) is the only size Apple requires. The app also
   runs on iPad (`supportsTablet`), so Apple asks for 13-inch iPad screenshots too. Play needs at
   least two phone screenshots.
