@@ -3,6 +3,7 @@ export * from "./auth";
 export * from "./checkout";
 export * from "./comps";
 export * from "./door";
+export * from "./door-offline";
 export * from "./door-sales";
 export * from "./events";
 export * from "./guardians";

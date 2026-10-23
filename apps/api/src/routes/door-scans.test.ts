@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { DOOR_LOOKUP_LIMIT } from "@ticketapp/shared";
+import { createHash, randomUUID } from "node:crypto";
+import { DOOR_LOOKUP_LIMIT, doorListSchema, OFFLINE_SCAN_MAX_AGE_MS } from "@ticketapp/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp, uniqueSlug } from "../test-helpers";
 
@@ -400,7 +400,8 @@ describe("door scanner", () => {
   it("holds up a ticket whose waiver isn't signed, and records the scan", async () => {
     const p = await waiverParty();
     const { ticketId, code } = await p.comp("Val");
-    const res = await p.scan(code);
+    const scanKey = randomUUID();
+    const res = await p.scan(code, p.owner.headers, p.prom.base, scanKey);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       outcome: "waiver_missing",
@@ -411,7 +412,8 @@ describe("door scanner", () => {
     expect(ticket.isInside).toBe(false);
     const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
     expect(scans).toMatchObject([
-      { outcome: "WAIVER_MISSING", overrideReason: null, scanKey: null },
+      // Its key is kept, so a retry gets the same answer.
+      { outcome: "WAIVER_MISSING", overrideReason: null, scanKey },
     ]);
     // Not counted as arrived on the attendee list.
     const list = (await p.call("GET", `${p.prom.base}/attendees?checkIn=not-arrived`)).json();
@@ -591,7 +593,11 @@ describe("door scanner", () => {
       const denied = await t.prisma.scanEvent.findFirstOrThrow({
         where: { ticketId, outcome: "REENTRY_DENIED" },
       });
-      expect(denied).toMatchObject({ direction: "IN", overrideReason: null, scanKey: null });
+      expect(denied).toMatchObject({
+        direction: "IN",
+        overrideReason: null,
+        scanKey: expect.any(String),
+      });
       expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
         false,
       );
@@ -685,7 +691,9 @@ describe("door scanner", () => {
         leftAt: null,
       });
       const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
-      expect(scans).toMatchObject([{ direction: "OUT", outcome: "NOT_INSIDE", scanKey: null }]);
+      expect(scans).toMatchObject([
+        { direction: "OUT", outcome: "NOT_INSIDE", scanKey: expect.any(String) },
+      ]);
     });
 
     it("says when someone checked out already, if they're scanned out twice", async () => {
@@ -1018,6 +1026,168 @@ describe("door scanner", () => {
       const p = await party();
       const { ticketId, code } = await p.comp("Mo");
       expect((await pick(p, ticketId, { code })).statusCode).toBe(400);
+    });
+  });
+
+  describe("offline mode", () => {
+    const doorList = (p: Awaited<ReturnType<typeof party>>, headers = p.owner.headers) =>
+      t.app.inject({ method: "GET", url: `${p.prom.base}/door-list`, headers });
+    const sha256 = (code: string) => createHash("sha256").update(code).digest("hex");
+
+    it("lists everyone who can get in, with where they stand and their code hashed", async () => {
+      const p = await waiverParty();
+      const ann = await p.comp("Ann");
+      await p.sign(ann.ticketId);
+      const bo = await p.comp("Bo");
+      const cy = await p.comp("Cy");
+      await p.sign(cy.ticketId);
+      await p.scan(ann.code);
+      await p.scan(cy.code);
+      await p.send(cy.code, { direction: "out" });
+      // A cancelled ticket can't get anyone in, so it isn't listed.
+      const gone = await p.comp("Di");
+      await t.prisma.order.update({ where: { id: gone.orderId }, data: { status: "CANCELLED" } });
+      // Unless its holder is inside: they're listed, marked, so they can still be checked out.
+      const ed = await p.comp("Ed");
+      await p.sign(ed.ticketId);
+      await p.scan(ed.code);
+      await t.prisma.order.update({ where: { id: ed.orderId }, data: { status: "REFUNDED" } });
+
+      const res = await doorList(p);
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      // The QR codes themselves never leave the API.
+      expect(JSON.stringify(body)).not.toContain(ann.code);
+      const list = doorListSchema.parse(body);
+      expect(list.reentryAllowed).toBe(false);
+      const checkOut = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId: cy.ticketId, outcome: "CHECKED_OUT" },
+      });
+      expect(
+        list.tickets.map(({ attendeeName, codeHash, checkIn, waiver, leftAt, invalid }) => ({
+          attendeeName,
+          codeHash,
+          checkIn,
+          waiver,
+          leftAt,
+          invalid,
+        })),
+      ).toEqual([
+        {
+          attendeeName: "Ann Lee",
+          codeHash: sha256(ann.code),
+          checkIn: "inside",
+          waiver: "signed",
+          leftAt: null,
+          invalid: null,
+        },
+        {
+          attendeeName: "Bo Lee",
+          codeHash: sha256(bo.code),
+          checkIn: "not-arrived",
+          waiver: "missing",
+          leftAt: null,
+          invalid: null,
+        },
+        {
+          attendeeName: "Cy Lee",
+          codeHash: sha256(cy.code),
+          checkIn: "left",
+          waiver: "signed",
+          leftAt: checkOut.scannedAt,
+          invalid: null,
+        },
+        {
+          attendeeName: "Ed Lee",
+          codeHash: sha256(ed.code),
+          checkIn: "inside",
+          waiver: "signed",
+          leftAt: null,
+          invalid: "cancelled",
+        },
+      ]);
+      expect(list.tickets[0]).toMatchObject({ firstName: "Ann", lastName: "Lee", grade: null });
+    });
+
+    it("keeps the list to door staff for an event that's still on", async () => {
+      const p = await party();
+      const outsider = await t.signIn();
+      expect((await doorList(p, outsider.headers)).statusCode).toBe(404);
+      await t.prisma.event.update({
+        where: { id: p.prom.eventId },
+        data: { status: "CANCELLED" },
+      });
+      expect((await doorList(p)).json()).toEqual({ error: "This event was cancelled" });
+    });
+
+    it("records when a scan sent late was made, and replays it like any other", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      const offlineAt = new Date(Date.now() - 10 * 60_000);
+      const scanKey = randomUUID();
+      const first = await p.send(code, { scanKey, offlineAt: offlineAt.toISOString() });
+      expect(first.json()).toMatchObject({ outcome: "admitted" });
+      // The device can send it again if the answer was lost, and gets the same answer.
+      const again = await p.send(code, { scanKey, offlineAt: offlineAt.toISOString() });
+      expect(again.json()).toMatchObject({ outcome: "admitted" });
+      const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
+      expect(scans).toHaveLength(1);
+      expect(scans[0]!.offlineAt).toEqual(offlineAt);
+      expect(scans[0]!.scannedAt.getTime()).toBeGreaterThan(offlineAt.getTime());
+    });
+
+    it("gives a retried offline scan that didn't move them its first answer, and leaves them be", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      const offlineAt = new Date(Date.now() - 10 * 60_000).toISOString();
+      const scanKey = randomUUID();
+      // A check-out reaches TicketApp when they aren't inside, but its answer is lost on the way
+      // back, so the device saves it offline to send again.
+      const first = await p.send(code, { scanKey, direction: "out" });
+      expect(first.json()).toMatchObject({ outcome: "not_inside" });
+      // Meanwhile they come in, and the device sends the check-out again, saved offline.
+      await p.scan(code);
+      const again = await p.send(code, { scanKey, offlineAt, direction: "out" });
+      expect(again.json()).toEqual(first.json());
+      const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+      expect(ticket.isInside).toBe(true);
+      expect(await t.prisma.scanEvent.count({ where: { ticketId, outcome: "CHECKED_OUT" } })).toBe(
+        0,
+      );
+    });
+
+    it("takes a scan made before the event ended, even sent after it", async () => {
+      const p = await party();
+      const { code } = await p.comp("Ann");
+      await t.prisma.event.update({
+        where: { id: p.prom.eventId },
+        data: {
+          startsAt: new Date(Date.now() - 5 * 60 * 60_000),
+          endsAt: new Date(Date.now() - 60_000),
+        },
+      });
+      const during = new Date(Date.now() - 30 * 60_000).toISOString();
+      expect((await p.send(code, { offlineAt: during })).json()).toMatchObject({
+        outcome: "admitted",
+      });
+      const after = new Date(Date.now() - 30_000).toISOString();
+      expect((await p.send(code, { offlineAt: after })).json()).toEqual({
+        error: "This event has ended",
+      });
+    });
+
+    it("won't take a scan time from the future or from long ago", async () => {
+      const p = await party();
+      const { code } = await p.comp("Ann");
+      const ahead = await p.send(code, {
+        offlineAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      });
+      expect(ahead.statusCode).toBe(400);
+      const old = await p.send(code, {
+        offlineAt: new Date(Date.now() - OFFLINE_SCAN_MAX_AGE_MS - 60_000).toISOString(),
+      });
+      expect(old.statusCode).toBe(400);
+      expect(await t.prisma.scanEvent.count({ where: { eventId: p.prom.eventId } })).toBe(0);
     });
   });
 });

@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient, type ScanOutcome } from "@ticketapp/db";
 import {
   DOOR_LOOKUP_LIMIT,
   doorLookupSchema,
   doorScanSchema,
+  OFFLINE_SCAN_AHEAD_MS,
+  OFFLINE_SCAN_MAX_AGE_MS,
+  type DoorList,
   type DoorLookupResult,
   type DoorScanResult,
   type ScanInvalidReason,
@@ -26,7 +30,9 @@ interface ScannedTicket {
 }
 
 /** Why a ticket for this event won't get anyone in, or null when it will. */
-function invalidReason(ticket: ScannedTicket): ScanInvalidReason | null {
+function invalidReason(
+  ticket: Pick<ScannedTicket, "status" | "orderStatus" | "transferred">,
+): ScanInvalidReason | null {
   if (ticket.transferred) return "transferred";
   if (ticket.orderStatus === "CANCELLED" || ticket.orderStatus === "REFUNDED") return "cancelled";
   if (ticket.status === "VOID") return "cancelled";
@@ -49,9 +55,10 @@ function waiverMissing(ticket: {
 
 /**
  * The event a door device is working, if it's still one the door app's picker offers: a device
- * left on an event that was cancelled or has ended since can't keep letting people in.
+ * left on an event that was cancelled or has ended since can't keep letting people in. A scan made
+ * offline counts if the event was still on when it was made, so one sent after the end still lands.
  */
-async function openEvent(prisma: PrismaClient, orgId: string, eventId: string) {
+async function openEvent(prisma: PrismaClient, orgId: string, eventId: string, at = new Date()) {
   const event = await prisma.event.findFirst({
     where: { id: eventId, organizationId: orgId },
     select: { status: true, endsAt: true, reentryAllowed: true },
@@ -59,7 +66,7 @@ async function openEvent(prisma: PrismaClient, orgId: string, eventId: string) {
   if (!event) throw new HttpError(404, "Event not found");
   if (event.status === "CANCELLED") throw new HttpError(409, "This event was cancelled");
   if (event.status !== "PUBLISHED") throw new HttpError(409, "This event isn't published yet");
-  if (event.endsAt <= new Date()) throw new HttpError(409, "This event has ended");
+  if (event.endsAt <= at) throw new HttpError(409, "This event has ended");
   return event;
 }
 
@@ -71,12 +78,21 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
   app.post("/orgs/:orgId/events/:eventId/scans", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     const { user } = await requireOrgPermission(prisma, request, orgId, "checkin.scan");
-    const { scanKey, code, ticketId, direction, overrideReason, override } = parse(
+    const { scanKey, offlineAt, code, ticketId, direction, overrideReason, override } = parse(
       doorScanSchema,
       request.body,
     );
     const lookedUp = ticketId !== undefined;
-    const event = await openEvent(prisma, orgId, eventId);
+    if (offlineAt) {
+      const now = Date.now();
+      if (offlineAt.getTime() > now + OFFLINE_SCAN_AHEAD_MS) {
+        throw new HttpError(400, "This device's clock is ahead. Check its date and time.");
+      }
+      if (offlineAt.getTime() < now - OFFLINE_SCAN_MAX_AGE_MS) {
+        throw new HttpError(400, "This scan was saved offline too long ago to send");
+      }
+    }
+    const event = await openEvent(prisma, orgId, eventId, offlineAt);
 
     return prisma
       .$transaction(async (tx): Promise<DoorScanResult> => {
@@ -85,8 +101,13 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           outcome: ScanOutcome,
           // Set when staff let them in despite the outcome; that counts as an admission.
           reason: string | null = null,
-        ) =>
-          tx.scanEvent.create({
+          // What a scan that didn't move them was told, for a retry to get again.
+          answer: DoorScanResult | null = null,
+        ) => {
+          // A retry of a scan of a ticket gets its first answer, so it can't move them later on:
+          // say a check-out that found them not inside, sent again once they're back in.
+          const kept = ticketId !== null && answer !== null;
+          return tx.scanEvent.create({
             data: {
               eventId,
               ticketId,
@@ -98,22 +119,31 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
               // Taken when the scan is recorded, which for one that moves them in or out is while the
               // ticket's row is locked, so the record's order matches the order they happened in.
               scannedAt: new Date(),
-              // Only a scan that moved someone in or out is ever replayed, so only those keep a key.
+              offlineAt: offlineAt ?? null,
+              // A scan of a ticket is replayed to a retry, so it keeps its key.
               scanKey:
-                outcome === "ADMITTED" || outcome === "CHECKED_OUT" || reason !== null
+                outcome === "ADMITTED" || outcome === "CHECKED_OUT" || reason !== null || kept
                   ? scanKey
                   : null,
+              answer: kept ? (JSON.parse(JSON.stringify(answer)) as object) : undefined,
             },
           });
+        };
         // A retry of the scan that let them in or out, sent because its answer was lost, gets that
         // answer again: staff never saw the green, so "already checked in" would send the holder
         // away. A retry racing its original waits on the ticket's row lock, so it finds the scan too.
         const replayed = async (ticketId: string) => {
           const earlier = await tx.scanEvent.findUnique({
             where: { scanKey },
-            select: { eventId: true, ticketId: true, staffUserId: true, direction: true },
+            select: {
+              eventId: true,
+              ticketId: true,
+              staffUserId: true,
+              direction: true,
+              answer: true,
+            },
           });
-          if (!earlier) return false;
+          if (!earlier) return null;
           if (
             earlier.ticketId !== ticketId ||
             earlier.eventId !== eventId.toLowerCase() ||
@@ -122,7 +152,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           ) {
             throw new HttpError(409, "That scan was already recorded for another ticket");
           }
-          return true;
+          return { answer: earlier.answer as DoorScanResult | null };
         };
         /** When they last checked out, if they have. */
         const lastCheckOut = async (ticketId: string) =>
@@ -193,7 +223,9 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           reentryAllowed: event.reentryAllowed,
         } as const;
         // A retry gets its first answer whatever has happened since, such as them going back out.
-        if (await replayed(ticket.id)) {
+        const earlier = await replayed(ticket.id);
+        if (earlier) {
+          if (earlier.answer) return earlier.answer;
           return direction === "in" ? { outcome: "admitted", ticket: details } : checkedOut;
         }
         const reason = invalidReason(ticket);
@@ -206,31 +238,40 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
             return checkedOut;
           }
           if (reason) {
-            await record(ticket.id, "INVALID_TICKET");
-            return { outcome: "invalid_ticket", reason };
+            const answer = { outcome: "invalid_ticket", reason } as const;
+            await record(ticket.id, "INVALID_TICKET", null, answer);
+            return answer;
           }
-          await record(ticket.id, "NOT_INSIDE");
-          return { outcome: "not_inside", ticket: details, leftAt: await lastCheckOut(ticket.id) };
+          const answer = {
+            outcome: "not_inside",
+            ticket: details,
+            leftAt: await lastCheckOut(ticket.id),
+          } as const;
+          await record(ticket.id, "NOT_INSIDE", null, answer);
+          return answer;
         }
 
         if (reason) {
-          await record(ticket.id, "INVALID_TICKET");
-          return { outcome: "invalid_ticket", reason };
+          const answer = { outcome: "invalid_ticket", reason } as const;
+          await record(ticket.id, "INVALID_TICKET", null, answer);
+          return answer;
         }
 
         // Someone who checked out is coming back: the event's re-entry rule decides, and their
         // waiver isn't asked about again, since it got them in once already.
         const leftAt = isInside ? null : await lastCheckOut(ticket.id);
         if (leftAt && !event.reentryAllowed && !(overrideReason && override === "reentry_denied")) {
-          await record(ticket.id, "REENTRY_DENIED");
-          return { outcome: "reentry_denied", ticket: details, leftAt };
+          const answer = { outcome: "reentry_denied", ticket: details, leftAt } as const;
+          await record(ticket.id, "REENTRY_DENIED", null, answer);
+          return answer;
         }
         // Someone already inside is told so below, whatever their waiver says: they got in once.
         // A waiver signed since the override was asked for needs no override, so none is recorded.
         const missing = isInside || leftAt ? null : waiverMissing(waiver);
         if (missing && !(overrideReason && override === "waiver_missing")) {
-          await record(ticket.id, "WAIVER_MISSING");
-          return { outcome: "waiver_missing", ticket: details, reason: missing };
+          const answer = { outcome: "waiver_missing", ticket: details, reason: missing } as const;
+          await record(ticket.id, "WAIVER_MISSING", null, answer);
+          return answer;
         }
         // The answer staff let them in past, if it still holds; one that has cleared since (re-entry
         // turned on, a waiver signed) needs no override, so none is recorded.
@@ -254,12 +295,13 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           orderBy: [{ scannedAt: "desc" }, { id: "desc" }],
           select: { scannedAt: true },
         });
-        await record(ticket.id, "ALREADY_INSIDE");
-        return {
+        const answer = {
           outcome: "already_inside",
           ticket: details,
           admittedAt: admitted?.scannedAt ?? null,
-        };
+        } as const;
+        await record(ticket.id, "ALREADY_INSIDE", null, answer);
+        return answer;
       })
       .catch((err: unknown) => {
         // The key already let a different ticket in, or is doing so right now.
@@ -268,6 +310,62 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         }
         throw err;
       });
+  });
+
+  // The list a door device saves for when it loses its connection: the same people a lookup can
+  // find, with where each stands, and each ticket's code hashed so the device can match a scan.
+  // Someone inside on a ticket voided since is listed too, marked invalid, so they can check out.
+  app.get("/orgs/:orgId/events/:eventId/door-list", async (request): Promise<DoorList> => {
+    const { orgId, eventId } = parse(eventParamsSchema, request.params);
+    await requireOrgPermission(prisma, request, orgId, "checkin.scan");
+    const { reentryAllowed } = await openEvent(prisma, orgId, eventId);
+    const fetchedAt = new Date();
+    // One snapshot for both reads, so someone checked out between them can't show as having left
+    // with no time they left, which would let them back in at an event without re-entry.
+    const [tickets, checkOuts] = await prisma.$transaction(
+      [
+        prisma.ticket.findMany({
+          where: { OR: [comingTo(eventId), { eventId, isInside: true }] },
+          orderBy: byName,
+          select: {
+            ...attendeeFields,
+            code: true,
+            status: true,
+            order: { select: { buyerName: true, status: true } },
+            transferredTo: { select: { id: true } },
+          },
+        }),
+        // When each person last checked out, which keeps them out at an event without re-entry.
+        prisma.scanEvent.groupBy({
+          by: ["ticketId"],
+          where: { eventId, direction: "OUT", outcome: "CHECKED_OUT" },
+          _max: { scannedAt: true },
+        }),
+      ],
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    const leftAt = new Map(checkOuts.map((c) => [c.ticketId, c._max.scannedAt]));
+    return {
+      reentryAllowed,
+      fetchedAt,
+      tickets: tickets.map((t) => ({
+        ticketId: t.id,
+        firstName: t.attendee.firstName,
+        lastName: t.attendee.lastName,
+        attendeeName: `${t.attendee.firstName} ${t.attendee.lastName}`,
+        ticketTypeName: t.ticketType.name,
+        grade: t.attendee.grade,
+        codeHash: createHash("sha256").update(t.code).digest("hex"),
+        checkIn: checkInStatus(t),
+        waiver: waiverStatus(t),
+        leftAt: leftAt.get(t.id) ?? null,
+        invalid: invalidReason({
+          status: t.status,
+          orderStatus: t.order.status,
+          transferred: t.transferredTo !== null,
+        }),
+      })),
+    };
   });
 
   // Only tickets that can get someone in are listed: someone whose ticket was cancelled or moved

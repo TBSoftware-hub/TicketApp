@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
+import { SyncProblems } from "@/components/offline-status";
 import { StaffBar } from "@/components/staff-bar";
 import { ApiError, UNREACHABLE } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -58,6 +59,7 @@ export default function EventPicker() {
             <StaffBar />
             <Text style={ui.eyebrow}>TICKETAPP DOOR</Text>
             <Text style={ui.title}>Choose an event</Text>
+            <SyncProblems />
             {/* With events already on screen the empty state doesn't show, so say they may be out of date. */}
             {error && events && events.length > 0 && (
               <View style={{ gap: 8 }}>

@@ -4,6 +4,7 @@ import {
   doorScanSchema,
   SCAN_OVERRIDES,
   type DoorEvent,
+  type DoorListTicket,
   type ScanDirection,
   type ScanDisplay,
   type ScanOverride,
@@ -17,6 +18,7 @@ import { AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from
 import { Button } from "@/components/button";
 import { Lookup } from "@/components/lookup";
 import { ApiError, UNREACHABLE } from "@/lib/api";
+import { useOffline, type DoorScanRequest } from "@/lib/offline";
 import { useSession } from "@/lib/session";
 import { colors, ui } from "@/lib/theme";
 
@@ -24,21 +26,25 @@ import { colors, ui } from "@/lib/theme";
 const ADMITTED_SHOWN_MS = 2500;
 /** The camera is usually still on the code just answered; ignore it for this long afterwards. */
 const SAME_CODE_IGNORED_MS = 5000;
+/** Shown when scans saved offline are still to send and there's no list to check this one on. */
+const PENDING_NO_LIST =
+  "This device is still sending scans saved offline and has no saved list to check this one against. Try again once they've gone.";
+/** Shown when the scans saved offline on this device can't be read back. */
+const QUEUE_UNREADABLE =
+  "This device couldn't read back the scans it saved offline, so it can't check tickets in order. Try again in a moment, or restart the app.";
 /** How long a check may take before staff are offered Try again or Skip. */
 const SCAN_TIMEOUT_MS = 10_000;
 
 /**
- * What was scanned: the code, or the ticket staff picked after looking someone up by name, which
- * way it takes them, the key a retry of the same scan sends again, and, when staff let them in
- * past an answer, which answer and why.
+ * A scan as staff made it. `sent` is set once it has been sent to TicketApp, with its ticket as the
+ * saved list had it then, kept through Try again: if the answer is lost, that's what the saved
+ * list answers from, not a list downloaded since that may already show what the scan did.
  */
-interface Scan {
-  code?: string;
-  ticketId?: string;
-  direction: ScanDirection;
-  key: string;
-  override?: ScanOverride;
-  overrideReason?: string;
+type Scan = DoorScanRequest & { sent?: { before: DoorListTicket | null } };
+
+/** Whether a failed call may never have been answered, so the saved list answers instead. */
+function unanswered(err: unknown) {
+  return err instanceof ApiError && (err.status === 0 || err.status >= 500);
 }
 
 /** What staff tap to let someone in past each answer. */
@@ -58,6 +64,10 @@ const HAPTIC: Record<ScanDisplay["tone"], Haptics.NotificationFeedbackType> = {
 /** The camera, reading ticket QR codes for `event` one at a time and showing each answer over it. */
 export function Scanner({ event }: { event: DoorEvent }) {
   const { call } = useSession();
+  const door = useOffline();
+  // Read when a scan is checked: the camera can hold on to the handler from an earlier render.
+  const doorRef = useRef(door);
+  doorRef.current = door;
   const [permission, requestPermission, getPermission] = useCameraPermissions();
   const [shown, setShown] = useState<Shown | null>(null);
   // Scanning people in, or out as they leave. The camera can hold on to the scan handler it started
@@ -100,40 +110,84 @@ export function Scanner({ event }: { event: DoorEvent }) {
   }, [getPermission]);
 
   const check = useCallback(
-    (scan: Scan) => {
-      const { code, ticketId, direction, key, override, overrideReason } = scan;
+    (sent: Scan) => {
       if (inFlight.current) return;
+      // Timed from when staff scanned it, not from when a slow connection gave up, and kept for a
+      // retry of the same scan.
+      let scan: Scan = { ...sent, at: sent.at ?? Date.now() };
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
-      call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
-        method: "POST",
-        body: { scanKey: key, code, ticketId, direction, override, overrideReason },
-        // A stalled network shows Try again, which resends the same key, rather than hanging.
-        timeoutMs: SCAN_TIMEOUT_MS,
-      })
-        .then((res) => {
-          if (!mounted.current) return;
-          const display = describeScan(
-            doorScanResultSchema.parse(res),
-            event.organization.timezone,
+      const show = (display: ScanDisplay) => {
+        if (!mounted.current) return;
+        setOverriding(null);
+        setShown({ ...scan, display });
+        void Haptics.notificationAsync(HAPTIC[display.tone]).catch(() => undefined);
+      };
+      const fail = (error: string) => {
+        if (!mounted.current) return;
+        setOverriding(null);
+        setShown({ ...scan, error });
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
+          () => undefined,
+        );
+      };
+      void (async () => {
+        const offline = doorRef.current;
+        const { code, ticketId, direction, key, override, overrideReason, at } = scan;
+        const request: DoorScanRequest = {
+          code,
+          ticketId,
+          direction,
+          key,
+          override,
+          overrideReason,
+          at,
+        };
+        try {
+          // Scans saved offline before the app last stopped go first, so they're read back first.
+          if (!(await offline.ready())) return fail(QUEUE_UNREADABLE);
+          // Offline, or still sending scans saved offline, the saved list answers straight away:
+          // waiting on a dead connection for each person would back up the line.
+          if (offline.isOffline()) {
+            const display = await offline.answer(request, scan.sent?.before);
+            if (display) return show(display);
+            // Sent now, this scan could reach TicketApp ahead of the earlier ones it follows.
+            if (offline.hasPending()) return fail(PENDING_NO_LIST);
+          }
+          // As the saved list had them before this scan was first sent, in case its answer is lost.
+          if (!scan.sent) scan = { ...scan, sent: { before: await offline.before(request) } };
+          const result = doorScanResultSchema.parse(
+            await call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
+              method: "POST",
+              body: { scanKey: key, code, ticketId, direction, override, overrideReason },
+              // A stalled network answers from the saved list, or shows Try again, which resends
+              // the same key, rather than hanging.
+              timeoutMs: SCAN_TIMEOUT_MS,
+            }),
           );
-          setOverriding(null);
-          setShown({ ...scan, display });
-          void Haptics.notificationAsync(HAPTIC[display.tone]).catch(() => undefined);
-        })
-        .catch((err: unknown) => {
-          if (!mounted.current) return;
-          setOverriding(null);
-          setShown({ ...scan, error: err instanceof ApiError ? err.message : UNREACHABLE });
-          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
-            () => undefined,
-          );
-        })
-        .finally(() => {
+          void offline.answered(request, result);
+          show(describeScan(result, event.organization.timezone));
+        } catch (err) {
+          // A screen closed meanwhile can't show the answer, so it mustn't let anyone in or out.
+          if (unanswered(err) && mounted.current) {
+            // The scan may have reached TicketApp before the connection or the server went: one
+            // saved here goes with the same key, so it can't count twice.
+            offline.unreachable();
+            const display = await offline.answer(request, scan.sent?.before).catch(() => null);
+            if (display) return show(display);
+          }
+          // TicketApp won't let this account work the event, or it can't be worked any more: its
+          // saved list mustn't answer for it either.
+          if (err instanceof ApiError && [403, 404, 409].includes(err.status)) {
+            offline.refused(event.id);
+          }
+          fail(err instanceof ApiError ? err.message : UNREACHABLE);
+        } finally {
           inFlight.current = false;
           if (mounted.current) setBusy(false);
-        });
+        }
+      })();
     },
     [call, event],
   );

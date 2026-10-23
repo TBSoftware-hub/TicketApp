@@ -58,6 +58,11 @@ export const doorScanSchema = z
   .object({
     /** Made by the app once per scan and sent again on a retry, so a retry can't double-count. */
     scanKey: z.uuid(),
+    /**
+     * When the device made the scan, for one it saved while offline and is sending now. The API
+     * still decides it as of now, and keeps both times on the record.
+     */
+    offlineAt: timestamp.optional(),
     // Apps from before check-out only ever scanned people in.
     direction: scanDirectionSchema.default("in"),
     // Scanners can pick up stray whitespace. Any QR code at all may be held up, such as a long

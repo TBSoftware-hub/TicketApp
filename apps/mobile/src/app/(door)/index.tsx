@@ -3,12 +3,19 @@ import { useEffect, useState } from "react";
 import { AppState, KeyboardAvoidingView, Platform, ScrollView, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
+import { OfflineStatus, SyncProblems } from "@/components/offline-status";
 import { Scanner } from "@/components/scanner";
 import { StaffBar } from "@/components/staff-bar";
 import { useSession } from "@/lib/session";
 import { ui } from "@/lib/theme";
 
-/** Home screen for the chosen event: the scanner, for check-in and check-out, and lookup by name. */
+/** How long the check that the event is still on may take before the scanner opens anyway. */
+const EVENT_CHECK_TIMEOUT_MS = 5000;
+
+/**
+ * Home screen for the chosen event: the scanner, for check-in and check-out, lookup by name, and
+ * whether it's working offline.
+ */
 export default function Door() {
   const { event, call, chooseEvent } = useSession();
   const [checking, setChecking] = useState(true);
@@ -24,7 +31,8 @@ export default function Door() {
     let latest = 0;
     const recheck = () => {
       const attempt = ++latest;
-      call("/door/events")
+      // Offline the scanner works from the saved list, so it mustn't wait long on this.
+      call("/door/events", { timeoutMs: EVENT_CHECK_TIMEOUT_MS })
         .then((res) => {
           // Ignore an answer overtaken by a later check, or arriving after the event changed.
           if (!current || attempt !== latest) return;
@@ -63,6 +71,8 @@ export default function Door() {
             {formatDoorEventTime(event)}
             {event.venue ? ` · ${event.venue}` : ""}
           </Text>
+          <OfflineStatus event={event} />
+          <SyncProblems />
           {checking ? (
             <Text style={ui.muted}>Checking the event is still on…</Text>
           ) : (
