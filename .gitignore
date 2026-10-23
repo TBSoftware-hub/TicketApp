@@ -14,3 +14,5 @@ coverage/
 apps/mobile/ios/
 apps/mobile/android/
 !apps/web/.env.production
+!apps/mobile/.env.production
+apps/mobile/expo-env.d.ts

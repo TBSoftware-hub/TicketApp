@@ -11,7 +11,6 @@ export default tseslint.config(
       "**/.expo/**",
       "**/next-env.d.ts",
       "**/generated/**",
-      "apps/mobile/index.ts",
     ],
   },
   js.configs.recommended,

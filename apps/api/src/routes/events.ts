@@ -1,8 +1,14 @@
 import { Prisma, type PrismaClient } from "@ticketapp/db";
-import { createEventSchema, eventStatusSchema, updateEventSchema } from "@ticketapp/shared";
+import {
+  createEventSchema,
+  eventStatusSchema,
+  roleCan,
+  roleSchema,
+  updateEventSchema,
+} from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { requireOrgPermission } from "../lib/auth";
+import { requireOrgPermission, requireUser } from "../lib/auth";
 import { HttpError } from "../lib/errors";
 import { parse } from "../lib/validate";
 
@@ -29,6 +35,30 @@ function slugTaken(err: unknown): never {
 }
 
 export async function eventRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
+  // The door app's event picker: published events that haven't ended, across every organization
+  // where the signed-in staff member may scan tickets.
+  app.get("/door/events", async (request) => {
+    const user = await requireUser(prisma, request);
+    const scanRoles = roleSchema.options.filter((role) => roleCan(role, "checkin.scan"));
+    const events = await prisma.event.findMany({
+      where: {
+        status: "PUBLISHED",
+        endsAt: { gt: new Date() },
+        organization: { memberships: { some: { userId: user.id, role: { in: scanRoles } } } },
+      },
+      select: {
+        id: true,
+        name: true,
+        venue: true,
+        startsAt: true,
+        endsAt: true,
+        organization: { select: { id: true, name: true, timezone: true } },
+      },
+      orderBy: [{ startsAt: "asc" }, { id: "asc" }],
+    });
+    return { events };
+  });
+
   app.get("/orgs/:orgId/events", async (request) => {
     const { orgId } = parse(orgParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "org.view");
