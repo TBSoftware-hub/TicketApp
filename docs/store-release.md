@@ -89,7 +89,7 @@ example to `1.0.1`) only when you want a new version number in the store.
 ## Review sign-in
 
 Store reviewers need to sign in, but the door app emails a six-digit code, which they can't read.
-Set these two on Render (**ticketapp-api > Environment**) while a review is open:
+Set these two on Render (**ticketapp-api > Environment**):
 
 - `REVIEW_SIGN_IN_EMAIL`: an address you own that isn't easy to guess, for example
   `appreview-k7q2@myschooltix.com`. Anyone who knows it can lock it for 15 minutes with wrong
@@ -113,7 +113,10 @@ enter the code below and tap Sign in. Pick the demo event, then use Look up by n
 attendee, as the camera scans printed tickets." Attach a PDF of a demo ticket if you want them to
 try the scanner.
 
-Remove both variables when the review is approved.
+Leave both set after approval. Google reviews apps again at any time and expects the sign-in in
+**App access** to keep working, and Apple reviews every update. The address only reaches the demo
+event, so a working review sign-in exposes nothing real. If you change the code, update the review
+notes in both stores.
 
 ## Store listing
 

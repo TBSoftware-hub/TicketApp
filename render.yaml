@@ -41,7 +41,8 @@ services:
       - key: SIGN_IN_CODE_KEY
         generateValue: true
       # App store review account for the door app: its sign-in code is always REVIEW_SIGN_IN_CODE.
-      # Set both while a store review is open (see docs/store-release.md); leave both unset otherwise.
+      # Store reviewers sign in with these, so keep both set once the app is listed (see
+      # docs/store-release.md). The address must only belong to a demo organization.
       - key: REVIEW_SIGN_IN_EMAIL
         sync: false
       - key: REVIEW_SIGN_IN_CODE
