@@ -58,6 +58,8 @@ interface SavedList extends DoorList {
 
 /** A scan made offline that let someone in or out, waiting to be sent. */
 interface QueuedScan extends DoorScanRequest {
+  /** Who made it; only they are shown what TicketApp made of it. */
+  staffId: string;
   orgId: string;
   eventId: string;
   eventName: string;
@@ -75,6 +77,7 @@ interface QueuedScan extends DoorScanRequest {
 /** A scan sent after the connection came back that TicketApp answered differently, or refused. */
 export interface SyncProblem {
   key: string;
+  staffId: string;
   eventId: string;
   eventName: string;
   timeZone: string;
@@ -105,8 +108,8 @@ interface OfflineContext {
   /** Scans for this event made offline and not sent yet. */
   pending: number;
   /**
-   * Scans TicketApp answered differently once they were sent, for any event: the event may have
-   * ended since, and staff still need to see them.
+   * Scans the signed-in staff member made that TicketApp answered differently once they were
+   * sent, for any event: the event may have ended since, and they still need to see them.
    */
   problems: SyncProblem[];
   dismissProblems: () => void;
@@ -183,8 +186,21 @@ function loadQueue() {
   return queue.loaded;
 }
 
-function saveQueue() {
-  void writeFile(DOOR_QUEUE_FILE, JSON.stringify(queue.saved)).catch(() => undefined);
+let queueWrites: Promise<void> = Promise.resolve();
+
+/**
+ * Changes the queue and saves it, one change at a time, each made to what the last one left. The
+ * change only counts once it's written, so a scan is never reported saved that a restart would lose.
+ */
+function changeQueue(change: (saved: Saved) => Saved): Promise<void> {
+  const run = async () => {
+    const next = change(queue.saved);
+    await writeFile(DOOR_QUEUE_FILE, JSON.stringify(next));
+    queue.saved = next;
+  };
+  const done = queueWrites.then(run, run);
+  queueWrites = done.catch(() => undefined);
+  return done;
 }
 
 /** A saved list with the moves still waiting to be sent for its event applied. */
@@ -201,7 +217,8 @@ function withQueued(list: SavedList): SavedList {
  * TicketApp can be reached again.
  */
 export function OfflineProvider({ children }: PropsWithChildren) {
-  const { event, call } = useSession();
+  const { event, call, session } = useSession();
+  const staffId = session?.staff.id;
   const [, setRevision] = useState(0);
   const rerender = useCallback(() => setRevision((r) => r + 1), []);
   const [reachable, setReachableState] = useState(true);
@@ -246,6 +263,21 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       () => undefined,
     );
   }, []);
+
+  /**
+   * Stops answering from an event's saved list once TicketApp has said it won't let this account
+   * work the event, or the event can't be worked any more.
+   */
+  const dropList = useCallback(
+    (eventId: string) => {
+      if (list.current?.eventId !== eventId) return;
+      list.current = null;
+      changes.current++;
+      void writeFile(DOOR_LIST_FILE, null).catch(() => undefined);
+      rerender();
+    },
+    [rerender],
+  );
 
   const isOffline = useCallback(
     () => !reachableRef.current || pendingFor(queue.saved, eventRef.current?.id) > 0,
@@ -300,6 +332,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       const held = new Set<string>();
       for (const scan of [...queue.saved.scans]) {
         const { orgId, eventId, eventName, timeZone, key, offlineAt, outcome, shown, name } = scan;
+        const madeBy = scan.staffId;
         if (held.has(eventId)) continue;
         let answer: string | null = null;
         if (Date.parse(offlineAt) < Date.now() - OFFLINE_SCAN_MAX_AGE_MS) {
@@ -345,27 +378,43 @@ export function OfflineProvider({ children }: PropsWithChildren) {
             setReachable(true);
             // Signed out, busy or broken: the scan waits for the next try.
             if (err.status === 401 || err.status === 429 || err.status >= 500) return;
-            // Whoever is signed in now can't work this event: keep its scans for someone who can.
+            // Whoever is signed in now can't work this event: keep its scans for someone who can,
+            // but stop answering from its list.
             if (err.status === 403 || err.status === 404) {
               held.add(eventId);
+              dropList(eventId);
               continue;
             }
             // Turned down for good, such as an event cancelled since: staff need to know.
             answer = err.message;
           }
         }
-        queue.saved = {
-          scans: queue.saved.scans.filter((s) => s.key !== key),
-          problems:
-            answer === null
-              ? queue.saved.problems
-              : [
-                  ...queue.saved.problems,
-                  { key, eventId, eventName, timeZone, name, offlineAt, shown, answer },
-                ],
-        };
-        saveQueue();
-        rerender();
+        const problem =
+          answer === null
+            ? null
+            : {
+                key,
+                staffId: madeBy,
+                eventId,
+                eventName,
+                timeZone,
+                name,
+                offlineAt,
+                shown,
+                answer,
+              };
+        try {
+          await changeQueue((saved) => ({
+            scans: saved.scans.filter((s) => s.key !== key),
+            problems: problem ? [...saved.problems, problem] : saved.problems,
+          }));
+        } catch {
+          // Couldn't save that it went: it's sent again next time, with the same key, so it
+          // can't count twice.
+          return;
+        } finally {
+          rerender();
+        }
       }
 
       // Download the list again once it's stale, or to find out if TicketApp is back. Not while
@@ -389,12 +438,15 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         saveList();
         rerender();
       } catch (err) {
-        if (!(err instanceof ApiError) || err.status === 0) setReachable(false);
+        if (!(err instanceof ApiError) || err.status === 0) return setReachable(false);
+        setReachable(true);
+        // No access, no such event, or one cancelled or ended: its list can't be trusted.
+        if (err.status === 403 || err.status === 404 || err.status === 409) dropList(current.id);
       }
     } finally {
       queue.syncing = false;
     }
-  }, [load, updateTicket, saveList, setReachable, rerender]);
+  }, [load, updateTicket, dropList, saveList, setReachable, rerender]);
 
   // Saved scans are sent whatever event is picked, or none: they may be for one that has ended.
   const eventId = event?.id;
@@ -431,8 +483,10 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         return { ...display, lines: [...display.lines, fromList] };
       }
 
+      if (!staffId) return null;
       const queued: QueuedScan = {
         ...scan,
+        staffId,
         orgId: current.organization.id,
         eventId: current.id,
         eventName: current.name,
@@ -445,16 +499,11 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       };
       // Staff are only told to let them through once the scan is safely on the device.
       try {
-        await writeFile(
-          DOOR_QUEUE_FILE,
-          JSON.stringify({ ...queue.saved, scans: [...queue.saved.scans, queued] }),
-        );
+        await changeQueue((saved) => ({ ...saved, scans: [...saved.scans, queued] }));
       } catch {
         return OFFLINE_NOT_SAVED;
       }
-      // Added to the queue and the list as they are now, which a send may have changed meanwhile.
-      queue.saved = { ...queue.saved, scans: [...queue.saved.scans, queued] };
-      saveQueue();
+      // Applied to the list as it is now, which a send may have changed meanwhile.
       updateTicket(current.id, ticket.ticketId, (t) => afterScan(t, result, at) ?? t);
       rerender();
       // Back online but still sending earlier scans: this one goes straight after them.
@@ -467,7 +516,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         ],
       };
     },
-    [find, load, updateTicket, rerender, sync],
+    [find, load, updateTicket, rerender, sync, staffId],
   );
 
   const answered = useCallback(
@@ -489,11 +538,16 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     return searchDoorList(current.tickets, q);
   }, []);
 
+  // Only whoever made a scan sees, or can dismiss, what TicketApp made of it: the device may be
+  // handed to someone from another school.
   const dismissProblems = useCallback(() => {
-    queue.saved = { ...queue.saved, problems: [] };
-    saveQueue();
-    rerender();
-  }, [rerender]);
+    void changeQueue((saved) => ({
+      ...saved,
+      problems: saved.problems.filter((p) => p.staffId !== staffId),
+    }))
+      .catch(() => undefined)
+      .finally(rerender);
+  }, [rerender, staffId]);
 
   const pending = pendingFor(queue.saved, eventId);
   const mine = list.current?.eventId === eventId ? list.current : null;
@@ -506,7 +560,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     hasPending,
     listSavedAt: mine ? new Date(mine.savedAt) : null,
     pending,
-    problems: queue.saved.problems,
+    problems: queue.saved.problems.filter((p) => p.staffId === staffId),
     dismissProblems,
     answer,
     answered,
