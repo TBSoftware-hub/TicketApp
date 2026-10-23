@@ -10,6 +10,10 @@ export const colors = {
   line: "#d9ddd7",
   error: "#a3312a",
   placeholder: "#9aa39c",
+  /** Scan results, chosen to read at a glance under gym lights: go, already used, and stop. */
+  go: "#1f7a4d",
+  warn: "#b26a00",
+  stop: "#b3261e",
 };
 
 export const ui = StyleSheet.create({

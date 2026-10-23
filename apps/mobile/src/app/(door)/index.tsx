@@ -1,13 +1,14 @@
 import { doorEventsResponseSchema, formatDoorEventTime } from "@ticketapp/shared";
 import { useEffect, useState } from "react";
-import { AppState, ScrollView, Text, View } from "react-native";
+import { AppState, ScrollView, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
+import { Scanner } from "@/components/scanner";
 import { StaffBar } from "@/components/staff-bar";
 import { useSession } from "@/lib/session";
 import { ui } from "@/lib/theme";
 
-/** Home screen for the chosen event. The scanner (E7.2) and name lookup (E7.5) start from here. */
+/** Home screen for the chosen event: the ticket scanner, and later name lookup (E7.5). */
 export default function Door() {
   const { event, call, chooseEvent } = useSession();
   const [checking, setChecking] = useState(true);
@@ -53,18 +54,16 @@ export default function Door() {
         <StaffBar />
         <Text style={ui.eyebrow}>{event.organization.name.toUpperCase()}</Text>
         <Text style={ui.title}>{event.name}</Text>
-        <View style={ui.card}>
-          <Text style={ui.body}>{formatDoorEventTime(event)}</Text>
-          {event.venue && <Text style={ui.muted}>{event.venue}</Text>}
-        </View>
-        <View style={[ui.card, { gap: 8 }]}>
-          <Text style={ui.heading}>Ready for the door</Text>
-          <Text style={ui.muted}>
-            {checking
-              ? "Checking the event is still on…"
-              : "Ticket scanning comes to this screen in the next update."}
-          </Text>
-        </View>
+        <Text style={ui.muted}>
+          {formatDoorEventTime(event)}
+          {event.venue ? ` · ${event.venue}` : ""}
+        </Text>
+        {checking ? (
+          <Text style={ui.muted}>Checking the event is still on…</Text>
+        ) : (
+          // A fresh scanner for each event, so nothing from the last one carries over.
+          <Scanner key={event.id} event={event} />
+        )}
         <Button label="Change event" variant="secondary" onPress={() => void chooseEvent(null)} />
       </ScrollView>
     </SafeAreaView>

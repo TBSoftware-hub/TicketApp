@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeScan,
   doorEventTiming,
+  doorScanResultSchema,
+  doorScanSchema,
   formatDoorEventTime,
   doorEventsResponseSchema,
   verifySignInCodeSchema,
@@ -89,5 +92,55 @@ describe("formatDoorEventTime", () => {
     expect(format("2026-05-02T13:00:00Z", "2026-05-04T20:00:00Z")).toBe(
       "Sat, May 2 · 9:00 AM – Mon, May 4, 4:00 PM",
     );
+  });
+});
+
+describe("describeScan", () => {
+  const ticket = { attendeeName: "Ann Lee", ticketTypeName: "Guest" };
+
+  it("says to let a valid ticket in, with who it's for", () => {
+    expect(describeScan({ outcome: "admitted", ticket }, "America/New_York")).toEqual({
+      tone: "go",
+      title: "Let them in",
+      lines: ["Ann Lee", "Guest"],
+    });
+  });
+
+  it("gives the time an already-used ticket got someone in, in the event's time zone", () => {
+    const result = doorScanResultSchema.parse({
+      outcome: "already_inside",
+      ticket,
+      admittedAt: "2026-05-02T23:42:00.000Z",
+    });
+    expect(describeScan(result, "America/New_York")).toEqual({
+      tone: "warn",
+      title: "Already checked in",
+      lines: ["Ann Lee", "This ticket got someone in at 7:42 PM."],
+    });
+  });
+
+  it("still warns about a used ticket when the time isn't on record", () => {
+    const display = describeScan(
+      { outcome: "already_inside", ticket, admittedAt: null },
+      "America/New_York",
+    );
+    expect(display.lines[1]).toBe("This ticket has already been used.");
+  });
+
+  it("says why a ticket won't get anyone in", () => {
+    expect(
+      describeScan({ outcome: "invalid_ticket", reason: "transferred" }, "America/New_York"),
+    ).toEqual({
+      tone: "stop",
+      title: "Not a valid ticket",
+      lines: ["This ticket was given to someone else, who has a new code."],
+    });
+  });
+});
+
+describe("doorScanSchema", () => {
+  it("trims the scanned code and turns away an empty one", () => {
+    expect(doorScanSchema.parse({ code: " abc\n" })).toEqual({ code: "abc" });
+    expect(doorScanSchema.safeParse({ code: "  " }).success).toBe(false);
   });
 });
