@@ -58,6 +58,15 @@ export default function EventPicker() {
             <StaffBar />
             <Text style={ui.eyebrow}>TICKETAPP DOOR</Text>
             <Text style={ui.title}>Choose an event</Text>
+            {/* With events already on screen the empty state doesn't show, so say they may be out of date. */}
+            {error && events && events.length > 0 && (
+              <View style={{ gap: 8 }}>
+                <Text style={ui.error} accessibilityRole="alert">
+                  {error} These events may be out of date.
+                </Text>
+                <Button label="Try again" variant="secondary" onPress={() => void load()} />
+              </View>
+            )}
           </View>
         }
         renderSectionHeader={({ section }) => (

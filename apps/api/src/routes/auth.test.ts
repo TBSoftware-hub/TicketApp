@@ -254,6 +254,56 @@ describe("door app sign-in with an emailed code", () => {
     expect((await verify(email, second)).statusCode).toBe(400);
   });
 
+  it("carries wrong guesses over to a new code, so asking again doesn't reset them", async () => {
+    const email = `door-resend-${randomUUID()}@example.com`;
+    const first = await requestCode(email);
+    const wrong = first === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 4; i++) await verify(email, wrong);
+    const second = await requestCode(email);
+    expect(second).not.toBe(wrong);
+    expect((await verify(email, wrong)).statusCode).toBe(400);
+    expect((await verify(email, second)).statusCode).toBe(400);
+  });
+
+  it("won't send another code once five wrong guesses have used up the address's tries", async () => {
+    const email = `door-locked-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const wrong = code === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 5; i++) await verify(email, wrong);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/sign-in-code",
+      payload: { email },
+    });
+    expect(res.statusCode).toBe(429);
+  });
+
+  it("counts every guess in a burst and still locks the code after five", async () => {
+    const email = `door-race-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const wrong = code === "000000" ? "111111" : "000000";
+    const results = await Promise.all(Array.from({ length: 8 }, () => verify(email, wrong)));
+    expect(results.every((r) => r.statusCode === 400)).toBe(true);
+    const row = await t.prisma.magicLinkToken.findFirstOrThrow({ where: { email } });
+    expect(row.failedAttempts).toBe(5);
+    expect((await verify(email, code)).statusCode).toBe(400);
+  });
+
+  it("holds the per-email limit when requests arrive at once, across links and codes", async () => {
+    const email = `door-burst-${randomUUID()}@example.com`;
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        t.app.inject({
+          method: "POST",
+          url: i % 2 ? "/auth/sign-in-code" : "/auth/magic-link",
+          payload: { email },
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.statusCode === 202)).toHaveLength(5);
+    expect(await t.prisma.magicLinkToken.count({ where: { email } })).toBe(5);
+  });
+
   it("shares the five-per-fifteen-minutes limit with sign-in links", async () => {
     const email = `door-limit-${randomUUID()}@example.com`;
     for (let i = 0; i < 3; i++) {

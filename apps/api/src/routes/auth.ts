@@ -45,6 +45,44 @@ async function startSession(
   return user;
 }
 
+/**
+ * Serializes sign-in work for one address: issuing links and codes, and checking codes. Without it,
+ * requests that arrive together could each see room under a limit before any of them is recorded.
+ */
+async function lockEmail(tx: Prisma.TransactionClient, email: string) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`sign-in:${email}`}))`;
+}
+
+/** Call inside lockEmail. Throws 429 once the address has had its links and codes for the window. */
+async function checkIssueLimit(tx: Prisma.TransactionClient, email: string) {
+  const recent = await tx.magicLinkToken.count({
+    where: { email, createdAt: { gt: new Date(Date.now() - MAGIC_LINK_TTL_MS) } },
+  });
+  if (recent >= MAX_LINKS_PER_EMAIL) {
+    throw new HttpError(429, "Too many sign-in requests. Try again in a few minutes.");
+  }
+}
+
+/** Unexpired, unused codes for the address. Wrong guesses are counted on each of them. */
+const openCodes = (email: string, now: Date) => ({
+  email,
+  codeHash: { not: null },
+  consumedAt: null,
+  expiresAt: { gt: now },
+});
+
+/**
+ * Wrong guesses against the address in the current window. Every open code carries the same count,
+ * and a new code starts from it, so asking for another code never buys more guesses.
+ */
+async function wrongGuesses(tx: Prisma.TransactionClient, email: string, now: Date) {
+  const { _max } = await tx.magicLinkToken.aggregate({
+    where: openCodes(email, now),
+    _max: { failedAttempts: true },
+  });
+  return _max.failedAttempts ?? 0;
+}
+
 export interface AuthRouteOptions {
   prisma: PrismaClient;
   mailer: Mailer;
@@ -61,21 +99,18 @@ export async function authRoutes(
   const magicLinkLimit = { rateLimit: { max: magicLinkPerIpPerMinute, timeWindow: "1 minute" } };
   app.post("/auth/magic-link", { config: magicLinkLimit }, async (request, reply) => {
     const { email, name } = parse(magicLinkRequestSchema, request.body);
-    const recent = await prisma.magicLinkToken.count({
-      where: { email, createdAt: { gt: new Date(Date.now() - MAGIC_LINK_TTL_MS) } },
-    });
-    if (recent >= MAX_LINKS_PER_EMAIL) {
-      throw new HttpError(429, "Too many sign-in requests. Try again in a few minutes.");
-    }
-
     const token = generateToken();
-    const link = await prisma.magicLinkToken.create({
-      data: {
-        email,
-        name,
-        tokenHash: hashToken(token),
-        expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
-      },
+    const link = await prisma.$transaction(async (tx) => {
+      await lockEmail(tx, email);
+      await checkIssueLimit(tx, email);
+      return tx.magicLinkToken.create({
+        data: {
+          email,
+          name,
+          tokenHash: hashToken(token),
+          expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
+        },
+      });
     });
 
     const url = `${webBaseUrl}/sign-in/verify?token=${encodeURIComponent(token)}`;
@@ -117,22 +152,24 @@ export async function authRoutes(
   // The door app's sign-in: the same per-email limit as links, but the email carries a code.
   app.post("/auth/sign-in-code", { config: magicLinkLimit }, async (request, reply) => {
     const { email } = parse(signInCodeRequestSchema, request.body);
-    const recent = await prisma.magicLinkToken.count({
-      where: { email, createdAt: { gt: new Date(Date.now() - MAGIC_LINK_TTL_MS) } },
-    });
-    if (recent >= MAX_LINKS_PER_EMAIL) {
-      throw new HttpError(429, "Too many sign-in requests. Try again in a few minutes.");
-    }
-
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-    const link = await prisma.magicLinkToken.create({
-      data: {
-        email,
-        // Never sent anywhere: a code row can only be redeemed through /auth/verify-code.
-        tokenHash: hashToken(generateToken()),
-        codeHash: hashToken(code),
-        expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
-      },
+    const link = await prisma.$transaction(async (tx) => {
+      await lockEmail(tx, email);
+      await checkIssueLimit(tx, email);
+      const failedAttempts = await wrongGuesses(tx, email, new Date());
+      if (failedAttempts >= MAX_CODE_ATTEMPTS) {
+        throw new HttpError(429, "Too many wrong codes. Try again in 15 minutes.");
+      }
+      return tx.magicLinkToken.create({
+        data: {
+          email,
+          // Never sent anywhere: a code row can only be redeemed through /auth/verify-code.
+          tokenHash: hashToken(generateToken()),
+          codeHash: hashToken(code),
+          failedAttempts,
+          expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
+        },
+      });
     });
 
     await sendOrFail(
@@ -152,31 +189,26 @@ export async function authRoutes(
   app.post("/auth/verify-code", { config: magicLinkLimit }, async (request) => {
     const { email, code } = parse(verifySignInCodeSchema, request.body);
     const now = new Date();
-    const live = {
-      email,
-      codeHash: { not: null },
-      consumedAt: null,
-      expiresAt: { gt: now },
-      failedAttempts: { lt: MAX_CODE_ATTEMPTS },
-    };
 
     const sessionToken = generateToken();
+    // Checking the code and counting a wrong guess happen under the address's lock, so guesses
+    // that arrive together are each counted before the next one is checked.
     const user = await prisma.$transaction(async (tx) => {
-      // Conditional update, as for links: two devices entering one code get one session.
+      await lockEmail(tx, email);
+      if ((await wrongGuesses(tx, email, now)) >= MAX_CODE_ATTEMPTS) return undefined;
       const consumed = await tx.magicLinkToken.updateManyAndReturn({
-        where: { ...live, codeHash: hashToken(code) },
+        where: { ...openCodes(email, now), codeHash: hashToken(code) },
         data: { consumedAt: now },
       });
       const link = consumed[0];
-      return link ? startSession(tx, link, sessionToken, request, now) : undefined;
-    });
-    if (!user) {
-      // A wrong guess counts against every code still open for the address, so asking for more
-      // codes doesn't buy more guesses.
-      await prisma.magicLinkToken.updateMany({
-        where: live,
+      if (link) return startSession(tx, link, sessionToken, request, now);
+      await tx.magicLinkToken.updateMany({
+        where: openCodes(email, now),
         data: { failedAttempts: { increment: 1 } },
       });
+      return undefined;
+    });
+    if (!user) {
       throw new HttpError(
         400,
         "That code is wrong or has expired. Check the email or ask for a new code.",
