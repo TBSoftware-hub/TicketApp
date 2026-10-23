@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp } from "../test-helpers";
 
@@ -153,6 +153,227 @@ describe("client IP behind a proxy", () => {
       expect((await request("198.51.100.1")).statusCode).toBe(202);
       expect((await request("198.51.100.2")).statusCode).toBe(202);
       expect((await request("198.51.100.3")).statusCode).toBe(429);
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe("door app sign-in with an emailed code", () => {
+  let t: Awaited<ReturnType<typeof buildTestApp>>;
+
+  beforeAll(async () => {
+    t = await buildTestApp();
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  async function requestCode(email: string) {
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/sign-in-code",
+      payload: { email },
+    });
+    expect(res.statusCode).toBe(202);
+    const mail = t.sent.findLast((m) => m.to === email.toLowerCase())!;
+    return mail.text
+      .match(/\b(\d{3}) (\d{3})\b/)!
+      .slice(1)
+      .join("");
+  }
+
+  const verify = (email: string, code: string) =>
+    t.app.inject({ method: "POST", url: "/auth/verify-code", payload: { email, code } });
+
+  it("emails a six-digit code and exchanges it for a session", async () => {
+    const email = `door-${randomUUID()}@Example.com`;
+    const code = await requestCode(email);
+    const mail = t.sent.findLast((m) => m.to === email.toLowerCase())!;
+    expect(mail.subject).toContain(`${code.slice(0, 3)} ${code.slice(3)}`);
+    expect(mail.text).not.toContain("https://");
+
+    const res = await verify(email, `${code.slice(0, 3)} ${code.slice(3)}`);
+    expect(res.statusCode).toBe(200);
+    const me = await t.app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { authorization: `Bearer ${res.json().sessionToken}` },
+    });
+    expect(me.json().user.email).toBe(email.toLowerCase());
+  });
+
+  it("stores only a hash of the code", async () => {
+    const email = `door-hash-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const row = await t.prisma.magicLinkToken.findFirstOrThrow({ where: { email } });
+    expect(row.codeHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(row.codeHash).not.toBe(code);
+  });
+
+  it("works once", async () => {
+    const email = `door-once-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    expect((await verify(email, code)).statusCode).toBe(200);
+    expect((await verify(email, code)).statusCode).toBe(400);
+  });
+
+  it("only works for the address it was sent to", async () => {
+    const email = `door-own-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    expect((await verify(`someone-else-${randomUUID()}@example.com`, code)).statusCode).toBe(400);
+    expect((await verify(email, code)).statusCode).toBe(200);
+  });
+
+  it("rejects an expired code", async () => {
+    const email = `door-expired-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    await t.prisma.magicLinkToken.updateMany({
+      where: { email },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    expect((await verify(email, code)).statusCode).toBe(400);
+  });
+
+  it("stops accepting the right code after five wrong guesses", async () => {
+    const email = `door-guess-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const wrong = code === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 5; i++) expect((await verify(email, wrong)).statusCode).toBe(400);
+    expect((await verify(email, code)).statusCode).toBe(400);
+  });
+
+  it("counts a wrong guess against every open code, so asking again doesn't add guesses", async () => {
+    const email = `door-many-${randomUUID()}@example.com`;
+    const first = await requestCode(email);
+    const second = await requestCode(email);
+    const wrong = ["000000", "111111"].find((c) => c !== first && c !== second)!;
+    for (let i = 0; i < 5; i++) await verify(email, wrong);
+    expect((await verify(email, first)).statusCode).toBe(400);
+    expect((await verify(email, second)).statusCode).toBe(400);
+  });
+
+  it("carries wrong guesses over to a new code, so asking again doesn't reset them", async () => {
+    const email = `door-resend-${randomUUID()}@example.com`;
+    const first = await requestCode(email);
+    const wrong = first === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 4; i++) await verify(email, wrong);
+    const second = await requestCode(email);
+    // The new code could happen to be the guess used so far; pick a fifth that is neither code.
+    const fifth = ["000000", "111111", "222222"].find((c) => c !== first && c !== second)!;
+    expect((await verify(email, fifth)).statusCode).toBe(400);
+    expect((await verify(email, second)).statusCode).toBe(400);
+  });
+
+  it("won't send another code once five wrong guesses have used up the address's tries", async () => {
+    const email = `door-locked-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const wrong = code === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 5; i++) await verify(email, wrong);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/sign-in-code",
+      payload: { email },
+    });
+    expect(res.statusCode).toBe(429);
+  });
+
+  it("counts every guess in a burst and still locks the code after five", async () => {
+    const email = `door-race-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const wrong = code === "000000" ? "111111" : "000000";
+    const results = await Promise.all(Array.from({ length: 8 }, () => verify(email, wrong)));
+    expect(results.every((r) => r.statusCode === 400)).toBe(true);
+    const row = await t.prisma.magicLinkToken.findFirstOrThrow({ where: { email } });
+    expect(row.failedAttempts).toBe(5);
+    expect((await verify(email, code)).statusCode).toBe(400);
+  });
+
+  it("holds the per-email limit when requests arrive at once, across links and codes", async () => {
+    const email = `door-burst-${randomUUID()}@example.com`;
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        t.app.inject({
+          method: "POST",
+          url: i % 2 ? "/auth/sign-in-code" : "/auth/magic-link",
+          payload: { email },
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.statusCode === 202)).toHaveLength(5);
+    expect(await t.prisma.magicLinkToken.count({ where: { email } })).toBe(5);
+  });
+
+  it("stores a keyed hash of the code, so a leaked table can't be searched for it", async () => {
+    const email = `door-hmac-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const row = await t.prisma.magicLinkToken.findFirstOrThrow({ where: { email } });
+    expect(row.codeHash).not.toBe(createHash("sha256").update(code).digest("hex"));
+    expect(row.codeHash).not.toBe(createHash("sha256").update(`${email}:${code}`).digest("hex"));
+  });
+
+  it("shares the five-per-fifteen-minutes limit with sign-in links", async () => {
+    const email = `door-limit-${randomUUID()}@example.com`;
+    for (let i = 0; i < 3; i++) {
+      await t.app.inject({ method: "POST", url: "/auth/magic-link", payload: { email } });
+    }
+    await requestCode(email);
+    await requestCode(email);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/sign-in-code",
+      payload: { email },
+    });
+    expect(res.statusCode).toBe(429);
+  });
+
+  it("can't be redeemed as a sign-in link", async () => {
+    const email = `door-link-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/verify",
+      payload: { token: code.padEnd(20, "0") },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("door app sign-in setup", () => {
+  it("turns code sign-in off, rather than weakening it, when production has no code key", async () => {
+    const env = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    const t = await buildTestApp({ signInCodeKey: undefined });
+    try {
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/sign-in-code",
+        payload: { email: `no-key-${randomUUID()}@example.com` },
+      });
+      expect(res.statusCode).toBe(503);
+      expect(t.sent).toHaveLength(0);
+    } finally {
+      process.env.NODE_ENV = env;
+      await t.close();
+    }
+  });
+});
+
+describe("sign-in requests per IP across links and codes", () => {
+  it("counts link and code requests from one client against one allowance", async () => {
+    const t = await buildTestApp({ magicLinkPerIpPerMinute: 2 });
+    try {
+      const request = (url: string) =>
+        t.app.inject({
+          method: "POST",
+          url,
+          payload: { email: `ip-${randomUUID()}@example.com` },
+        });
+      expect((await request("/auth/magic-link")).statusCode).toBe(202);
+      expect((await request("/auth/sign-in-code")).statusCode).toBe(202);
+      expect((await request("/auth/sign-in-code")).statusCode).toBe(429);
+      expect((await request("/auth/magic-link")).statusCode).toBe(429);
     } finally {
       await t.close();
     }

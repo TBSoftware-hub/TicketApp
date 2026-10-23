@@ -61,6 +61,11 @@ once more to get a live account. Nothing needs clearing by hand.
 3. Every push to `main` redeploys. Migrations run when the service starts.
 4. Check `https://<service>.onrender.com/health` returns `{"status":"ok"}`.
 
+`SIGN_IN_CODE_KEY` is a random secret Render generates for hashing the door app's sign-in codes.
+If the service was created before it was added to `render.yaml`, add it under **Environment**
+with any long random value (for example from `openssl rand -base64 32`). Until it's set, the
+door app can't sign in; the dashboard is unaffected.
+
 `TRUSTED_PROXY_HOPS=1` makes the API take the client IP from the address Render's load
 balancer appends to `X-Forwarded-For`, so forged entries can't dodge the per-IP rate limit.
 

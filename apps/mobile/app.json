@@ -21,7 +21,13 @@
       "package": "com.tbsoftware.ticketapp"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "output": "single"
+    },
+    "scheme": "ticketapp",
+    "plugins": ["expo-router", "expo-secure-store"],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }

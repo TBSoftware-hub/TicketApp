@@ -32,7 +32,10 @@ In development the API writes sign-in emails to its log instead of sending them,
 link from there.
 
 Run one app with a filter, for example `pnpm --filter @ticketapp/api dev`. For the mobile app,
-`pnpm --filter @ticketapp/mobile start` and scan the QR code with Expo Go.
+`pnpm --filter @ticketapp/mobile start` and scan the QR code with Expo Go. A phone can't reach
+`localhost`, so point the app at your computer's address, for example
+`EXPO_PUBLIC_API_URL=http://192.168.1.20:4000 pnpm --filter @ticketapp/mobile start`. The door app
+signs in with a six-digit code, which the API also writes to its log.
 
 ## Checks
 

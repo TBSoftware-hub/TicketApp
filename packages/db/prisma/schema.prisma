@@ -81,14 +81,18 @@ model User {
 
 /// One-time sign-in link. Only the SHA-256 of the token is stored.
 model MagicLinkToken {
-  id         String    @id @default(uuid(7)) @db.Uuid
-  email      String
+  id             String    @id @default(uuid(7)) @db.Uuid
+  email          String
   /// Display name supplied at sign-up; used if no user exists yet for this email.
-  name       String?
-  tokenHash  String    @unique
-  expiresAt  DateTime
-  consumedAt DateTime?
-  createdAt  DateTime  @default(now())
+  name           String?
+  tokenHash      String    @unique
+  /// SHA-256 of the six-digit code the door app signs in with; null for emailed links.
+  codeHash       String?
+  /// Wrong codes entered against this row; the code stops working at the limit.
+  failedAttempts Int       @default(0)
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime  @default(now())
 
   @@index([email, createdAt])
 }

@@ -29,6 +29,7 @@ export async function buildTestApp(
     {
       prisma,
       webBaseUrl: "https://dashboard.test",
+      signInCodeKey: "test-sign-in-code-key",
       mailer: {
         send: async (m) => {
           if (mailFailures.to.has(m.to)) throw new Error("Mail provider rejected the address");
