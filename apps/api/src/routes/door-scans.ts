@@ -30,7 +30,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
   app.post("/orgs/:orgId/events/:eventId/scans", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     const { user } = await requireOrgPermission(prisma, request, orgId, "checkin.scan");
-    const { code } = parse(doorScanSchema, request.body);
+    const { scanKey, code } = parse(doorScanSchema, request.body);
     const event = await prisma.event.findFirst({
       where: { id: eventId, organizationId: orgId },
       select: { status: true, endsAt: true },
@@ -49,7 +49,16 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         outcome: "ADMITTED" | "ALREADY_INSIDE" | "INVALID_TICKET",
       ) =>
         tx.scanEvent.create({
-          data: { eventId, ticketId, direction: "IN", outcome, staffUserId: user.id, scannedAt },
+          data: {
+            eventId,
+            ticketId,
+            direction: "IN",
+            outcome,
+            staffUserId: user.id,
+            scannedAt,
+            // Only an admission is ever replayed, so only an admission keeps its key.
+            scanKey: outcome === "ADMITTED" ? scanKey : null,
+          },
         });
 
       // Shares the order's lock with other scans but waits on a cancel or transfer, which take it
@@ -97,6 +106,23 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
       });
       if (count === 1) {
         await record(ticket.id, "ADMITTED");
+        return { outcome: "admitted", ticket: details };
+      }
+      // A retry of the scan that let them in, sent because its answer was lost, gets that answer
+      // again: staff never saw the green, so "already checked in" would send the holder away.
+      // A retry racing its original waits on the row above, so it finds the admission here too.
+      const earlier = await tx.scanEvent.findUnique({
+        where: { scanKey },
+        select: { eventId: true, ticketId: true, staffUserId: true },
+      });
+      if (earlier) {
+        if (
+          earlier.ticketId !== ticket.id ||
+          earlier.eventId !== eventId.toLowerCase() ||
+          earlier.staffUserId !== user.id
+        ) {
+          throw new HttpError(409, "That scan was already recorded for another ticket");
+        }
         return { outcome: "admitted", ticket: details };
       }
       const admitted = await tx.scanEvent.findFirst({

@@ -58,8 +58,13 @@ describe("door scanner", () => {
       const { code } = await t.prisma.ticket.findUniqueOrThrow({ where: { id: tickets[0]!.id } });
       return { orderId, ticketId: tickets[0]!.id, code };
     };
-    const scan = (code: string, headers = owner.headers, base = prom.base) =>
-      t.app.inject({ method: "POST", url: `${base}/scans`, headers, payload: { code } });
+    const scan = (
+      code: string,
+      headers = owner.headers,
+      base = prom.base,
+      scanKey: string = randomUUID(),
+    ) =>
+      t.app.inject({ method: "POST", url: `${base}/scans`, headers, payload: { scanKey, code } });
 
     return { owner, orgId, call, newEvent, prom, comp, scan };
   }
@@ -224,7 +229,7 @@ describe("door scanner", () => {
     const signedOut = await t.app.inject({
       method: "POST",
       url: `${p.prom.base}/scans`,
-      payload: { code },
+      payload: { scanKey: randomUUID(), code },
     });
     expect(signedOut.statusCode).toBe(401);
   });
@@ -272,6 +277,69 @@ describe("door scanner", () => {
       p.prom.base.toUpperCase().replace("/ORGS/", "/orgs/").replace("/EVENTS/", "/events/"),
     );
     expect(res.json().outcome).toBe("admitted");
+  });
+
+  it("answers a retried admission the same way when its first answer was lost", async () => {
+    const p = await party();
+    const { ticketId, code } = await p.comp("Quin");
+    const scanKey = randomUUID();
+    const admitted = {
+      outcome: "admitted",
+      ticket: { attendeeName: "Quin Lee", ticketTypeName: "Guest" },
+    };
+    expect((await p.scan(code, p.owner.headers, p.prom.base, scanKey)).json()).toEqual(admitted);
+    expect((await p.scan(code, p.owner.headers, p.prom.base, scanKey)).json()).toEqual(admitted);
+    // The retry adds nothing to the record; a genuinely new scan is still turned away.
+    const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
+    expect(scans).toMatchObject([{ outcome: "ADMITTED", scanKey }]);
+    expect((await p.scan(code)).json().outcome).toBe("already_inside");
+  });
+
+  it("answers a retry racing its original as admitted too", async () => {
+    const p = await party();
+    const { code } = await p.comp("Rae");
+    const scanKey = randomUUID();
+    const results = await Promise.all([
+      p.scan(code, p.owner.headers, p.prom.base, scanKey),
+      p.scan(code, p.owner.headers, p.prom.base, scanKey),
+    ]);
+    expect(results.map((r) => r.json().outcome)).toEqual(["admitted", "admitted"]);
+  });
+
+  it("won't replay another ticket's or another staff member's admission", async () => {
+    const p = await party();
+    const first = await p.comp("Sol");
+    const second = await p.comp("Tam");
+    const scanKey = randomUUID();
+    await p.scan(first.code, p.owner.headers, p.prom.base, scanKey);
+    await p.scan(second.code);
+    const reused = await p.scan(second.code, p.owner.headers, p.prom.base, scanKey);
+    expect(reused.statusCode).toBe(409);
+
+    const door = await t.signIn();
+    await t.prisma.membership.create({
+      data: { userId: door.userId, organizationId: p.orgId, role: "DOOR_STAFF" },
+    });
+    const other = await p.scan(first.code, door.headers, p.prom.base, scanKey);
+    expect(other.statusCode).toBe(409);
+  });
+
+  it("turns away a long QR code that isn't a ticket, rather than rejecting the scan", async () => {
+    const p = await party();
+    const vcard = `BEGIN:VCARD\nNOTE:${"x".repeat(1000)}\nEND:VCARD`;
+    expect((await p.scan(vcard)).json()).toEqual({ outcome: "invalid_ticket", reason: "unknown" });
+  });
+
+  it("needs a scan key, so retries can be told apart from new scans", async () => {
+    const p = await party();
+    const { code } = await p.comp("Uma");
+    const res = await t.app.inject({
+      method: "POST",
+      url: `${p.prom.base}/scans`,
+      headers: p.owner.headers,
+      payload: { code },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("rejects an empty scan", async () => {

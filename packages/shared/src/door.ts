@@ -46,8 +46,11 @@ export function formatDoorEventTime(
 
 /** What the door app sends when it reads a ticket's QR code. */
 export const doorScanSchema = z.object({
-  // Scanners can pick up stray whitespace; real codes are short, so anything long isn't one.
-  code: z.string().trim().min(1, "Scan a ticket's QR code").max(200, "That isn't a ticket code"),
+  /** Made by the app once per scan and sent again on a retry, so a retry can't double-count. */
+  scanKey: z.uuid(),
+  // Scanners can pick up stray whitespace. Any QR code at all may be held up, such as a long
+  // web address or contact card, and is answered as not a ticket, so the limit is generous.
+  code: z.string().trim().min(1, "Scan a ticket's QR code").max(4096, "That isn't a ticket code"),
 });
 export type DoorScan = z.infer<typeof doorScanSchema>;
 

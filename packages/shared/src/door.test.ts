@@ -140,7 +140,13 @@ describe("describeScan", () => {
 
 describe("doorScanSchema", () => {
   it("trims the scanned code and turns away an empty one", () => {
-    expect(doorScanSchema.parse({ code: " abc\n" })).toEqual({ code: "abc" });
-    expect(doorScanSchema.safeParse({ code: "  " }).success).toBe(false);
+    const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
+    expect(doorScanSchema.parse({ scanKey, code: " abc\n" })).toEqual({ scanKey, code: "abc" });
+    expect(doorScanSchema.safeParse({ scanKey, code: "  " }).success).toBe(false);
+  });
+
+  it("lets a long QR code through, to be answered as not a ticket", () => {
+    const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
+    expect(doorScanSchema.safeParse({ scanKey, code: "x".repeat(1000) }).success).toBe(true);
   });
 });

@@ -600,6 +600,9 @@ model ScanEvent {
   staffUserId    String?        @db.Uuid
   staffUser      User?          @relation(fields: [staffUserId], references: [id], onDelete: SetNull)
   deviceId       String?
+  /// Made by the door app once per scan and sent again on a retry, so an admission whose answer
+  /// was lost is replayed rather than reported as already used. Kept on admissions only.
+  scanKey        String?        @unique @db.Uuid
   /// When the scan happened on the device; differs from createdAt for offline scans.
   scannedAt      DateTime
   createdAt      DateTime       @default(now())

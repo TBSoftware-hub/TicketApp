@@ -5,6 +5,7 @@ import {
   type ScanDisplay,
 } from "@ticketapp/shared";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import * as Crypto from "expo-crypto";
 import * as Haptics from "expo-haptics";
 import * as Linking from "expo-linking";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -19,7 +20,13 @@ const ADMITTED_SHOWN_MS = 2500;
 /** The camera is usually still on the code just answered; ignore it for this long afterwards. */
 const SAME_CODE_IGNORED_MS = 5000;
 
-type Shown = { code: string; display: ScanDisplay } | { code: string; error: string };
+/** What was scanned: the code, and the key a retry of the same scan sends again. */
+interface Scan {
+  code: string;
+  key: string;
+}
+
+type Shown = (Scan & { display: ScanDisplay }) | (Scan & { error: string });
 
 const HAPTIC: Record<ScanDisplay["tone"], Haptics.NotificationFeedbackType> = {
   go: Haptics.NotificationFeedbackType.Success,
@@ -57,14 +64,14 @@ export function Scanner({ event }: { event: DoorEvent }) {
   }, [getPermission]);
 
   const check = useCallback(
-    (code: string) => {
+    ({ code, key }: Scan) => {
       if (inFlight.current) return;
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
       call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
         method: "POST",
-        body: { code },
+        body: { scanKey: key, code },
       })
         .then((res) => {
           if (!mounted.current) return;
@@ -72,12 +79,12 @@ export function Scanner({ event }: { event: DoorEvent }) {
             doorScanResultSchema.parse(res),
             event.organization.timezone,
           );
-          setShown({ code, display });
+          setShown({ code, key, display });
           void Haptics.notificationAsync(HAPTIC[display.tone]).catch(() => undefined);
         })
         .catch((err: unknown) => {
           if (!mounted.current) return;
-          setShown({ code, error: err instanceof ApiError ? err.message : UNREACHABLE });
+          setShown({ code, key, error: err instanceof ApiError ? err.message : UNREACHABLE });
           void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
             () => undefined,
           );
@@ -96,7 +103,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
       if (locked.current || !code) return;
       const last = lastCode.current;
       if (last && last.code === code && Date.now() < last.until) return;
-      check(code);
+      check({ code, key: Crypto.randomUUID() });
     },
     [check],
   );
@@ -143,7 +150,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
           enableTorch={torch}
         />
         {shown ? (
-          <Result shown={shown} busy={busy} onNext={next} onRetry={() => check(shown.code)} />
+          <Result shown={shown} busy={busy} onNext={next} onRetry={() => check(shown)} />
         ) : (
           <View style={styles.hint} pointerEvents="none">
             <Text style={styles.hintText}>
@@ -186,6 +193,23 @@ function Result({
       // Tapping anywhere on a result moves on; after a failed check it tries the same code again.
       onPress={failed ? onRetry : onNext}
       disabled={busy}
+      // Screen readers treat the whole result as one element, so Skip is offered as an action on it.
+      accessibilityActions={
+        busy
+          ? []
+          : failed
+            ? [
+                { name: "activate", label: "Try again" },
+                { name: "skip", label: "Skip" },
+              ]
+            : [{ name: "activate", label: "Scan next" }]
+      }
+      onAccessibilityAction={({ nativeEvent }) => {
+        if (busy) return;
+        if (nativeEvent.actionName === "skip") onNext();
+        else if (failed) onRetry();
+        else onNext();
+      }}
       style={[StyleSheet.absoluteFill, styles.result, { backgroundColor: colors[tone] }]}
     >
       <Text style={styles.resultTitle}>{title}</Text>
