@@ -119,7 +119,6 @@ export default function SignIn() {
                   keyboardType="number-pad"
                   autoComplete="one-time-code"
                   textContentType="oneTimeCode"
-                  maxLength={7}
                   autoFocus
                   accessibilityLabel="Six-digit code"
                 />

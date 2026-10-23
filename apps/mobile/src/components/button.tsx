@@ -17,6 +17,8 @@ export function Button({ label, onPress, variant = "primary", busy, disabled }: 
   return (
     <Pressable
       accessibilityRole="button"
+      // The spinner replaces the label while busy; keep the button's name for screen readers.
+      accessibilityLabel={label}
       accessibilityState={{ disabled: inactive, busy }}
       disabled={inactive}
       onPress={onPress}

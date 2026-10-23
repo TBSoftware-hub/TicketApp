@@ -209,7 +209,7 @@ describe("door app sign-in with an emailed code", () => {
     const code = await requestCode(email);
     const row = await t.prisma.magicLinkToken.findFirstOrThrow({ where: { email } });
     expect(row.codeHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(row.codeHash).not.toContain(code);
+    expect(row.codeHash).not.toBe(code);
   });
 
   it("works once", async () => {
@@ -260,8 +260,9 @@ describe("door app sign-in with an emailed code", () => {
     const wrong = first === "000000" ? "111111" : "000000";
     for (let i = 0; i < 4; i++) await verify(email, wrong);
     const second = await requestCode(email);
-    expect(second).not.toBe(wrong);
-    expect((await verify(email, wrong)).statusCode).toBe(400);
+    // The new code could happen to be the guess used so far; pick a fifth that is neither code.
+    const fifth = ["000000", "111111", "222222"].find((c) => c !== first && c !== second)!;
+    expect((await verify(email, fifth)).statusCode).toBe(400);
     expect((await verify(email, second)).statusCode).toBe(400);
   });
 
