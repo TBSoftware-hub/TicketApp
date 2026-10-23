@@ -4,6 +4,7 @@ import {
   doorScanSchema,
   SCAN_OVERRIDES,
   type DoorEvent,
+  type DoorListTicket,
   type ScanDirection,
   type ScanDisplay,
   type ScanOverride,
@@ -34,7 +35,17 @@ const QUEUE_UNREADABLE =
 /** How long a check may take before staff are offered Try again or Skip. */
 const SCAN_TIMEOUT_MS = 10_000;
 
-type Scan = DoorScanRequest;
+/**
+ * A scan as staff made it. `sent` is set once it has been sent to TicketApp, with its ticket as the
+ * saved list had it then, kept through Try again: if the answer is lost, that's what the saved
+ * list answers from, not a list downloaded since that may already show what the scan did.
+ */
+type Scan = DoorScanRequest & { sent?: { before: DoorListTicket | null } };
+
+/** Whether a failed call may never have been answered, so the saved list answers instead. */
+function unanswered(err: unknown) {
+  return err instanceof ApiError && (err.status === 0 || err.status >= 500);
+}
 
 /** What staff tap to let someone in past each answer. */
 const OVERRIDE_LABEL: Record<ScanOverride, string> = {
@@ -103,7 +114,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
       if (inFlight.current) return;
       // Timed from when staff scanned it, not from when a slow connection gave up, and kept for a
       // retry of the same scan.
-      const scan = { ...sent, at: sent.at ?? Date.now() };
+      let scan: Scan = { ...sent, at: sent.at ?? Date.now() };
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
@@ -123,21 +134,29 @@ export function Scanner({ event }: { event: DoorEvent }) {
       };
       void (async () => {
         const offline = doorRef.current;
-        // As the saved list had them before this scan was sent, in case its answer is lost.
-        let before: Awaited<ReturnType<typeof offline.before>> = null;
+        const { code, ticketId, direction, key, override, overrideReason, at } = scan;
+        const request: DoorScanRequest = {
+          code,
+          ticketId,
+          direction,
+          key,
+          override,
+          overrideReason,
+          at,
+        };
         try {
           // Scans saved offline before the app last stopped go first, so they're read back first.
           if (!(await offline.ready())) return fail(QUEUE_UNREADABLE);
           // Offline, or still sending scans saved offline, the saved list answers straight away:
           // waiting on a dead connection for each person would back up the line.
           if (offline.isOffline()) {
-            const display = await offline.answer(scan);
+            const display = await offline.answer(request, scan.sent?.before);
             if (display) return show(display);
             // Sent now, this scan could reach TicketApp ahead of the earlier ones it follows.
             if (offline.hasPending()) return fail(PENDING_NO_LIST);
           }
-          const { code, ticketId, direction, key, override, overrideReason } = scan;
-          before = await offline.before(scan);
+          // As the saved list had them before this scan was first sent, in case its answer is lost.
+          if (!scan.sent) scan = { ...scan, sent: { before: await offline.before(request) } };
           const result = doorScanResultSchema.parse(
             await call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
               method: "POST",
@@ -147,15 +166,15 @@ export function Scanner({ event }: { event: DoorEvent }) {
               timeoutMs: SCAN_TIMEOUT_MS,
             }),
           );
-          void offline.answered(scan, result);
+          void offline.answered(request, result);
           show(describeScan(result, event.organization.timezone));
         } catch (err) {
           // A screen closed meanwhile can't show the answer, so it mustn't let anyone in or out.
-          if (err instanceof ApiError && err.status === 0 && mounted.current) {
-            // The scan may have reached TicketApp before the connection went: one saved here goes
-            // with the same key, so it can't count twice.
+          if (unanswered(err) && mounted.current) {
+            // The scan may have reached TicketApp before the connection or the server went: one
+            // saved here goes with the same key, so it can't count twice.
             offline.unreachable();
-            const display = await offline.answer(scan, before).catch(() => null);
+            const display = await offline.answer(request, scan.sent?.before).catch(() => null);
             if (display) return show(display);
           }
           // TicketApp won't let this account work the event, or it can't be worked any more: its

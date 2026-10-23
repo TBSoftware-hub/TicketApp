@@ -82,7 +82,8 @@ export function Lookup({
           // saved list mustn't answer for it either, whatever name is typed now.
           if (err instanceof ApiError && [403, 404, 409].includes(err.status)) refused(event.id);
           if (!current) return;
-          if (err instanceof ApiError && err.status === 0) {
+          // No answer, or TicketApp is down for now: the saved list answers instead.
+          if (err instanceof ApiError && (err.status === 0 || err.status >= 500)) {
             unreachable();
             const saved = search(q);
             if (saved) return setFound({ q, result: saved, offline: true });

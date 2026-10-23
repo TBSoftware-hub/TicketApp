@@ -128,7 +128,9 @@ interface OfflineContext {
   /**
    * Answers a scan from the saved list, or null with no list to answer from. `before` is the
    * ticket as it was when the scan was sent to TicketApp and lost: a list downloaded meanwhile may
-   * already show what that scan did, which mustn't then turn staff away.
+   * already show what that scan did, which mustn't then turn staff away. Null when it wasn't on
+   * the list then, so nothing here can say what that scan did: it's left for staff to try again,
+   * which sends it with the same key.
    */
   answer: (scan: DoorScanRequest, before?: DoorListTicket | null) => Promise<ScanDisplay | null>;
   /** Keeps the saved list in step with an answer TicketApp gave. */
@@ -231,6 +233,21 @@ function changeQueue(change: (saved: Saved) => Saved): Promise<void> {
   return done;
 }
 
+/** The list with one ticket changed: `next` gives it after, or null to take it off. */
+function changeTicket(
+  list: SavedList,
+  ticketId: string,
+  next: (ticket: DoorListTicket) => DoorListTicket | null,
+): SavedList {
+  const index = list.tickets.findIndex((t) => t.ticketId === ticketId);
+  if (index < 0) return list;
+  const tickets = [...list.tickets];
+  const after = next(tickets[index]!);
+  if (after) tickets[index] = after;
+  else tickets.splice(index, 1);
+  return { ...list, tickets };
+}
+
 /** A saved list with the moves still waiting to be sent for its event applied. */
 function withQueued(list: SavedList): SavedList {
   const movements = queue.saved.scans
@@ -259,10 +276,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   // Counts lists dropped here, so a download started before one is thrown away.
   const drops = useRef(0);
   // While the list downloads, the changes made to the old one, to make again to the new one.
-  const edits = useRef<
-    | { eventId: string; ticketId: string; next: (t: DoorListTicket) => DoorListTicket | null }[]
-    | null
-  >(null);
+  const edits = useRef<{ eventId: string; change: (l: SavedList) => SavedList }[] | null>(null);
   // False once signed out: a download that lands after that mustn't save everyone's names again.
   const mounted = useRef(true);
   useEffect(() => {
@@ -339,30 +353,45 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   }, []);
 
   /**
-   * Updates one ticket on the saved list as it is now, which may have changed since the caller
-   * last looked: `next` gives the ticket after, or null to take it off the list.
+   * Changes an event's saved list as it is now, which may have changed since the caller last
+   * looked; and the list being downloaded too, once it lands.
    */
-  const updateTicket = useCallback(
-    (
-      eventId: string,
-      ticketId: string,
-      next: (ticket: DoorListTicket) => DoorListTicket | null,
-    ) => {
-      edits.current?.push({ eventId, ticketId, next });
+  const updateList = useCallback(
+    (eventId: string, change: (l: SavedList) => SavedList) => {
+      edits.current?.push({ eventId, change });
       const current = list.current;
-      const index =
-        current?.eventId === eventId
-          ? current.tickets.findIndex((t) => t.ticketId === ticketId)
-          : -1;
-      if (!current || index < 0) return;
-      const tickets = [...current.tickets];
-      const after = next(tickets[index]!);
-      if (after) tickets[index] = after;
-      else tickets.splice(index, 1);
-      list.current = { ...current, tickets };
+      if (current?.eventId !== eventId) return;
+      list.current = change(current);
       saveList();
     },
     [saveList],
+  );
+
+  /** Updates one ticket on the saved list: `next` gives it after, or null to take it off. */
+  const updateTicket = useCallback(
+    (eventId: string, ticketId: string, next: (ticket: DoorListTicket) => DoorListTicket | null) =>
+      updateList(eventId, (l) => changeTicket(l, ticketId, next)),
+    [updateList],
+  );
+
+  /**
+   * Takes the event's re-entry rule from an answer that gives it, so the saved list keeps up
+   * with re-entry turned off, or on, since it was downloaded.
+   */
+  const learnPolicy = useCallback(
+    (eventId: string, result: DoorScanResult) => {
+      const reentryAllowed =
+        result.outcome === "checked_out"
+          ? result.reentryAllowed
+          : result.outcome === "reentry_denied"
+            ? false
+            : null;
+      if (reentryAllowed === null) return;
+      updateList(eventId, (l) =>
+        l.reentryAllowed === reentryAllowed ? l : { ...l, reentryAllowed },
+      );
+    },
+    [updateList],
   );
 
   const sync = useCallback(async () => {
@@ -405,6 +434,8 @@ export function OfflineProvider({ children }: PropsWithChildren) {
             else {
               const result = parsed.data;
               if (result.outcome !== outcome) answer = describeScan(result, timeZone).title;
+              // The event's re-entry rule is the same whatever comes after.
+              learnPolicy(eventId, result);
               // The list takes TicketApp's word for it, unless a later saved scan of the same
               // ticket, by code or by name, is still to go, whose answer will be the newer one.
               const later = queue.saved.scans.some(
@@ -493,14 +524,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
           savedAt: Date.now(),
         });
         for (const edit of made) {
-          if (edit.eventId !== current.id) continue;
-          const index = fresh.tickets.findIndex((t) => t.ticketId === edit.ticketId);
-          if (index < 0) continue;
-          const tickets = [...fresh.tickets];
-          const after = edit.next(tickets[index]!);
-          if (after) tickets[index] = after;
-          else tickets.splice(index, 1);
-          fresh = { ...fresh, tickets };
+          if (edit.eventId === current.id) fresh = edit.change(fresh);
         }
         list.current = fresh;
         saveList();
@@ -516,7 +540,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     } finally {
       queue.syncing = false;
     }
-  }, [load, updateTicket, dropList, saveList, setReachable, rerender]);
+  }, [load, updateTicket, learnPolicy, dropList, saveList, setReachable, rerender]);
 
   // Saved scans are sent whatever event is picked, or none: they may be for one that has ended.
   const eventId = event?.id;
@@ -533,7 +557,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       if (!(await load())) return null;
       const current = eventRef.current;
       const found = current && (await find(scan));
-      if (!current || !found) return null;
+      if (!current || !found || before === null) return null;
       const time = (d: Date) =>
         d.toLocaleTimeString("en-US", {
           timeZone: current.organization.timezone,
@@ -607,11 +631,13 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     async (scan: DoorScanRequest, result: DoorScanResult) => {
       setReachable(true);
       const found = await find(scan);
-      const ticket = found?.current.tickets[found.index];
-      if (!found || !ticket) return;
+      if (!found) return;
+      learnPolicy(found.current.eventId, result);
+      const ticket = found.current.tickets[found.index];
+      if (!ticket) return;
       updateTicket(found.current.eventId, ticket.ticketId, (t) => afterScan(t, result, new Date()));
     },
-    [find, updateTicket, setReachable],
+    [find, updateTicket, learnPolicy, setReachable],
   );
 
   const unreachable = useCallback(() => setReachable(false), [setReachable]);

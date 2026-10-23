@@ -1128,6 +1128,25 @@ describe("door scanner", () => {
       expect(scans[0]!.scannedAt.getTime()).toBeGreaterThan(offlineAt.getTime());
     });
 
+    it("gives a retried offline scan that didn't move them its first answer, and leaves them be", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      const offlineAt = new Date(Date.now() - 10 * 60_000).toISOString();
+      const scanKey = randomUUID();
+      // A check-out saved offline reaches TicketApp when they aren't inside.
+      const first = await p.send(code, { scanKey, offlineAt, direction: "out" });
+      expect(first.json()).toMatchObject({ outcome: "not_inside" });
+      // Its answer is lost, they come in, and the device sends the check-out again.
+      await p.scan(code);
+      const again = await p.send(code, { scanKey, offlineAt, direction: "out" });
+      expect(again.json()).toEqual(first.json());
+      const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+      expect(ticket.isInside).toBe(true);
+      expect(await t.prisma.scanEvent.count({ where: { ticketId, outcome: "CHECKED_OUT" } })).toBe(
+        0,
+      );
+    });
+
     it("takes a scan made before the event ended, even sent after it", async () => {
       const p = await party();
       const { code } = await p.comp("Ann");

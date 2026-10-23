@@ -607,12 +607,16 @@ model ScanEvent {
   staffUser      User?          @relation(fields: [staffUserId], references: [id], onDelete: SetNull)
   deviceId       String?
   /// Made by the door app once per scan and sent again on a retry, so an admission whose answer
-  /// was lost is replayed rather than reported as already used. Kept on admissions only.
+  /// was lost is replayed rather than reported as already used. Kept on admissions only, and on
+  /// every answer to a scan saved offline.
   scanKey        String?        @unique @db.Uuid
   /// When the API recorded the scan, which is the order scans of a ticket happened in.
   scannedAt      DateTime
   /// When the door device made the scan, for one it saved while offline and sent later.
   offlineAt      DateTime?
+  /// The answer given to a scan saved offline that didn't move them, sent again to a retry: the
+  /// device keeps sending it until it hears back, and it mustn't move them later on.
+  offlineAnswer  Json?
   createdAt      DateTime       @default(now())
   notifications  Notification[]
 
