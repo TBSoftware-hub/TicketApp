@@ -8,7 +8,7 @@ import { StaffBar } from "@/components/staff-bar";
 import { useSession } from "@/lib/session";
 import { ui } from "@/lib/theme";
 
-/** Home screen for the chosen event: the scanner, for check-in and check-out, and later lookup. */
+/** Home screen for the chosen event: the scanner, for check-in and check-out, and lookup by name. */
 export default function Door() {
   const { event, call, chooseEvent } = useSession();
   const [checking, setChecking] = useState(true);
@@ -50,7 +50,7 @@ export default function Door() {
 
   return (
     <SafeAreaView style={ui.screen}>
-      {/* Letting someone in anyway asks for a reason, so the keyboard can come up over the scanner. */}
+      {/* Looking someone up, or letting them in anyway, brings the keyboard up over the scanner. */}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}

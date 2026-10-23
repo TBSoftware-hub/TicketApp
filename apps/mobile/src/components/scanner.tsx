@@ -15,6 +15,7 @@ import * as Linking from "expo-linking";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button } from "@/components/button";
+import { Lookup } from "@/components/lookup";
 import { ApiError, UNREACHABLE } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { colors, ui } from "@/lib/theme";
@@ -27,11 +28,13 @@ const SAME_CODE_IGNORED_MS = 5000;
 const SCAN_TIMEOUT_MS = 10_000;
 
 /**
- * What was scanned: the code, which way it takes them, the key a retry of the same scan sends
- * again, and, when staff let them in past an answer, which answer and why.
+ * What was scanned: the code, or the ticket staff picked after looking someone up by name, which
+ * way it takes them, the key a retry of the same scan sends again, and, when staff let them in
+ * past an answer, which answer and why.
  */
 interface Scan {
-  code: string;
+  code?: string;
+  ticketId?: string;
   direction: ScanDirection;
   key: string;
   override?: ScanOverride;
@@ -64,10 +67,13 @@ export function Scanner({ event }: { event: DoorEvent }) {
   directionRef.current = direction;
   // Set while staff give a reason for letting someone in past a waiver or re-entry answer.
   const [overriding, setOverriding] = useState<{
-    code: string;
+    code?: string;
+    ticketId?: string;
     name: string;
     kind: ScanOverride;
   } | null>(null);
+  // Set while staff look someone up by name, for a guest who can't show their QR code.
+  const [lookingUp, setLookingUp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [torch, setTorch] = useState(false);
   const [width, setWidth] = useState(0);
@@ -95,14 +101,14 @@ export function Scanner({ event }: { event: DoorEvent }) {
 
   const check = useCallback(
     (scan: Scan) => {
-      const { code, direction, key, override, overrideReason } = scan;
+      const { code, ticketId, direction, key, override, overrideReason } = scan;
       if (inFlight.current) return;
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
       call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
         method: "POST",
-        body: { scanKey: key, code, direction, override, overrideReason },
+        body: { scanKey: key, code, ticketId, direction, override, overrideReason },
         // A stalled network shows Try again, which resends the same key, rather than hanging.
         timeoutMs: SCAN_TIMEOUT_MS,
       })
@@ -157,24 +163,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
     return () => clearTimeout(timer);
   }, [shown, next]);
 
-  if (!permission) return null;
-  if (!permission.granted) {
-    return (
-      <View style={[ui.card, { gap: 12 }]}>
-        <Text style={ui.heading}>Scan tickets with the camera</Text>
-        <Text style={ui.muted}>
-          {permission.canAskAgain
-            ? "TicketApp needs the camera to read the QR codes on tickets."
-            : "Camera access is off for TicketApp. Turn it on in Settings to scan tickets."}
-        </Text>
-        {permission.canAskAgain ? (
-          <Button label="Allow camera" onPress={() => void requestPermission()} />
-        ) : (
-          <Button label="Open Settings" onPress={() => void Linking.openSettings()} />
-        )}
-      </View>
-    );
-  }
+  // Looking people up by name doesn't need the camera, so only the camera waits on permission.
+  const cameraOn = !!permission?.granted;
 
   return (
     <View style={{ gap: 12 }}>
@@ -196,14 +186,19 @@ export function Scanner({ event }: { event: DoorEvent }) {
         ))}
       </View>
       {/* Square while scanning; a result taller than that (large text, a long name) grows it. */}
-      <View style={styles.frame} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-        <CameraView
-          style={StyleSheet.absoluteFill}
-          facing="back"
-          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-          onBarcodeScanned={shown || overriding || busy ? undefined : scanned}
-          enableTorch={torch}
-        />
+      <View
+        style={[styles.frame, !cameraOn && styles.frameOff]}
+        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+      >
+        {cameraOn && (
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+            onBarcodeScanned={shown || overriding || lookingUp || busy ? undefined : scanned}
+            enableTorch={torch}
+          />
+        )}
         {overriding ? (
           <Override
             name={overriding.name}
@@ -215,6 +210,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
             onSubmit={(reason) =>
               check({
                 code: overriding.code,
+                ticketId: overriding.ticketId,
                 direction: "in",
                 key: Crypto.randomUUID(),
                 override: overriding.kind,
@@ -234,11 +230,41 @@ export function Scanner({ event }: { event: DoorEvent }) {
               setShown(null);
               setOverriding({
                 code: shown.code,
+                ticketId: shown.ticketId,
                 name: shown.display.lines[0] ?? "",
                 kind: shown.display.override,
               });
             }}
           />
+        ) : lookingUp ? (
+          <Lookup
+            event={event}
+            direction={direction}
+            minHeight={width}
+            onCancel={() => setLookingUp(false)}
+            // Their answer shows just as a scan's would, and the camera comes back after it.
+            onPick={(ticket) => {
+              setLookingUp(false);
+              check({ ticketId: ticket.ticketId, direction, key: Crypto.randomUUID() });
+            }}
+          />
+        ) : !cameraOn ? (
+          // Still asking the device whether the camera is allowed, when there's no permission yet.
+          permission && (
+            <View style={styles.cameraOff}>
+              <Text style={ui.heading}>Scan tickets with the camera</Text>
+              <Text style={ui.muted}>
+                {permission.canAskAgain
+                  ? "TicketApp needs the camera to read the QR codes on tickets. You can still look people up by name."
+                  : "Camera access is off for TicketApp. Turn it on in Settings to scan tickets, or look people up by name."}
+              </Text>
+              {permission.canAskAgain ? (
+                <Button label="Allow camera" onPress={() => void requestPermission()} />
+              ) : (
+                <Button label="Open Settings" onPress={() => void Linking.openSettings()} />
+              )}
+            </View>
+          )
         ) : (
           <View style={styles.square}>
             <View style={[styles.hint, direction === "out" && styles.hintOut]} pointerEvents="none">
@@ -253,7 +279,15 @@ export function Scanner({ event }: { event: DoorEvent }) {
           </View>
         )}
       </View>
-      {Platform.OS !== "web" && (
+      {!lookingUp && !shown && !overriding && (
+        <Button
+          label="Look up by name"
+          variant="secondary"
+          disabled={busy}
+          onPress={() => setLookingUp(true)}
+        />
+      )}
+      {Platform.OS !== "web" && cameraOn && !lookingUp && (
         <Button
           label={torch ? "Turn off light" : "Turn on light"}
           variant="secondary"
@@ -429,6 +463,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "#000",
   },
+  // Without the camera there's nothing to frame, so it reads as a card like the rest of the screen.
+  frameOff: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
+  cameraOff: { padding: 16, gap: 12 },
   square: { aspectRatio: 1, width: "100%" },
   modes: {
     flexDirection: "row",

@@ -601,6 +601,8 @@ model ScanEvent {
   outcome        ScanOutcome
   /// Set when staff let someone in despite a blocking outcome.
   overrideReason String?
+  /// Staff found the ticket by the holder's name instead of scanning its QR code.
+  lookedUp       Boolean        @default(false)
   staffUserId    String?        @db.Uuid
   staffUser      User?          @relation(fields: [staffUserId], references: [id], onDelete: SetNull)
   deviceId       String?

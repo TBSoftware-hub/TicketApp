@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DOOR_LOOKUP_LIMIT } from "@ticketapp/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp, uniqueSlug } from "../test-helpers";
 
@@ -849,6 +850,174 @@ describe("door scanner", () => {
         outcome: "invalid_ticket",
         reason: "cancelled",
       });
+    });
+  });
+  describe("lookup by name", () => {
+    /** Comps a ticket to someone with their own last name, for searching by. */
+    const compTo = async (p: Awaited<ReturnType<typeof party>>, first: string, last: string) => {
+      const res = await p.call("POST", `${p.prom.base}/comps`, {
+        ticketTypeId: p.prom.guest,
+        firstName: first,
+        lastName: last,
+        email: `${first.toLowerCase()}-${randomUUID()}@example.com`,
+      });
+      return (res.json().comp as { tickets: { id: string }[] }).tickets[0]!.id;
+    };
+    const lookup = (p: Awaited<ReturnType<typeof party>>, q: string, headers = p.owner.headers) =>
+      t.app.inject({
+        method: "GET",
+        url: `${p.prom.base}/lookup?q=${encodeURIComponent(q)}`,
+        headers,
+      });
+    /** Checks a ticket picked from a lookup in or out, as the door app does. */
+    const pick = (p: Awaited<ReturnType<typeof party>>, ticketId: string, fields: object = {}) =>
+      t.app.inject({
+        method: "POST",
+        url: `${p.prom.base}/scans`,
+        headers: p.owner.headers,
+        payload: { scanKey: randomUUID(), ticketId, ...fields },
+      });
+
+    it("finds people by any part of their first and last name, in name order", async () => {
+      const p = await party();
+      const sam = await compTo(p, "Sam", "Okafor");
+      const samantha = await compTo(p, "Samantha", "Lee");
+      await compTo(p, "Theo", "Park");
+      const res = await lookup(p, "sam");
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        tickets: [
+          {
+            ticketId: samantha,
+            attendeeName: "Samantha Lee",
+            ticketTypeName: "Guest",
+            grade: null,
+            checkIn: "not-arrived",
+            waiver: "none",
+          },
+          expect.objectContaining({ ticketId: sam, attendeeName: "Sam Okafor" }),
+        ],
+        more: false,
+      });
+      // Every word has to match, in any case.
+      expect((await lookup(p, "SAM oka")).json().tickets).toMatchObject([{ ticketId: sam }]);
+      expect((await lookup(p, "sam park")).json().tickets).toEqual([]);
+    });
+
+    it("leaves out cancelled tickets and other events' guests", async () => {
+      const p = await party();
+      const res = await p.call("POST", `${p.prom.base}/comps`, {
+        ticketTypeId: p.prom.guest,
+        firstName: "Vera",
+        lastName: "Quist",
+        email: `vera-${randomUUID()}@example.com`,
+      });
+      await p.call("POST", `${p.prom.base}/comps/${res.json().comp.id}/void`);
+      await p.comp("Vera", await p.newEvent("Formal"));
+      expect((await lookup(p, "vera")).json().tickets).toEqual([]);
+    });
+
+    it("says whether there are more than it lists", async () => {
+      const p = await party();
+      for (let i = 0; i <= DOOR_LOOKUP_LIMIT; i++) await compTo(p, `Pat${i}`, "Many");
+      const found = (await lookup(p, "many")).json();
+      expect(found.tickets).toHaveLength(DOOR_LOOKUP_LIMIT);
+      expect(found.more).toBe(true);
+    });
+
+    it("asks for at least two letters", async () => {
+      const p = await party();
+      expect((await lookup(p, " a ")).statusCode).toBe(400);
+    });
+
+    it("lets door staff look people up, and no one off the team", async () => {
+      const p = await party();
+      await compTo(p, "Wren", "Ash");
+      const door = await t.signIn();
+      await t.prisma.membership.create({
+        data: { userId: door.userId, organizationId: p.orgId, role: "DOOR_STAFF" },
+      });
+      expect((await lookup(p, "wren", door.headers)).json().tickets).toHaveLength(1);
+      const stranger = await t.signIn();
+      expect((await lookup(p, "wren", stranger.headers)).statusCode).toBe(404);
+      const signedOut = await t.app.inject({ method: "GET", url: `${p.prom.base}/lookup?q=wren` });
+      expect(signedOut.statusCode).toBe(401);
+    });
+
+    it("won't look anyone up for an event that has ended", async () => {
+      const p = await party();
+      await t.prisma.event.update({
+        where: { id: p.prom.eventId },
+        data: {
+          startsAt: new Date(Date.now() - 2 * 60 * 60_000),
+          endsAt: new Date(Date.now() - 1),
+        },
+      });
+      expect((await lookup(p, "anyone")).statusCode).toBe(409);
+    });
+
+    it("checks someone found by name in and out, marking the scans as looked up", async () => {
+      const p = await party();
+      const ticketId = await compTo(p, "Ivy", "Hart");
+      const ivy = { attendeeName: "Ivy Hart", ticketTypeName: "Guest" };
+      expect((await pick(p, ticketId)).json()).toEqual({ outcome: "admitted", ticket: ivy });
+      expect((await lookup(p, "ivy")).json().tickets).toMatchObject([{ checkIn: "inside" }]);
+      expect((await pick(p, ticketId)).json().outcome).toBe("already_inside");
+      expect((await pick(p, ticketId, { direction: "out" })).json().outcome).toBe("checked_out");
+      expect((await lookup(p, "ivy")).json().tickets).toMatchObject([{ checkIn: "left" }]);
+      const scans = await t.prisma.scanEvent.findMany({
+        where: { ticketId },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(scans).toMatchObject([
+        { outcome: "ADMITTED", lookedUp: true },
+        { outcome: "ALREADY_INSIDE", lookedUp: true },
+        { outcome: "CHECKED_OUT", lookedUp: true },
+      ]);
+      // A scanned QR code isn't marked as looked up.
+      const { ticketId: scanned, code } = await p.comp("Kit");
+      await p.scan(code);
+      expect(
+        await t.prisma.scanEvent.findFirstOrThrow({ where: { ticketId: scanned } }),
+      ).toMatchObject({ lookedUp: false });
+    });
+
+    it("holds up someone found by name whose waiver is missing, and lets staff override it", async () => {
+      const p = await waiverParty();
+      const { ticketId } = await p.comp("Ann");
+      expect((await lookup(p, "ann")).json().tickets).toMatchObject([{ waiver: "missing" }]);
+      expect((await pick(p, ticketId)).json()).toMatchObject({
+        outcome: "waiver_missing",
+        reason: "not_signed",
+      });
+      expect((await pick(p, ticketId, { overrideReason: reason })).json().outcome).toBe("admitted");
+      expect(
+        await t.prisma.scanEvent.findFirstOrThrow({
+          where: { ticketId, overrideReason: reason },
+        }),
+      ).toMatchObject({ outcome: "WAIVER_MISSING", lookedUp: true });
+    });
+
+    it("turns away a ticket that isn't there or is for another event", async () => {
+      const p = await party();
+      expect((await pick(p, randomUUID())).json()).toEqual({
+        outcome: "invalid_ticket",
+        reason: "unknown",
+      });
+      const { ticketId } = await p.comp("Ed", await p.newEvent("Formal"));
+      expect((await pick(p, ticketId)).json()).toEqual({
+        outcome: "invalid_ticket",
+        reason: "other_event",
+      });
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+    });
+
+    it("won't take both a code and a ticket", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Mo");
+      expect((await pick(p, ticketId, { code })).statusCode).toBe(400);
     });
   });
 });

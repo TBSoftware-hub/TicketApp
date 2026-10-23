@@ -1,6 +1,9 @@
 import { Prisma, type PrismaClient, type ScanOutcome } from "@ticketapp/db";
 import {
+  DOOR_LOOKUP_LIMIT,
+  doorLookupSchema,
   doorScanSchema,
+  type DoorLookupResult,
   type DoorScanResult,
   type ScanInvalidReason,
   type ScanWaiverMissingReason,
@@ -10,6 +13,7 @@ import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
 import { HttpError } from "../lib/errors";
 import { parse } from "../lib/validate";
+import { attendeeFields, byName, checkInStatus, comingTo, waiverStatus } from "./attendees";
 
 const eventParamsSchema = z.object({ orgId: z.uuid(), eventId: z.uuid() });
 
@@ -43,25 +47,36 @@ function waiverMissing(ticket: {
   return ticket.guardianRequest && !ticket.guardianRequest.signedAt ? "guardian_pending" : null;
 }
 
-/** The door app's scanner: one scan in, one answer out, and every scan kept on record. */
+/**
+ * The event a door device is working, if it's still one the door app's picker offers: a device
+ * left on an event that was cancelled or has ended since can't keep letting people in.
+ */
+async function openEvent(prisma: PrismaClient, orgId: string, eventId: string) {
+  const event = await prisma.event.findFirst({
+    where: { id: eventId, organizationId: orgId },
+    select: { status: true, endsAt: true, reentryAllowed: true },
+  });
+  if (!event) throw new HttpError(404, "Event not found");
+  if (event.status === "CANCELLED") throw new HttpError(409, "This event was cancelled");
+  if (event.status !== "PUBLISHED") throw new HttpError(409, "This event isn't published yet");
+  if (event.endsAt <= new Date()) throw new HttpError(409, "This event has ended");
+  return event;
+}
+
+/**
+ * The door app's scanner: one scan in, one answer out, and every scan kept on record. Also finds
+ * people by name, for a guest who can't show their QR code.
+ */
 export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
   app.post("/orgs/:orgId/events/:eventId/scans", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     const { user } = await requireOrgPermission(prisma, request, orgId, "checkin.scan");
-    const { scanKey, code, direction, overrideReason, override } = parse(
+    const { scanKey, code, ticketId, direction, overrideReason, override } = parse(
       doorScanSchema,
       request.body,
     );
-    const event = await prisma.event.findFirst({
-      where: { id: eventId, organizationId: orgId },
-      select: { status: true, endsAt: true, reentryAllowed: true },
-    });
-    if (!event) throw new HttpError(404, "Event not found");
-    // The same events the door app's picker offers: a device left on an event that was cancelled
-    // or has ended since can't keep letting people in.
-    if (event.status === "CANCELLED") throw new HttpError(409, "This event was cancelled");
-    if (event.status !== "PUBLISHED") throw new HttpError(409, "This event isn't published yet");
-    if (event.endsAt <= new Date()) throw new HttpError(409, "This event has ended");
+    const lookedUp = ticketId !== undefined;
+    const event = await openEvent(prisma, orgId, eventId);
 
     return prisma
       .$transaction(async (tx): Promise<DoorScanResult> => {
@@ -78,6 +93,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
               direction: direction === "in" ? "IN" : "OUT",
               outcome,
               overrideReason: reason,
+              lookedUp,
               staffUserId: user.id,
               // Taken when the scan is recorded, which for one that moves them in or out is while the
               // ticket's row is locked, so the record's order matches the order they happened in.
@@ -120,7 +136,16 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
 
         // Postgres text can't hold a zero byte, and no ticket code has one: answer it before the
         // lookups, which would fail on it.
-        if (code.includes("\u0000")) {
+        if (code?.includes("\u0000")) {
+          await record(null, "INVALID_TICKET");
+          return { outcome: "invalid_ticket", reason: "unknown" };
+        }
+        // Someone found by name goes through the same checks as their QR code would. A ticket's
+        // code never changes, so it's safe to read before the locks below.
+        const ticketCode =
+          code ??
+          (await tx.ticket.findUnique({ where: { id: ticketId }, select: { code: true } }))?.code;
+        if (!ticketCode) {
           await record(null, "INVALID_TICKET");
           return { outcome: "invalid_ticket", reason: "unknown" };
         }
@@ -131,13 +156,13 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         // rows but not the order's, so a read made while waiting would still see the old ticket.
         await tx.$queryRaw`
         SELECT o.id FROM "Order" o JOIN "Ticket" t ON t."orderId" = o.id
-        WHERE t.code = ${code}
+        WHERE t.code = ${ticketCode}
         FOR SHARE OF o`;
         const [ticket] = await tx.$queryRaw<ScannedTicket[]>`
         SELECT t.id, t."eventId", t.status::text AS status, o.status::text AS "orderStatus",
           EXISTS (SELECT 1 FROM "Ticket" n WHERE n."transferredFromId" = t.id) AS transferred
         FROM "Ticket" t JOIN "Order" o ON o.id = t."orderId"
-        WHERE t.code = ${code}`;
+        WHERE t.code = ${ticketCode}`;
         // A ticket for another event is left off this event's record, as an unknown code is.
         // Postgres hands UUIDs back in lowercase, whatever case they were sent in.
         if (!ticket || ticket.eventId !== eventId.toLowerCase()) {
@@ -243,5 +268,42 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         }
         throw err;
       });
+  });
+
+  // Only tickets that can get someone in are listed: someone whose ticket was cancelled or moved
+  // to another person isn't coming, and the person it moved to is listed under their own name.
+  app.get("/orgs/:orgId/events/:eventId/lookup", async (request): Promise<DoorLookupResult> => {
+    const { orgId, eventId } = parse(eventParamsSchema, request.params);
+    await requireOrgPermission(prisma, request, orgId, "checkin.scan");
+    const { q } = parse(doorLookupSchema, request.query);
+    await openEvent(prisma, orgId, eventId);
+    const contains = (value: string) => ({ contains: value, mode: "insensitive" as const });
+    const found = await prisma.ticket.findMany({
+      where: {
+        ...comingTo(eventId),
+        // Every word has to match their first or last name, so "sam le" finds Sam Lee.
+        AND: q.split(/\s+/).map((word) => ({
+          OR: [
+            { attendee: { firstName: contains(word) } },
+            { attendee: { lastName: contains(word) } },
+          ],
+        })),
+      },
+      orderBy: byName,
+      // One more than is shown, to tell whether there are more.
+      take: DOOR_LOOKUP_LIMIT + 1,
+      select: attendeeFields,
+    });
+    return {
+      tickets: found.slice(0, DOOR_LOOKUP_LIMIT).map((t) => ({
+        ticketId: t.id,
+        attendeeName: `${t.attendee.firstName} ${t.attendee.lastName}`,
+        ticketTypeName: t.ticketType.name,
+        grade: t.attendee.grade,
+        checkIn: checkInStatus(t),
+        waiver: waiverStatus(t),
+      })),
+      more: found.length > DOOR_LOOKUP_LIMIT,
+    };
   });
 }

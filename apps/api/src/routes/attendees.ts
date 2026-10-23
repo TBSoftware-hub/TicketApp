@@ -46,7 +46,7 @@ const checkInWhere: Record<AttendeeCheckInFilter, Prisma.TicketWhereInput> = {
   "not-arrived": { isInside: false, scans: { none: admittingScan } },
 };
 
-const attendeeFields = {
+export const attendeeFields = {
   id: true,
   attendee: {
     select: { firstName: true, lastName: true, email: true, grade: true },
@@ -70,12 +70,12 @@ const attendeeFields = {
 
 type AttendeeTicket = Prisma.TicketGetPayload<{ select: typeof attendeeFields }>;
 
-function waiverStatus(t: AttendeeTicket): AttendeeWaiverFilter {
+export function waiverStatus(t: AttendeeTicket): AttendeeWaiverFilter {
   if (t.signatures.length > 0) return t.guardianRequest?.signedAt === null ? "waiting" : "signed";
   return t.waiversRequired ? "missing" : "none";
 }
 
-function checkInStatus(t: AttendeeTicket): AttendeeCheckInFilter {
+export function checkInStatus(t: AttendeeTicket): AttendeeCheckInFilter {
   if (t.isInside) return "inside";
   return t._count.scans > 0 ? "left" : "not-arrived";
 }
@@ -92,7 +92,7 @@ function checkInAt(t: AttendeeTicket, status: AttendeeCheckInFilter) {
 }
 
 /** Tickets that will get someone in: not held for an unpaid checkout, cancelled or refunded. */
-function comingTo(eventId: string) {
+export function comingTo(eventId: string) {
   return {
     eventId,
     status: "VALID",
@@ -122,7 +122,7 @@ function matching(eventId: string, { q, waiver, checkIn, ticketTypeId }: Attende
   } satisfies Prisma.TicketWhereInput;
 }
 
-const byName = [
+export const byName = [
   { attendee: { lastName: "asc" } },
   { attendee: { firstName: "asc" } },
   { id: "asc" },
