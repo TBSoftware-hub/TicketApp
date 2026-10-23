@@ -161,6 +161,8 @@ describe("doorScanSchema", () => {
     expect(doorScanSchema.safeParse({ scanKey, code: "abc", overrideReason: " ok " }).success).toBe(
       false,
     );
+    const zero = { scanKey, code: "abc", overrideReason: "Paper\u0000waiver" };
+    expect(doorScanSchema.safeParse(zero).success).toBe(false);
   });
 
   it("trims the scanned code and turns away an empty one", () => {

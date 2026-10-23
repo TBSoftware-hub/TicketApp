@@ -514,6 +514,14 @@ describe("door scanner", () => {
     expect(res.statusCode).toBe(400);
     const long = await p.scan(code, p.owner.headers, p.prom.base, randomUUID(), "x".repeat(501));
     expect(long.statusCode).toBe(400);
+    const zero = await p.scan(
+      code,
+      p.owner.headers,
+      p.prom.base,
+      randomUUID(),
+      "Paper\u0000waiver",
+    );
+    expect(zero.statusCode).toBe(400);
   });
 
   it("rejects an empty scan", async () => {

@@ -57,6 +57,8 @@ export const doorScanSchema = z.object({
     .trim()
     .min(3, "Say why you're letting them in")
     .max(500, "Keep the reason under 500 characters")
+    // Postgres text can't hold a zero byte, so a reason with one couldn't be kept on the record.
+    .refine((reason) => !reason.includes("\u0000"), "Retype the reason")
     .optional(),
 });
 export type DoorScan = z.infer<typeof doorScanSchema>;
