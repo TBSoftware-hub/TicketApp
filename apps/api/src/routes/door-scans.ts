@@ -65,7 +65,6 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
 
     return prisma
       .$transaction(async (tx): Promise<DoorScanResult> => {
-        const scannedAt = new Date();
         const record = (
           ticketId: string | null,
           outcome: ScanOutcome,
@@ -80,7 +79,9 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
               outcome,
               overrideReason: reason,
               staffUserId: user.id,
-              scannedAt,
+              // Taken when the scan is recorded, which for one that moves them in or out is while the
+              // ticket's row is locked, so the record's order matches the order they happened in.
+              scannedAt: new Date(),
               // Only a scan that moved someone in or out is ever replayed, so only those keep a key.
               scanKey:
                 outcome === "ADMITTED" || outcome === "CHECKED_OUT" || reason !== null

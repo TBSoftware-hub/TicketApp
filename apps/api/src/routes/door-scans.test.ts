@@ -769,6 +769,40 @@ describe("door scanner", () => {
       );
     });
 
+    it("times a check-out that waited on a check-in after that check-in", async () => {
+      const p = await party();
+      await allowReentry(p);
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      let leaving: ReturnType<typeof p.send> | undefined;
+      // The check-out starts first but gets the ticket only after a check-in that came later.
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Ticket" WHERE id = ${ticketId}::uuid FOR UPDATE`;
+        leaving = p.send(code, out);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.ticket.update({ where: { id: ticketId }, data: { isInside: true } });
+        await tx.scanEvent.create({
+          data: {
+            eventId: p.prom.eventId,
+            ticketId,
+            direction: "IN",
+            outcome: "ADMITTED",
+            staffUserId: p.owner.userId,
+            scannedAt: new Date(),
+          },
+        });
+      });
+      expect((await leaving!).json().outcome).toBe("checked_out");
+      const [last, before] = await t.prisma.scanEvent.findMany({
+        where: { ticketId },
+        orderBy: [{ scannedAt: "desc" }, { id: "desc" }],
+        take: 2,
+      });
+      expect(last).toMatchObject({ direction: "OUT", outcome: "CHECKED_OUT" });
+      expect(before).toMatchObject({ direction: "IN", outcome: "ADMITTED" });
+    });
+
     it("replays a check-out retried after they came back in", async () => {
       const p = await party();
       await allowReentry(p);
