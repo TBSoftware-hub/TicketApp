@@ -609,8 +609,10 @@ model ScanEvent {
   /// Made by the door app once per scan and sent again on a retry, so an admission whose answer
   /// was lost is replayed rather than reported as already used. Kept on admissions only.
   scanKey        String?        @unique @db.Uuid
-  /// When the scan happened on the device; differs from createdAt for offline scans.
+  /// When the API recorded the scan, which is the order scans of a ticket happened in.
   scannedAt      DateTime
+  /// When the door device made the scan, for one it saved while offline and sent later.
+  offlineAt      DateTime?
   createdAt      DateTime       @default(now())
   notifications  Notification[]
 

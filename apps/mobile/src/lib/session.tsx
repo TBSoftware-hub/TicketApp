@@ -2,6 +2,7 @@ import { doorEventSchema, type DoorEvent } from "@ticketapp/shared";
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PropsWithChildren } from "react";
 import { api, ApiError, type ApiOptions } from "./api";
+import { forgetDoorList } from "./door-store";
 import { getItem, setItem } from "./storage";
 
 const SESSION_KEY = "ticketapp.session";
@@ -96,7 +97,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
     activeToken.current = null;
     setSession(null);
     setEvent(null);
-    await Promise.all([setItem(SESSION_KEY, null), setItem(EVENT_KEY, null)]);
+    await Promise.all([setItem(SESSION_KEY, null), setItem(EVENT_KEY, null), forgetDoorList()]);
   }, []);
 
   const signOut = useCallback(async () => {

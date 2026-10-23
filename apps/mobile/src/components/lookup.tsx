@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button } from "@/components/button";
 import { ApiError, UNREACHABLE } from "@/lib/api";
+import { useOffline } from "@/lib/offline";
 import { useSession } from "@/lib/session";
 import { colors, ui } from "@/lib/theme";
 
@@ -19,8 +20,11 @@ const TYPING_PAUSE_MS = 300;
 /** How long a lookup may take before staff are told it couldn't reach TicketApp. */
 const LOOKUP_TIMEOUT_MS = 10_000;
 
-/** The answer to the last name looked up, and which name it was for. */
-type Found = ({ result: DoorLookupResult } | { error: string }) & { q: string };
+/**
+ * The answer to the last name looked up, and which name it was for. `offline` marks one found on
+ * the list saved on the device.
+ */
+type Found = ({ result: DoorLookupResult; offline?: boolean } | { error: string }) & { q: string };
 
 /**
  * Finds someone coming to `event` by name, for a guest who can't show their QR code. Picking them
@@ -40,6 +44,7 @@ export function Lookup({
   onCancel: () => void;
 }) {
   const { call } = useSession();
+  const { offline, search, unreachable } = useOffline();
   const [name, setName] = useState("");
   const [found, setFound] = useState<Found | null>(null);
   const [searching, setSearching] = useState(false);
@@ -55,6 +60,13 @@ export function Lookup({
       setSearching(false);
       return;
     }
+    // Offline, the saved list answers as they type.
+    const saved = offline ? search(q) : null;
+    if (saved) {
+      setFound({ q, result: saved, offline: true });
+      setSearching(false);
+      return;
+    }
     // An answer for a name since changed is dropped, so results never lag behind the typing.
     let current = true;
     setSearching(true);
@@ -66,7 +78,13 @@ export function Lookup({
           if (current) setFound({ q, result: doorLookupResultSchema.parse(res) });
         })
         .catch((err: unknown) => {
-          if (current) setFound({ q, error: err instanceof ApiError ? err.message : UNREACHABLE });
+          if (!current) return;
+          if (err instanceof ApiError && err.status === 0) {
+            unreachable();
+            const saved = search(q);
+            if (saved) return setFound({ q, result: saved, offline: true });
+          }
+          setFound({ q, error: err instanceof ApiError ? err.message : UNREACHABLE });
         })
         .finally(() => {
           if (current) setSearching(false);
@@ -76,7 +94,7 @@ export function Lookup({
       current = false;
       clearTimeout(timer);
     };
-  }, [q, call, event]);
+  }, [q, call, event, offline, search, unreachable]);
 
   return (
     <View style={[styles.lookup, { minHeight }]}>
@@ -112,6 +130,9 @@ export function Lookup({
         </Text>
       ) : (
         <View style={styles.list}>
+          {answer.offline && (
+            <Text style={ui.muted}>Offline: found on the list saved on this device.</Text>
+          )}
           {answer.result.tickets.map((ticket) => (
             <Person key={ticket.ticketId} ticket={ticket} onPress={() => onPick(ticket)} />
           ))}

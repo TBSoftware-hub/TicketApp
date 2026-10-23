@@ -17,6 +17,7 @@ import { AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from
 import { Button } from "@/components/button";
 import { Lookup } from "@/components/lookup";
 import { ApiError, UNREACHABLE } from "@/lib/api";
+import { useOffline, type DoorScanRequest } from "@/lib/offline";
 import { useSession } from "@/lib/session";
 import { colors, ui } from "@/lib/theme";
 
@@ -27,19 +28,7 @@ const SAME_CODE_IGNORED_MS = 5000;
 /** How long a check may take before staff are offered Try again or Skip. */
 const SCAN_TIMEOUT_MS = 10_000;
 
-/**
- * What was scanned: the code, or the ticket staff picked after looking someone up by name, which
- * way it takes them, the key a retry of the same scan sends again, and, when staff let them in
- * past an answer, which answer and why.
- */
-interface Scan {
-  code?: string;
-  ticketId?: string;
-  direction: ScanDirection;
-  key: string;
-  override?: ScanOverride;
-  overrideReason?: string;
-}
+type Scan = DoorScanRequest;
 
 /** What staff tap to let someone in past each answer. */
 const OVERRIDE_LABEL: Record<ScanOverride, string> = {
@@ -58,6 +47,10 @@ const HAPTIC: Record<ScanDisplay["tone"], Haptics.NotificationFeedbackType> = {
 /** The camera, reading ticket QR codes for `event` one at a time and showing each answer over it. */
 export function Scanner({ event }: { event: DoorEvent }) {
   const { call } = useSession();
+  const door = useOffline();
+  // Read when a scan is checked: the camera can hold on to the handler from an earlier render.
+  const doorRef = useRef(door);
+  doorRef.current = door;
   const [permission, requestPermission, getPermission] = useCameraPermissions();
   const [shown, setShown] = useState<Shown | null>(null);
   // Scanning people in, or out as they leave. The camera can hold on to the scan handler it started
@@ -101,39 +94,59 @@ export function Scanner({ event }: { event: DoorEvent }) {
 
   const check = useCallback(
     (scan: Scan) => {
-      const { code, ticketId, direction, key, override, overrideReason } = scan;
       if (inFlight.current) return;
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
-      call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
-        method: "POST",
-        body: { scanKey: key, code, ticketId, direction, override, overrideReason },
-        // A stalled network shows Try again, which resends the same key, rather than hanging.
-        timeoutMs: SCAN_TIMEOUT_MS,
-      })
-        .then((res) => {
-          if (!mounted.current) return;
-          const display = describeScan(
-            doorScanResultSchema.parse(res),
-            event.organization.timezone,
+      const show = (display: ScanDisplay) => {
+        if (!mounted.current) return;
+        setOverriding(null);
+        setShown({ ...scan, display });
+        void Haptics.notificationAsync(HAPTIC[display.tone]).catch(() => undefined);
+      };
+      const fail = (error: string) => {
+        if (!mounted.current) return;
+        setOverriding(null);
+        setShown({ ...scan, error });
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
+          () => undefined,
+        );
+      };
+      void (async () => {
+        const offline = doorRef.current;
+        try {
+          // Offline, or still sending scans saved offline, the saved list answers straight away:
+          // waiting on a dead connection for each person would back up the line.
+          if (offline.isOffline()) {
+            const display = await offline.answer(scan);
+            if (display) return show(display);
+          }
+          const { code, ticketId, direction, key, override, overrideReason } = scan;
+          const result = doorScanResultSchema.parse(
+            await call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
+              method: "POST",
+              body: { scanKey: key, code, ticketId, direction, override, overrideReason },
+              // A stalled network answers from the saved list, or shows Try again, which resends
+              // the same key, rather than hanging.
+              timeoutMs: SCAN_TIMEOUT_MS,
+            }),
           );
-          setOverriding(null);
-          setShown({ ...scan, display });
-          void Haptics.notificationAsync(HAPTIC[display.tone]).catch(() => undefined);
-        })
-        .catch((err: unknown) => {
-          if (!mounted.current) return;
-          setOverriding(null);
-          setShown({ ...scan, error: err instanceof ApiError ? err.message : UNREACHABLE });
-          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
-            () => undefined,
-          );
-        })
-        .finally(() => {
+          void offline.answered(scan, result);
+          show(describeScan(result, event.organization.timezone));
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 0) {
+            // The scan may have reached TicketApp before the connection went: one saved here goes
+            // with the same key, so it can't count twice.
+            offline.unreachable();
+            const display = await offline.answer(scan).catch(() => null);
+            if (display) return show(display);
+          }
+          fail(err instanceof ApiError ? err.message : UNREACHABLE);
+        } finally {
           inFlight.current = false;
           if (mounted.current) setBusy(false);
-        });
+        }
+      })();
     },
     [call, event],
   );
