@@ -400,7 +400,8 @@ describe("door scanner", () => {
   it("holds up a ticket whose waiver isn't signed, and records the scan", async () => {
     const p = await waiverParty();
     const { ticketId, code } = await p.comp("Val");
-    const res = await p.scan(code);
+    const scanKey = randomUUID();
+    const res = await p.scan(code, p.owner.headers, p.prom.base, scanKey);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       outcome: "waiver_missing",
@@ -411,7 +412,8 @@ describe("door scanner", () => {
     expect(ticket.isInside).toBe(false);
     const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
     expect(scans).toMatchObject([
-      { outcome: "WAIVER_MISSING", overrideReason: null, scanKey: null },
+      // Its key is kept, so a retry gets the same answer.
+      { outcome: "WAIVER_MISSING", overrideReason: null, scanKey },
     ]);
     // Not counted as arrived on the attendee list.
     const list = (await p.call("GET", `${p.prom.base}/attendees?checkIn=not-arrived`)).json();
@@ -591,7 +593,11 @@ describe("door scanner", () => {
       const denied = await t.prisma.scanEvent.findFirstOrThrow({
         where: { ticketId, outcome: "REENTRY_DENIED" },
       });
-      expect(denied).toMatchObject({ direction: "IN", overrideReason: null, scanKey: null });
+      expect(denied).toMatchObject({
+        direction: "IN",
+        overrideReason: null,
+        scanKey: expect.any(String),
+      });
       expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
         false,
       );
@@ -685,7 +691,9 @@ describe("door scanner", () => {
         leftAt: null,
       });
       const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
-      expect(scans).toMatchObject([{ direction: "OUT", outcome: "NOT_INSIDE", scanKey: null }]);
+      expect(scans).toMatchObject([
+        { direction: "OUT", outcome: "NOT_INSIDE", scanKey: expect.any(String) },
+      ]);
     });
 
     it("says when someone checked out already, if they're scanned out twice", async () => {
@@ -1133,10 +1141,11 @@ describe("door scanner", () => {
       const { ticketId, code } = await p.comp("Ann");
       const offlineAt = new Date(Date.now() - 10 * 60_000).toISOString();
       const scanKey = randomUUID();
-      // A check-out saved offline reaches TicketApp when they aren't inside.
-      const first = await p.send(code, { scanKey, offlineAt, direction: "out" });
+      // A check-out reaches TicketApp when they aren't inside, but its answer is lost on the way
+      // back, so the device saves it offline to send again.
+      const first = await p.send(code, { scanKey, direction: "out" });
       expect(first.json()).toMatchObject({ outcome: "not_inside" });
-      // Its answer is lost, they come in, and the device sends the check-out again.
+      // Meanwhile they come in, and the device sends the check-out again, saved offline.
       await p.scan(code);
       const again = await p.send(code, { scanKey, offlineAt, direction: "out" });
       expect(again.json()).toEqual(first.json());

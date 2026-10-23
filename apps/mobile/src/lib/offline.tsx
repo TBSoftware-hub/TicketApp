@@ -275,6 +275,9 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   const loaded = useRef<Promise<boolean> | null>(null);
   // Counts lists dropped here, so a download started before one is thrown away.
   const drops = useRef(0);
+  // Events TicketApp has refused here, so a list still being read back from the device for one
+  // isn't brought back.
+  const refusedEvents = useRef(new Set<string>());
   // While the list downloads, the changes made to the old one, to make again to the new one.
   const edits = useRef<{ eventId: string; change: (l: SavedList) => SavedList }[] | null>(null);
   // False once signed out: a download that lands after that mustn't save everyone's names again.
@@ -305,7 +308,12 @@ export function OfflineProvider({ children }: PropsWithChildren) {
           return false;
         }
         const saved = parseList(rawList);
-        list.current = saved && withQueued(saved);
+        if (saved && refusedEvents.current.has(saved.eventId)) {
+          void writeFile(DOOR_LIST_FILE, null).catch(() => undefined);
+          list.current = null;
+        } else {
+          list.current = saved && withQueued(saved);
+        }
         return true;
       })
       .finally(rerender);
@@ -325,8 +333,12 @@ export function OfflineProvider({ children }: PropsWithChildren) {
    */
   const dropList = useCallback(
     (eventId: string) => {
-      // A download on its way, even the first, mustn't bring the list back.
+      // A screen left behind by signing out mustn't touch the list the next one saved.
+      if (!mounted.current) return;
+      // A download on its way, even the first, mustn't bring the list back; nor one being read
+      // back from the device.
       drops.current++;
+      refusedEvents.current.add(eventId);
       if (list.current?.eventId !== eventId) return;
       list.current = null;
       void writeFile(DOOR_LIST_FILE, null).catch(() => undefined);
@@ -526,6 +538,8 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         for (const edit of made) {
           if (edit.eventId === current.id) fresh = edit.change(fresh);
         }
+        // TicketApp let this account have the list, so it can be worked again.
+        refusedEvents.current.delete(current.id);
         list.current = fresh;
         saveList();
         rerender();

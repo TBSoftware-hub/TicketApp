@@ -101,10 +101,12 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           outcome: ScanOutcome,
           // Set when staff let them in despite the outcome; that counts as an admission.
           reason: string | null = null,
-          // What a scan saved offline that didn't move them was told, for a retry to get again.
+          // What a scan that didn't move them was told, for a retry to get again.
           answer: DoorScanResult | null = null,
         ) => {
-          const kept = offlineAt !== undefined && ticketId !== null && answer !== null;
+          // A retry of a scan of a ticket gets its first answer, so it can't move them later on:
+          // say a check-out that found them not inside, sent again once they're back in.
+          const kept = ticketId !== null && answer !== null;
           return tx.scanEvent.create({
             data: {
               eventId,
@@ -118,13 +120,12 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
               // ticket's row is locked, so the record's order matches the order they happened in.
               scannedAt: new Date(),
               offlineAt: offlineAt ?? null,
-              // A scan that moved someone in or out is replayed, so it keeps its key; so does any
-              // scan saved offline, which the device sends until it hears back.
+              // A scan of a ticket is replayed to a retry, so it keeps its key.
               scanKey:
                 outcome === "ADMITTED" || outcome === "CHECKED_OUT" || reason !== null || kept
                   ? scanKey
                   : null,
-              offlineAnswer: kept ? (JSON.parse(JSON.stringify(answer)) as object) : undefined,
+              answer: kept ? (JSON.parse(JSON.stringify(answer)) as object) : undefined,
             },
           });
         };
@@ -139,7 +140,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
               ticketId: true,
               staffUserId: true,
               direction: true,
-              offlineAnswer: true,
+              answer: true,
             },
           });
           if (!earlier) return null;
@@ -151,7 +152,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           ) {
             throw new HttpError(409, "That scan was already recorded for another ticket");
           }
-          return { answer: earlier.offlineAnswer as DoorScanResult | null };
+          return { answer: earlier.answer as DoorScanResult | null };
         };
         /** When they last checked out, if they have. */
         const lastCheckOut = async (ticketId: string) =>
