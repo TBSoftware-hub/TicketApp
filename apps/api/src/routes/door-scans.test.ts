@@ -63,11 +63,42 @@ describe("door scanner", () => {
       headers = owner.headers,
       base = prom.base,
       scanKey: string = randomUUID(),
+      overrideReason?: string,
     ) =>
-      t.app.inject({ method: "POST", url: `${base}/scans`, headers, payload: { scanKey, code } });
+      t.app.inject({
+        method: "POST",
+        url: `${base}/scans`,
+        headers,
+        payload: { scanKey, code, overrideReason },
+      });
 
     return { owner, orgId, call, newEvent, prom, comp, scan };
   }
+
+  /** Comps a ticket whose type asks for a waiver, which its holder hasn't signed yet. */
+  async function waiverParty() {
+    const p = await party();
+    const waiver = await t.prisma.waiverTemplate.create({
+      data: { organizationId: p.orgId, title: "Rules", body: "Behave." },
+    });
+    await t.prisma.ticketTypeWaiver.create({
+      data: { ticketTypeId: p.prom.guest, waiverTemplateId: waiver.id },
+    });
+    const sign = (ticketId: string) =>
+      t.prisma.waiverSignature.create({
+        data: {
+          ticketId,
+          waiverTemplateId: waiver.id,
+          templateVersion: 1,
+          signerRole: "ATTENDEE",
+          signerName: "Signer",
+          documentHash: "x",
+        },
+      });
+    return { ...p, sign };
+  }
+
+  const reason = "Signed a paper waiver at the door";
 
   it("lets a valid ticket in once, then says when it was used", async () => {
     const p = await party();
@@ -354,6 +385,135 @@ describe("door scanner", () => {
       payload: { code },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("holds up a ticket whose waiver isn't signed, and records the scan", async () => {
+    const p = await waiverParty();
+    const { ticketId, code } = await p.comp("Val");
+    const res = await p.scan(code);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      outcome: "waiver_missing",
+      ticket: { attendeeName: "Val Lee", ticketTypeName: "Guest" },
+      reason: "not_signed",
+    });
+    const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+    expect(ticket.isInside).toBe(false);
+    const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
+    expect(scans).toMatchObject([
+      { outcome: "WAIVER_MISSING", overrideReason: null, scanKey: null },
+    ]);
+    // Not counted as arrived on the attendee list.
+    const list = (await p.call("GET", `${p.prom.base}/attendees?checkIn=not-arrived`)).json();
+    expect(list.attendees).toMatchObject([{ firstName: "Val", waiver: "missing" }]);
+  });
+
+  it("lets a ticket in once its waiver is signed", async () => {
+    const p = await waiverParty();
+    const { ticketId, code } = await p.comp("Wes");
+    expect((await p.scan(code)).json().outcome).toBe("waiver_missing");
+    await p.sign(ticketId);
+    expect((await p.scan(code)).json().outcome).toBe("admitted");
+  });
+
+  it("holds up a minor whose guardian hasn't signed yet", async () => {
+    const p = await waiverParty();
+    const { ticketId, code } = await p.comp("Xia");
+    await p.sign(ticketId);
+    const guardian = await t.prisma.guardian.create({ data: { name: "Pat Lee" } });
+    const request = await t.prisma.guardianSignatureRequest.create({
+      data: { ticketId, guardianId: guardian.id, tokenHash: randomUUID() },
+    });
+    expect((await p.scan(code)).json()).toMatchObject({
+      outcome: "waiver_missing",
+      reason: "guardian_pending",
+    });
+    await t.prisma.guardianSignatureRequest.update({
+      where: { id: request.id },
+      data: { signedAt: new Date() },
+    });
+    expect((await p.scan(code)).json().outcome).toBe("admitted");
+  });
+
+  it("doesn't ask for a waiver the ticket type didn't need when the ticket was issued", async () => {
+    const p = await party();
+    const { code } = await p.comp("Yan");
+    // Added after the ticket was issued, so it applies to new tickets only.
+    const waiver = await t.prisma.waiverTemplate.create({
+      data: { organizationId: p.orgId, title: "Rules", body: "Behave." },
+    });
+    await t.prisma.ticketTypeWaiver.create({
+      data: { ticketTypeId: p.prom.guest, waiverTemplateId: waiver.id },
+    });
+    expect((await p.scan(code)).json().outcome).toBe("admitted");
+  });
+
+  it("lets staff override a missing waiver with a reason, kept on the record", async () => {
+    const p = await waiverParty();
+    const { ticketId, code } = await p.comp("Zed");
+    await p.scan(code);
+    const door = await t.signIn();
+    await t.prisma.membership.create({
+      data: { userId: door.userId, organizationId: p.orgId, role: "DOOR_STAFF" },
+    });
+    const scanKey = randomUUID();
+    const res = await p.scan(code, door.headers, p.prom.base, scanKey, `  ${reason} `);
+    expect(res.json()).toEqual({
+      outcome: "admitted",
+      ticket: { attendeeName: "Zed Lee", ticketTypeName: "Guest" },
+    });
+    const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+    expect(ticket.isInside).toBe(true);
+    const scans = await t.prisma.scanEvent.findMany({
+      where: { ticketId },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(scans).toMatchObject([
+      { outcome: "WAIVER_MISSING", overrideReason: null },
+      { outcome: "WAIVER_MISSING", overrideReason: reason, staffUserId: door.userId, scanKey },
+    ]);
+
+    // A retry of the override replays it; a new scan finds them inside since the override.
+    const retry = await p.scan(code, door.headers, p.prom.base, scanKey, reason);
+    expect(retry.json().outcome).toBe("admitted");
+    expect(await t.prisma.scanEvent.count({ where: { ticketId } })).toBe(2);
+    const again = (await p.scan(code)).json();
+    expect(again).toMatchObject({
+      outcome: "already_inside",
+      admittedAt: scans[1]!.scannedAt.toISOString(),
+    });
+    // Shown as inside, with the waiver still missing.
+    const list = (await p.call("GET", `${p.prom.base}/attendees?checkIn=inside`)).json();
+    expect(list.attendees).toMatchObject([{ firstName: "Zed", waiver: "missing" }]);
+  });
+
+  it("records a plain admission when the waiver was signed before the override arrived", async () => {
+    const p = await waiverParty();
+    const { ticketId, code } = await p.comp("Abe");
+    await p.sign(ticketId);
+    const res = await p.scan(code, p.owner.headers, p.prom.base, randomUUID(), reason);
+    expect(res.json().outcome).toBe("admitted");
+    const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
+    expect(scans).toMatchObject([{ outcome: "ADMITTED", overrideReason: null }]);
+  });
+
+  it("won't override anything but a waiver", async () => {
+    const p = await party();
+    const { orderId, ticketId, code } = await p.comp("Bea");
+    await p.call("POST", `${p.prom.base}/comps/${orderId}/void`);
+    const res = await p.scan(code, p.owner.headers, p.prom.base, randomUUID(), reason);
+    expect(res.json()).toEqual({ outcome: "invalid_ticket", reason: "cancelled" });
+    const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
+    expect(scans).toMatchObject([{ outcome: "INVALID_TICKET", overrideReason: null }]);
+  });
+
+  it("needs a real reason to override", async () => {
+    const p = await waiverParty();
+    const { code } = await p.comp("Cal");
+    const res = await p.scan(code, p.owner.headers, p.prom.base, randomUUID(), "  ok ");
+    expect(res.statusCode).toBe(400);
+    const long = await p.scan(code, p.owner.headers, p.prom.base, randomUUID(), "x".repeat(501));
+    expect(long.statusCode).toBe(400);
   });
 
   it("rejects an empty scan", async () => {

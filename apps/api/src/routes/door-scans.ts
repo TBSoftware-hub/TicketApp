@@ -1,5 +1,10 @@
 import { Prisma, type PrismaClient } from "@ticketapp/db";
-import { doorScanSchema, type DoorScanResult, type ScanInvalidReason } from "@ticketapp/shared";
+import {
+  doorScanSchema,
+  type DoorScanResult,
+  type ScanInvalidReason,
+  type ScanWaiverMissingReason,
+} from "@ticketapp/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgPermission } from "../lib/auth";
@@ -25,12 +30,25 @@ function invalidReason(ticket: ScannedTicket): ScanInvalidReason | null {
   return null;
 }
 
+/**
+ * Why a ticket's waiver keeps its holder out, or null when it doesn't. Judged by what the ticket
+ * type asked for when the ticket was issued, as the attendee list's waiver filter is.
+ */
+function waiverMissing(ticket: {
+  waiversRequired: boolean;
+  signatures: unknown[];
+  guardianRequest: { signedAt: Date | null } | null;
+}): ScanWaiverMissingReason | null {
+  if (ticket.signatures.length === 0) return ticket.waiversRequired ? "not_signed" : null;
+  return ticket.guardianRequest && !ticket.guardianRequest.signedAt ? "guardian_pending" : null;
+}
+
 /** The door app's scanner: one scan in, one answer out, and every scan kept on record. */
 export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma: PrismaClient }) {
   app.post("/orgs/:orgId/events/:eventId/scans", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     const { user } = await requireOrgPermission(prisma, request, orgId, "checkin.scan");
-    const { scanKey, code } = parse(doorScanSchema, request.body);
+    const { scanKey, code, overrideReason } = parse(doorScanSchema, request.body);
     const event = await prisma.event.findFirst({
       where: { id: eventId, organizationId: orgId },
       select: { status: true, endsAt: true },
@@ -47,7 +65,9 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         const scannedAt = new Date();
         const record = (
           ticketId: string | null,
-          outcome: "ADMITTED" | "ALREADY_INSIDE" | "INVALID_TICKET",
+          outcome: "ADMITTED" | "ALREADY_INSIDE" | "WAIVER_MISSING" | "INVALID_TICKET",
+          // Set when staff let them in despite the outcome; that counts as an admission.
+          reason: string | null = null,
         ) =>
           tx.scanEvent.create({
             data: {
@@ -55,10 +75,11 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
               ticketId,
               direction: "IN",
               outcome,
+              overrideReason: reason,
               staffUserId: user.id,
               scannedAt,
               // Only an admission is ever replayed, so only an admission keeps its key.
-              scanKey: outcome === "ADMITTED" ? scanKey : null,
+              scanKey: outcome === "ADMITTED" || reason !== null ? scanKey : null,
             },
           });
 
@@ -94,17 +115,29 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           return { outcome: "invalid_ticket", reason };
         }
 
-        const { attendee, ticketType } = await tx.ticket.findUniqueOrThrow({
+        const { attendee, ticketType, isInside, ...waiver } = await tx.ticket.findUniqueOrThrow({
           where: { id: ticket.id },
           select: {
             attendee: { select: { firstName: true, lastName: true } },
             ticketType: { select: { name: true } },
+            isInside: true,
+            waiversRequired: true,
+            signatures: { where: { signerRole: "ATTENDEE" }, select: { id: true }, take: 1 },
+            guardianRequest: { select: { signedAt: true } },
           },
         });
         const details = {
           attendeeName: `${attendee.firstName} ${attendee.lastName}`,
           ticketTypeName: ticketType.name,
         };
+
+        // Someone already inside is told so below, whatever their waiver says: they got in once.
+        // A waiver signed since the override was asked for needs no override, so none is recorded.
+        const missing = isInside ? null : waiverMissing(waiver);
+        if (missing && !overrideReason) {
+          await record(ticket.id, "WAIVER_MISSING");
+          return { outcome: "waiver_missing", ticket: details, reason: missing };
+        }
 
         // Only one of two devices scanning the same ticket at once gets to let them in; the other
         // waits on the row and then finds them already inside.
@@ -113,7 +146,8 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           data: { isInside: true },
         });
         if (count === 1) {
-          await record(ticket.id, "ADMITTED");
+          if (missing && overrideReason) await record(ticket.id, "WAIVER_MISSING", overrideReason);
+          else await record(ticket.id, "ADMITTED");
           return { outcome: "admitted", ticket: details };
         }
         // A retry of the scan that let them in, sent because its answer was lost, gets that answer
