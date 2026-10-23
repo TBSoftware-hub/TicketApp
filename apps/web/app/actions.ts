@@ -171,6 +171,7 @@ export async function saveEvent(
     startsAt,
     endsAt,
     capacity: capacity === null ? null : Number(capacity),
+    reentryAllowed: formData.get("reentryAllowed") === "on",
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form" };
 

@@ -100,6 +100,7 @@ export default async function EditEventPage({
           startsAt: utcToZonedLocal(new Date(e.startsAt), org.timezone),
           endsAt: utcToZonedLocal(new Date(e.endsAt), org.timezone),
           capacity: e.capacity === null ? "" : String(e.capacity),
+          reentryAllowed: e.reentryAllowed,
           startsAtUtc: e.startsAt,
           endsAtUtc: e.endsAt,
         }}

@@ -11,6 +11,7 @@ export interface EventRecord {
   startsAt: string;
   endsAt: string;
   capacity: number | null;
+  reentryAllowed: boolean;
   status: EventStatus;
 }
 

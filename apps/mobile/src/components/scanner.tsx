@@ -2,9 +2,11 @@ import {
   describeScan,
   doorScanResultSchema,
   doorScanSchema,
-  WAIVER_OVERRIDE_REASONS,
+  SCAN_OVERRIDES,
   type DoorEvent,
+  type ScanDirection,
   type ScanDisplay,
+  type ScanOverride,
 } from "@ticketapp/shared";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Crypto from "expo-crypto";
@@ -25,14 +27,22 @@ const SAME_CODE_IGNORED_MS = 5000;
 const SCAN_TIMEOUT_MS = 10_000;
 
 /**
- * What was scanned: the code, the key a retry of the same scan sends again, and the reason staff
- * gave for letting them in when it's a waiver override.
+ * What was scanned: the code, which way it takes them, the key a retry of the same scan sends
+ * again, and, when staff let them in past an answer, which answer and why.
  */
 interface Scan {
   code: string;
+  direction: ScanDirection;
   key: string;
+  override?: ScanOverride;
   overrideReason?: string;
 }
+
+/** What staff tap to let someone in past each answer. */
+const OVERRIDE_LABEL: Record<ScanOverride, string> = {
+  waiver_missing: "Let in anyway",
+  reentry_denied: "Let back in",
+};
 
 type Shown = (Scan & { display: ScanDisplay }) | (Scan & { error: string });
 
@@ -47,8 +57,17 @@ export function Scanner({ event }: { event: DoorEvent }) {
   const { call } = useSession();
   const [permission, requestPermission, getPermission] = useCameraPermissions();
   const [shown, setShown] = useState<Shown | null>(null);
-  // Set while staff give a reason for letting in someone whose waiver is missing.
-  const [overriding, setOverriding] = useState<{ code: string; name: string } | null>(null);
+  // Scanning people in, or out as they leave. The camera can hold on to the scan handler it started
+  // with, so the handler reads the direction from a ref rather than from its closure.
+  const [direction, setDirection] = useState<ScanDirection>("in");
+  const directionRef = useRef(direction);
+  directionRef.current = direction;
+  // Set while staff give a reason for letting someone in past a waiver or re-entry answer.
+  const [overriding, setOverriding] = useState<{
+    code: string;
+    name: string;
+    kind: ScanOverride;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [torch, setTorch] = useState(false);
   const [width, setWidth] = useState(0);
@@ -75,14 +94,15 @@ export function Scanner({ event }: { event: DoorEvent }) {
   }, [getPermission]);
 
   const check = useCallback(
-    ({ code, key, overrideReason }: Scan) => {
+    (scan: Scan) => {
+      const { code, direction, key, override, overrideReason } = scan;
       if (inFlight.current) return;
       inFlight.current = true;
       locked.current = true;
       setBusy(true);
       call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
         method: "POST",
-        body: { scanKey: key, code, overrideReason },
+        body: { scanKey: key, code, direction, override, overrideReason },
         // A stalled network shows Try again, which resends the same key, rather than hanging.
         timeoutMs: SCAN_TIMEOUT_MS,
       })
@@ -93,18 +113,13 @@ export function Scanner({ event }: { event: DoorEvent }) {
             event.organization.timezone,
           );
           setOverriding(null);
-          setShown({ code, key, overrideReason, display });
+          setShown({ ...scan, display });
           void Haptics.notificationAsync(HAPTIC[display.tone]).catch(() => undefined);
         })
         .catch((err: unknown) => {
           if (!mounted.current) return;
           setOverriding(null);
-          setShown({
-            code,
-            key,
-            overrideReason,
-            error: err instanceof ApiError ? err.message : UNREACHABLE,
-          });
+          setShown({ ...scan, error: err instanceof ApiError ? err.message : UNREACHABLE });
           void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
             () => undefined,
           );
@@ -123,7 +138,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
       if (locked.current || !code) return;
       const last = lastCode.current;
       if (last && last.code === code && Date.now() < last.until) return;
-      check({ code, key: Crypto.randomUUID() });
+      check({ code, direction: directionRef.current, key: Crypto.randomUUID() });
     },
     [check],
   );
@@ -163,6 +178,23 @@ export function Scanner({ event }: { event: DoorEvent }) {
 
   return (
     <View style={{ gap: 12 }}>
+      <View style={styles.modes} accessibilityRole="radiogroup">
+        {(["in", "out"] as const).map((mode) => (
+          <Pressable
+            key={mode}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: direction === mode, disabled: busy || !!overriding }}
+            // A scan on its way keeps the direction it was sent with; the next one takes the new one.
+            disabled={busy || !!overriding}
+            onPress={() => setDirection(mode)}
+            style={[styles.mode, direction === mode && styles.modeOn]}
+          >
+            <Text style={[styles.modeText, direction === mode && styles.modeTextOn]}>
+              {mode === "in" ? "Check in" : "Check out"}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
       {/* Square while scanning; a result taller than that (large text, a long name) grows it. */}
       <View style={styles.frame} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
         <CameraView
@@ -175,12 +207,19 @@ export function Scanner({ event }: { event: DoorEvent }) {
         {overriding ? (
           <Override
             name={overriding.name}
+            kind={overriding.kind}
             busy={busy}
             minHeight={width}
             onCancel={next}
             // A new key: the blocked scan wasn't an admission, so this one is a scan of its own.
             onSubmit={(reason) =>
-              check({ code: overriding.code, key: Crypto.randomUUID(), overrideReason: reason })
+              check({
+                code: overriding.code,
+                direction: "in",
+                key: Crypto.randomUUID(),
+                override: overriding.kind,
+                overrideReason: reason,
+              })
             }
           />
         ) : shown ? (
@@ -191,16 +230,24 @@ export function Scanner({ event }: { event: DoorEvent }) {
             onNext={next}
             onRetry={() => check(shown)}
             onOverride={() => {
-              if (!("display" in shown)) return;
+              if (!("display" in shown) || !shown.display.override) return;
               setShown(null);
-              setOverriding({ code: shown.code, name: shown.display.lines[0] ?? "" });
+              setOverriding({
+                code: shown.code,
+                name: shown.display.lines[0] ?? "",
+                kind: shown.display.override,
+              });
             }}
           />
         ) : (
           <View style={styles.square}>
-            <View style={styles.hint} pointerEvents="none">
+            <View style={[styles.hint, direction === "out" && styles.hintOut]} pointerEvents="none">
               <Text style={styles.hintText}>
-                {busy ? "Checking ticket…" : "Point at a ticket's QR code"}
+                {busy
+                  ? "Checking ticket…"
+                  : direction === "in"
+                    ? "Point at a ticket's QR code"
+                    : "Checking out: point at a ticket's QR code"}
               </Text>
             </View>
           </View>
@@ -235,7 +282,7 @@ function Result({
   onOverride: () => void;
 }) {
   const failed = "error" in shown;
-  const overridable = !failed && shown.display.overridable === true;
+  const override = failed ? undefined : shown.display.override;
   const tone = failed ? "stop" : shown.display.tone;
   const title = failed ? "Couldn't check this ticket" : shown.display.title;
   const lines = failed ? [shown.error] : shown.display.lines;
@@ -255,10 +302,10 @@ function Result({
                 { name: "activate", label: "Try again" },
                 { name: "skip", label: "Skip" },
               ]
-            : overridable
+            : override
               ? [
                   { name: "activate", label: "Turn away and scan next" },
-                  { name: "override", label: "Let in anyway" },
+                  { name: "override", label: OVERRIDE_LABEL[override] },
                 ]
               : [{ name: "activate", label: "Scan next" }]
       }
@@ -275,19 +322,17 @@ function Result({
       {lines.map((line, i) => (
         <Text
           key={i}
-          style={
-            i === 0 && (tone !== "stop" || overridable) ? styles.resultName : styles.resultLine
-          }
+          style={i === 0 && (tone !== "stop" || override) ? styles.resultName : styles.resultLine}
         >
           {line}
         </Text>
       ))}
       {busy ? (
         <Text style={styles.resultLine}>Checking ticket…</Text>
-      ) : overridable ? (
+      ) : override ? (
         <View style={styles.overrideActions}>
           <Pressable accessibilityRole="button" onPress={onOverride} style={styles.overrideButton}>
-            <Text style={styles.overrideButtonText}>Let in anyway</Text>
+            <Text style={styles.overrideButtonText}>{OVERRIDE_LABEL[override]}</Text>
           </Pressable>
           <Text style={styles.resultAction}>Tap elsewhere to turn away</Text>
         </View>
@@ -303,15 +348,20 @@ function Result({
   );
 }
 
-/** Asks why someone whose waiver is missing is being let in, which goes on the scan's record. */
+/**
+ * Asks why someone whose waiver is missing, or who left an event without re-entry, is being let
+ * in, which goes on the scan's record.
+ */
 function Override({
   name,
+  kind,
   busy,
   minHeight,
   onCancel,
   onSubmit,
 }: {
   name: string;
+  kind: ScanOverride;
   busy: boolean;
   minHeight: number;
   onCancel: () => void;
@@ -330,10 +380,10 @@ function Override({
   };
   return (
     <View style={[styles.override, { minHeight }]}>
-      <Text style={ui.heading}>Let {name} in without a waiver?</Text>
+      <Text style={ui.heading}>{SCAN_OVERRIDES[kind].question(name)}</Text>
       <Text style={ui.muted}>Your reason is kept with this check-in.</Text>
       <View style={styles.chips}>
-        {WAIVER_OVERRIDE_REASONS.map((r) => (
+        {SCAN_OVERRIDES[kind].reasons.map((r) => (
           <Pressable
             key={r}
             accessibilityRole="button"
@@ -380,6 +430,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#000",
   },
   square: { aspectRatio: 1, width: "100%" },
+  modes: {
+    flexDirection: "row",
+    borderWidth: 1.5,
+    borderColor: colors.accent,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  mode: { flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center" },
+  modeOn: { backgroundColor: colors.accent },
+  modeText: { color: colors.accent, fontSize: 17, fontWeight: "700" },
+  modeTextOn: { color: "#fff" },
   hint: {
     position: "absolute",
     left: 0,
@@ -388,6 +449,8 @@ const styles = StyleSheet.create({
     padding: 14,
     backgroundColor: "rgba(0,0,0,0.55)",
   },
+  // Check-out mode shows in a different colour, so nobody scans people out by mistake.
+  hintOut: { backgroundColor: colors.warn },
   hintText: { color: "#fff", fontSize: 16, fontWeight: "600", textAlign: "center" },
   result: { padding: 24, gap: 10, justifyContent: "center", alignItems: "center" },
   resultTitle: { color: "#fff", fontSize: 32, fontWeight: "800", textAlign: "center" },

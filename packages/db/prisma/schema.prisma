@@ -172,6 +172,8 @@ model Event {
   startsAt       DateTime
   endsAt         DateTime
   capacity       Int?
+  /// Whether someone who checks out at the door may come back in. After-proms usually lock in.
+  reentryAllowed Boolean      @default(false)
   status         EventStatus  @default(DRAFT)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
@@ -583,6 +585,8 @@ enum ScanOutcome {
   CHECKED_OUT
   ALREADY_INSIDE
   NOT_INSIDE
+  /// Checked out earlier, and the event doesn't let people back in.
+  REENTRY_DENIED
   WAIVER_MISSING
   INVALID_TICKET
 }

@@ -30,6 +30,7 @@ export default async function NewEventPage({ params }: { params: Promise<{ orgId
           startsAt: "",
           endsAt: "",
           capacity: "",
+          reentryAllowed: false,
         }}
       />
     </main>

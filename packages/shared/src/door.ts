@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { scanDirectionSchema } from "./scan";
 
 const timestamp = z.union([z.string(), z.date()]).pipe(z.coerce.date());
 
@@ -44,14 +45,24 @@ export function formatDoorEventTime(
   return `${start} · ${time(event.startsAt)} – ${endText}`;
 }
 
+/** What staff can let someone in despite: a missing waiver, or leaving at a lock-in event. */
+export const scanOverrideSchema = z.enum(["waiver_missing", "reentry_denied"]);
+export type ScanOverride = z.infer<typeof scanOverrideSchema>;
+
 /** What the door app sends when it reads a ticket's QR code. */
 export const doorScanSchema = z.object({
   /** Made by the app once per scan and sent again on a retry, so a retry can't double-count. */
   scanKey: z.uuid(),
+  // Apps from before check-out only ever scanned people in.
+  direction: scanDirectionSchema.default("in"),
   // Scanners can pick up stray whitespace. Any QR code at all may be held up, such as a long
   // web address or contact card, and is answered as not a ticket, so the limit is generous.
   code: z.string().trim().min(1, "Scan a ticket's QR code").max(4096, "That isn't a ticket code"),
-  /** Sent when staff let someone in whose waiver is missing; kept on the scan's record. */
+  /**
+   * Sent when staff let someone in despite a blocking answer; kept on the scan's record. It only
+   * lets them in past the answer named by `override`, so a reason given for a missing waiver
+   * can't wave someone back in at a lock-in event.
+   */
   overrideReason: z
     .string()
     .trim()
@@ -60,6 +71,8 @@ export const doorScanSchema = z.object({
     // Postgres text can't hold a zero byte, so a reason with one couldn't be kept on the record.
     .refine((reason) => !reason.includes("\u0000"), "Retype the reason")
     .optional(),
+  // Apps from before re-entry rules only ever overrode a missing waiver.
+  override: scanOverrideSchema.default("waiver_missing"),
 });
 export type DoorScan = z.infer<typeof doorScanSchema>;
 
@@ -77,25 +90,42 @@ export type ScanInvalidReason = z.infer<typeof scanInvalidReasonSchema>;
 export const scanWaiverMissingReasonSchema = z.enum(["not_signed", "guardian_pending"]);
 export type ScanWaiverMissingReason = z.infer<typeof scanWaiverMissingReasonSchema>;
 
+const scannedTicketSchema = z.object({ attendeeName: z.string(), ticketTypeName: z.string() });
+
 /**
- * The answer to a door scan: admitted, already used, waiting on a waiver, or not a ticket that
- * works here.
+ * The answer to a door scan: admitted, already used, waiting on a waiver, kept out after leaving,
+ * checked out, not inside to check out, or not a ticket that works here.
  */
 export const doorScanResultSchema = z.discriminatedUnion("outcome", [
-  z.object({
-    outcome: z.literal("admitted"),
-    ticket: z.object({ attendeeName: z.string(), ticketTypeName: z.string() }),
-  }),
+  z.object({ outcome: z.literal("admitted"), ticket: scannedTicketSchema }),
   z.object({
     outcome: z.literal("already_inside"),
-    ticket: z.object({ attendeeName: z.string(), ticketTypeName: z.string() }),
+    ticket: scannedTicketSchema,
     /** When the ticket first got them in this time, if that scan is on record. */
     admittedAt: timestamp.nullable(),
   }),
   z.object({
     outcome: z.literal("waiver_missing"),
-    ticket: z.object({ attendeeName: z.string(), ticketTypeName: z.string() }),
+    ticket: scannedTicketSchema,
     reason: scanWaiverMissingReasonSchema,
+  }),
+  z.object({
+    outcome: z.literal("reentry_denied"),
+    ticket: scannedTicketSchema,
+    /** When they checked out. */
+    leftAt: timestamp,
+  }),
+  z.object({
+    outcome: z.literal("checked_out"),
+    ticket: scannedTicketSchema,
+    /** Whether the event lets them back in, so staff can tell them before they go. */
+    reentryAllowed: z.boolean(),
+  }),
+  z.object({
+    outcome: z.literal("not_inside"),
+    ticket: scannedTicketSchema,
+    /** When they last checked out, or null when the ticket hasn't got them in yet. */
+    leftAt: timestamp.nullable(),
   }),
   z.object({ outcome: z.literal("invalid_ticket"), reason: scanInvalidReasonSchema }),
 ]);
@@ -123,16 +153,37 @@ export const WAIVER_OVERRIDE_REASONS = [
   "Approved by the event chair",
 ];
 
+/** Reasons door staff can pick for letting someone back in at an event without re-entry. */
+export const REENTRY_OVERRIDE_REASONS = [
+  "Stepped out with a chaperone",
+  "Parent or guardian brought them back",
+  "Approved by the event chair",
+];
+
+/** What door staff are asked, and can pick from, when they let someone in past each answer. */
+export const SCAN_OVERRIDES: Record<
+  ScanOverride,
+  { question: (name: string) => string; reasons: string[] }
+> = {
+  waiver_missing: {
+    question: (name) => `Let ${name} in without a waiver?`,
+    reasons: WAIVER_OVERRIDE_REASONS,
+  },
+  reentry_denied: { question: (name) => `Let ${name} back in?`, reasons: REENTRY_OVERRIDE_REASONS },
+};
+
 /** How the door app shows a scan's answer: a colour staff can read at a glance, and the details. */
 export interface ScanDisplay {
   tone: "go" | "stop" | "warn";
   title: string;
   lines: string[];
-  /** Staff may let them in anyway, giving a reason. The first line is then their name. */
-  overridable?: boolean;
+  /** Staff may let them in past this answer anyway, giving a reason. The first line is their name. */
+  override?: ScanOverride;
 }
 
 export function describeScan(result: DoorScanResult, timeZone: string): ScanDisplay {
+  const time = (d: Date) =>
+    d.toLocaleTimeString("en-US", { timeZone, hour: "numeric", minute: "2-digit" });
   switch (result.outcome) {
     case "admitted":
       return {
@@ -141,11 +192,7 @@ export function describeScan(result: DoorScanResult, timeZone: string): ScanDisp
         lines: [result.ticket.attendeeName, result.ticket.ticketTypeName],
       };
     case "already_inside": {
-      const when = result.admittedAt?.toLocaleTimeString("en-US", {
-        timeZone,
-        hour: "numeric",
-        minute: "2-digit",
-      });
+      const when = result.admittedAt && time(result.admittedAt);
       return {
         tone: "warn",
         title: "Already checked in",
@@ -160,7 +207,39 @@ export function describeScan(result: DoorScanResult, timeZone: string): ScanDisp
         tone: "stop",
         title: "Waiver missing",
         lines: [result.ticket.attendeeName, SCAN_WAIVER_MISSING_TEXT[result.reason]],
-        overridable: true,
+        override: "waiver_missing",
+      };
+    case "reentry_denied":
+      return {
+        tone: "stop",
+        title: "No re-entry",
+        lines: [
+          result.ticket.attendeeName,
+          `They checked out at ${time(result.leftAt)}, and this event doesn't let people back in.`,
+        ],
+        override: "reentry_denied",
+      };
+    case "checked_out":
+      return {
+        tone: "go",
+        title: "Checked out",
+        lines: [
+          result.ticket.attendeeName,
+          result.reentryAllowed
+            ? "They can come back in with the same ticket."
+            : "They can't come back in tonight.",
+        ],
+      };
+    case "not_inside":
+      return {
+        tone: "warn",
+        title: "Not checked in",
+        lines: [
+          result.ticket.attendeeName,
+          result.leftAt
+            ? `They already checked out at ${time(result.leftAt)}.`
+            : "This ticket hasn't been used to get in yet.",
+        ],
       };
     case "invalid_ticket":
       return {

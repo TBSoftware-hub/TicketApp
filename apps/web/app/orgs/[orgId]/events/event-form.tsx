@@ -12,6 +12,7 @@ export interface EventFormValues {
   startsAt: string;
   endsAt: string;
   capacity: string;
+  reentryAllowed: boolean;
   /** Stored instants of an existing event, so unchanged times are saved exactly as they were. */
   startsAtUtc?: string;
   endsAtUtc?: string;
@@ -112,6 +113,14 @@ export function EventForm({
           />
         </label>
       </div>
+      <label className="choice">
+        <input type="checkbox" name="reentryAllowed" defaultChecked={initial.reentryAllowed} />
+        Let people back in after they check out
+      </label>
+      <p className="muted hint">
+        Leave this off for a lock-in, such as an after-prom: once someone checks out at the door,
+        the app won&apos;t let them back in unless staff give a reason.
+      </p>
       <label>
         Description
         <textarea
