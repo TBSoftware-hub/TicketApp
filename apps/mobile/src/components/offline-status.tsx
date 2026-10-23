@@ -44,7 +44,23 @@ export function OfflineStatus({ event }: { event: DoorEvent }) {
   );
 }
 
+/**
+ * How many are inside, by the saved list: it keeps up with the other doors every few seconds while
+ * TicketApp can be reached, and with this device's own scans while it can't.
+ */
+export function InsideCount() {
+  const { inside, offline } = useOffline();
+  if (inside === null) return null;
+  return (
+    <Text style={ui.muted} accessibilityLiveRegion="polite">
+      <Text style={styles.count}>{inside}</Text> inside
+      {offline ? ", as this device last knew" : ", counting every door"}
+    </Text>
+  );
+}
+
 const styles = StyleSheet.create({
+  count: { fontWeight: "700", color: colors.ink },
   banner: { backgroundColor: colors.warn, borderRadius: 12, padding: 14, gap: 4 },
   sending: { backgroundColor: colors.accent },
   title: { color: "#fff", fontSize: 17, fontWeight: "700" },

@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient, type ScanOutcome } from "@ticketapp/db";
 import {
+  DOOR_CHANGES_MAX_AGE_MS,
+  DOOR_CHANGES_OVERLAP_MS,
   DOOR_LOOKUP_LIMIT,
+  doorListChangesQuerySchema,
   doorLookupSchema,
   doorScanSchema,
   OFFLINE_SCAN_AHEAD_MS,
   OFFLINE_SCAN_MAX_AGE_MS,
   type DoorList,
+  type DoorListChanges,
+  type DoorListTicket,
   type DoorLookupResult,
   type DoorScanResult,
   type ScanInvalidReason,
@@ -68,6 +73,62 @@ async function openEvent(prisma: PrismaClient, orgId: string, eventId: string, a
   if (event.status !== "PUBLISHED") throw new HttpError(409, "This event isn't published yet");
   if (event.endsAt <= at) throw new HttpError(409, "This event has ended");
   return event;
+}
+
+/**
+ * Tickets as a door device saves them, with where each stands and its code hashed, and whether
+ * the door list has them: one that can get someone in, or whose holder is inside. One snapshot
+ * for both reads, so someone checked out between them can't show as having left with no time they
+ * left, which would let them back in at an event without re-entry.
+ */
+async function listTickets(
+  prisma: PrismaClient,
+  eventId: string,
+  where: Prisma.TicketWhereInput,
+): Promise<{ ticket: DoorListTicket; listed: boolean }[]> {
+  const [tickets, checkOuts] = await prisma.$transaction(
+    [
+      prisma.ticket.findMany({
+        where,
+        orderBy: byName,
+        select: {
+          ...attendeeFields,
+          code: true,
+          status: true,
+          order: { select: { buyerName: true, status: true } },
+          transferredTo: { select: { id: true } },
+        },
+      }),
+      // When each person last checked out, which keeps them out at an event without re-entry.
+      prisma.scanEvent.groupBy({
+        by: ["ticketId"],
+        where: { eventId, ticket: where, direction: "OUT", outcome: "CHECKED_OUT" },
+        _max: { scannedAt: true },
+      }),
+    ],
+    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+  );
+  const leftAt = new Map(checkOuts.map((c) => [c.ticketId, c._max.scannedAt]));
+  return tickets.map((t) => ({
+    listed: t.isInside || (t.status === "VALID" && t.order.status === "PAID"),
+    ticket: {
+      ticketId: t.id,
+      firstName: t.attendee.firstName,
+      lastName: t.attendee.lastName,
+      attendeeName: `${t.attendee.firstName} ${t.attendee.lastName}`,
+      ticketTypeName: t.ticketType.name,
+      grade: t.attendee.grade,
+      codeHash: createHash("sha256").update(t.code).digest("hex"),
+      checkIn: checkInStatus(t),
+      waiver: waiverStatus(t),
+      leftAt: leftAt.get(t.id) ?? null,
+      invalid: invalidReason({
+        status: t.status,
+        orderStatus: t.order.status,
+        transferred: t.transferredTo !== null,
+      }),
+    },
+  }));
 }
 
 /**
@@ -320,53 +381,48 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
     await requireOrgPermission(prisma, request, orgId, "checkin.scan");
     const { reentryAllowed } = await openEvent(prisma, orgId, eventId);
     const fetchedAt = new Date();
-    // One snapshot for both reads, so someone checked out between them can't show as having left
-    // with no time they left, which would let them back in at an event without re-entry.
-    const [tickets, checkOuts] = await prisma.$transaction(
-      [
-        prisma.ticket.findMany({
-          where: { OR: [comingTo(eventId), { eventId, isInside: true }] },
-          orderBy: byName,
-          select: {
-            ...attendeeFields,
-            code: true,
-            status: true,
-            order: { select: { buyerName: true, status: true } },
-            transferredTo: { select: { id: true } },
-          },
-        }),
-        // When each person last checked out, which keeps them out at an event without re-entry.
-        prisma.scanEvent.groupBy({
-          by: ["ticketId"],
-          where: { eventId, direction: "OUT", outcome: "CHECKED_OUT" },
-          _max: { scannedAt: true },
-        }),
-      ],
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
-    );
-    const leftAt = new Map(checkOuts.map((c) => [c.ticketId, c._max.scannedAt]));
-    return {
-      reentryAllowed,
-      fetchedAt,
-      tickets: tickets.map((t) => ({
-        ticketId: t.id,
-        firstName: t.attendee.firstName,
-        lastName: t.attendee.lastName,
-        attendeeName: `${t.attendee.firstName} ${t.attendee.lastName}`,
-        ticketTypeName: t.ticketType.name,
-        grade: t.attendee.grade,
-        codeHash: createHash("sha256").update(t.code).digest("hex"),
-        checkIn: checkInStatus(t),
-        waiver: waiverStatus(t),
-        leftAt: leftAt.get(t.id) ?? null,
-        invalid: invalidReason({
-          status: t.status,
-          orderStatus: t.order.status,
-          transferred: t.transferredTo !== null,
-        }),
-      })),
-    };
+    const tickets = await listTickets(prisma, eventId, {
+      OR: [comingTo(eventId), { eventId, isInside: true }],
+    });
+    return { reentryAllowed, fetchedAt, tickets: tickets.map((t) => t.ticket) };
   });
+
+  // What other door devices have done since this one last asked, polled every few seconds, so
+  // the list a device answers from when it loses its connection is seconds old rather than a
+  // minute. Tickets scanned, or whose waiver was signed, are sent as they stand now; one touched
+  // that can't get anyone in any more, and whose holder isn't inside, is sent as removed.
+  app.get(
+    "/orgs/:orgId/events/:eventId/door-list/changes",
+    async (request): Promise<DoorListChanges> => {
+      const { orgId, eventId } = parse(eventParamsSchema, request.params);
+      await requireOrgPermission(prisma, request, orgId, "checkin.scan");
+      const { since } = parse(doorListChangesQuerySchema, request.query);
+      const fetchedAt = new Date();
+      if (since.getTime() < fetchedAt.getTime() - DOOR_CHANGES_MAX_AGE_MS) {
+        throw new HttpError(400, "Download the whole list again");
+      }
+      const { reentryAllowed } = await openEvent(prisma, orgId, eventId);
+      // A scan's time is taken inside its transaction, which may only be saved after the last
+      // answer was put together: looking a little further back finds it. Sending a ticket twice
+      // changes nothing.
+      const after = { gt: new Date(since.getTime() - DOOR_CHANGES_OVERLAP_MS) };
+      const touched = await listTickets(prisma, eventId, {
+        eventId,
+        OR: [
+          { updatedAt: after },
+          { scans: { some: { scannedAt: after } } },
+          { signatures: { some: { signedAt: after } } },
+          { guardianRequest: { is: { signedAt: after } } },
+        ],
+      });
+      return {
+        reentryAllowed,
+        fetchedAt,
+        tickets: touched.filter((t) => t.listed).map((t) => t.ticket),
+        removed: touched.filter((t) => !t.listed).map((t) => t.ticket.ticketId),
+      };
+    },
+  );
 
   // Only tickets that can get someone in are listed: someone whose ticket was cancelled or moved
   // to another person isn't coming, and the person it moved to is listed under their own name.

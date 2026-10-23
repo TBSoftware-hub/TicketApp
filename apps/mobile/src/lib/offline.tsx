@@ -2,6 +2,7 @@ import {
   afterScan,
   decideOffline,
   describeScan,
+  doorListChangesSchema,
   doorListSchema,
   doorScanResultSchema,
   OFFLINE_EVENT_ENDED,
@@ -9,6 +10,7 @@ import {
   OFFLINE_NOT_SAVED,
   OFFLINE_SCAN_MAX_AGE_MS,
   searchDoorList,
+  withChanges,
   withMovements,
   type DoorList,
   type DoorListTicket,
@@ -27,7 +29,16 @@ import { useSession } from "./session";
 
 /** How often the door sends scans saved offline, or tries TicketApp again after losing it. */
 const SYNC_EVERY_MS = 15_000;
-/** How old the saved list may get, while TicketApp can be reached, before it's downloaded again. */
+/**
+ * How often the saved list asks TicketApp what the other doors did, while it can be reached: the
+ * list is what the door answers from if the connection drops, so it's kept seconds old.
+ */
+const CHANGES_EVERY_MS = 3_000;
+/**
+ * How old the downloaded list may get, while TicketApp can be reached, before it's downloaded
+ * again: the changes cover scans and waivers, and a download picks up everything else, such as
+ * tickets bought since.
+ */
 const LIST_FRESH_MS = 60_000;
 /** How long sending one saved scan may take before the door waits for the next try. */
 const SEND_TIMEOUT_MS = 10_000;
@@ -50,10 +61,16 @@ export interface DoorScanRequest {
   at?: number;
 }
 
-/** The event's list as this device saved it, and when that was. */
+/**
+ * The event's list as this device saved it, and when that was. `fetchedAt` is when TicketApp put
+ * together what it was last brought up to date with, and is what the next changes are asked from.
+ */
 interface SavedList extends DoorList {
   eventId: string;
+  /** When it was last brought up to date, by a download or with the changes since one. */
   savedAt: number;
+  /** When it was last downloaded whole. */
+  downloadedAt: number;
   /** TicketApp gave an answer the list can't be brought up to date from: download it again. */
   stale?: boolean;
 }
@@ -109,6 +126,11 @@ interface OfflineContext {
   listSavedAt: Date | null;
   /** Scans for this event made offline and not sent yet. */
   pending: number;
+  /**
+   * How many are inside by the saved list, which keeps up with every door while TicketApp can be
+   * reached; null with no list for this event.
+   */
+  inside: number | null;
   /**
    * Of those, the ones someone else made, which wait for them to sign back in on this device:
    * TicketApp records each scan as whoever sends it.
@@ -169,6 +191,8 @@ function parseList(raw: string | null): SavedList | null {
       ...doorListSchema.parse(value),
       eventId: String(value.eventId),
       savedAt: Number(value.savedAt),
+      // Saved before changes were asked for, when the two were the same.
+      downloadedAt: Number(value.downloadedAt ?? value.savedAt),
     };
   } catch {
     // Saved by an older version of the app, or corrupted: download it again.
@@ -280,7 +304,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   // Events TicketApp has refused here, so a list still being read back from the device for one
   // isn't brought back.
   const refusedEvents = useRef(new Set<string>());
-  // While the list downloads, the changes made to the old one, to make again to the new one.
+  // While the list or its changes are on their way, the changes made here, to make again to them.
   const edits = useRef<{ eventId: string; change: (l: SavedList) => SavedList }[] | null>(null);
   // False once signed out: a download that lands after that mustn't save everyone's names again.
   const mounted = useRef(true);
@@ -521,45 +545,65 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         }
       }
 
-      // Download the list again once it's stale, or to find out if TicketApp is back. Not while
-      // scans for the event this account can send are still to go: the list wouldn't have them
-      // yet. Ones waiting for someone else are put back on it, as on a restart.
+      // Download the list again once it's stale, or to find out if TicketApp is back; otherwise
+      // ask what the other doors did since. Not while scans for the event this account can send
+      // are still to go: the list wouldn't have them yet. Ones waiting for someone else are put
+      // back on it, as on a restart.
       const current = eventRef.current;
       if (!current || (pendingFor(queue.saved, current.id) > 0 && !held.has(current.id))) return;
       const mine = list.current?.eventId === current.id ? list.current : null;
-      if (
+      const fresh =
         mine &&
         !mine.stale &&
         reachableRef.current &&
-        Date.now() - mine.savedAt < LIST_FRESH_MS
-      ) {
-        return;
-      }
+        Date.now() - mine.downloadedAt < LIST_FRESH_MS
+          ? mine
+          : null;
+      const base = `/orgs/${current.organization.id}/events/${current.id}/door-list`;
       const dropped = drops.current;
       const made: NonNullable<typeof edits.current> = [];
       edits.current = made;
       try {
         const res = await callRef.current(
-          `/orgs/${current.organization.id}/events/${current.id}/door-list`,
-          { timeoutMs: LIST_TIMEOUT_MS },
+          fresh
+            ? `${base}/changes?since=${encodeURIComponent(fresh.fetchedAt.toISOString())}`
+            : base,
+          { timeoutMs: fresh ? SEND_TIMEOUT_MS : LIST_TIMEOUT_MS },
         );
         setReachable(true);
         if (!mounted.current || drops.current !== dropped || eventRef.current?.id !== current.id) {
           return;
         }
-        // Scans answered while it downloaded are made again to it, in order: a busy door is
-        // always answering one, so throwing the download away would keep the list from updating.
-        let fresh: SavedList = withQueued({
-          ...doorListSchema.parse(res),
-          eventId: current.id,
-          savedAt: Date.now(),
-        });
+        let next: SavedList;
+        if (fresh) {
+          // Made to the list as it is now, which scans answered meanwhile have already changed.
+          const now = list.current;
+          if (now?.eventId !== current.id) return;
+          const changes = doorListChangesSchema.parse(res);
+          next = withQueued({
+            ...now,
+            reentryAllowed: changes.reentryAllowed,
+            fetchedAt: changes.fetchedAt,
+            tickets: withChanges(now.tickets, changes),
+            savedAt: Date.now(),
+          });
+        } else {
+          next = withQueued({
+            ...doorListSchema.parse(res),
+            eventId: current.id,
+            savedAt: Date.now(),
+            downloadedAt: Date.now(),
+          });
+        }
+        // Scans answered while it was on its way are made again to it, in order: TicketApp may
+        // have put it together before they reached it. A busy door is always answering one, so
+        // throwing it away would keep the list from updating.
         for (const edit of made) {
-          if (edit.eventId === current.id) fresh = edit.change(fresh);
+          if (edit.eventId === current.id) next = edit.change(next);
         }
         // TicketApp let this account have the list, so it can be worked again.
         refusedEvents.current.delete(current.id);
-        list.current = fresh;
+        list.current = next;
         saveList();
         rerender();
       } catch (err) {
@@ -567,6 +611,10 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         setReachable(true);
         // No access, no such event, or one cancelled or ended: its list can't be trusted.
         if (err.status === 403 || err.status === 404 || err.status === 409) dropList(current.id);
+        // Too long since the list was brought up to date to ask what changed: download it.
+        else if (fresh && err.status === 400) {
+          updateList(current.id, (l) => ({ ...l, stale: true }));
+        }
       } finally {
         if (edits.current === made) edits.current = null;
       }
@@ -579,7 +627,14 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   const eventId = event?.id;
   useEffect(() => {
     const timer = setInterval(() => void sync(), SYNC_EVERY_MS);
-    return () => clearInterval(timer);
+    // Keeps up with the other doors; tries to reach TicketApp again only at the slower pace.
+    const changes = setInterval(() => {
+      if (reachableRef.current) void sync();
+    }, CHANGES_EVERY_MS);
+    return () => {
+      clearInterval(timer);
+      clearInterval(changes);
+    };
   }, [sync]);
   useEffect(() => {
     void sync();
@@ -713,6 +768,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     hasPending,
     listSavedAt: mine ? new Date(mine.savedAt) : null,
     pending,
+    inside: mine ? mine.tickets.filter((t) => t.checkIn === "inside").length : null,
     waitingForOthers,
     ready,
     before,
