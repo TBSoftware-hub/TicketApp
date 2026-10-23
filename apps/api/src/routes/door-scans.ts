@@ -66,7 +66,8 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         FROM "Ticket" t JOIN "Order" o ON o.id = t."orderId"
         WHERE t.code = ${code}`;
       // A ticket for another event is left off this event's record, as an unknown code is.
-      if (!ticket || ticket.eventId !== eventId) {
+      // Postgres hands UUIDs back in lowercase, whatever case they were sent in.
+      if (!ticket || ticket.eventId !== eventId.toLowerCase()) {
         await record(null, "INVALID_TICKET");
         return { outcome: "invalid_ticket", reason: ticket ? "other_event" : "unknown" };
       }

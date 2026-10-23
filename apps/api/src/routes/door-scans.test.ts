@@ -263,6 +263,17 @@ describe("door scanner", () => {
     expect(await t.prisma.scanEvent.count({ where: { eventId: p.prom.eventId } })).toBe(0);
   });
 
+  it("lets a ticket in when the address spells the ids in capitals", async () => {
+    const p = await party();
+    const { code } = await p.comp("Pia");
+    const res = await p.scan(
+      code,
+      p.owner.headers,
+      p.prom.base.toUpperCase().replace("/ORGS/", "/orgs/").replace("/EVENTS/", "/events/"),
+    );
+    expect(res.json().outcome).toBe("admitted");
+  });
+
   it("rejects an empty scan", async () => {
     const p = await party();
     expect((await p.scan("   ")).statusCode).toBe(400);
