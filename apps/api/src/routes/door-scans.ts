@@ -30,7 +30,9 @@ interface ScannedTicket {
 }
 
 /** Why a ticket for this event won't get anyone in, or null when it will. */
-function invalidReason(ticket: ScannedTicket): ScanInvalidReason | null {
+function invalidReason(
+  ticket: Pick<ScannedTicket, "status" | "orderStatus" | "transferred">,
+): ScanInvalidReason | null {
   if (ticket.transferred) return "transferred";
   if (ticket.orderStatus === "CANCELLED" || ticket.orderStatus === "REFUNDED") return "cancelled";
   if (ticket.status === "VOID") return "cancelled";
@@ -287,6 +289,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
 
   // The list a door device saves for when it loses its connection: the same people a lookup can
   // find, with where each stands, and each ticket's code hashed so the device can match a scan.
+  // Someone inside on a ticket voided since is listed too, marked invalid, so they can check out.
   app.get("/orgs/:orgId/events/:eventId/door-list", async (request): Promise<DoorList> => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     await requireOrgPermission(prisma, request, orgId, "checkin.scan");
@@ -297,9 +300,15 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
     const [tickets, checkOuts] = await prisma.$transaction(
       [
         prisma.ticket.findMany({
-          where: comingTo(eventId),
+          where: { OR: [comingTo(eventId), { eventId, isInside: true }] },
           orderBy: byName,
-          select: { ...attendeeFields, code: true },
+          select: {
+            ...attendeeFields,
+            code: true,
+            status: true,
+            order: { select: { buyerName: true, status: true } },
+            transferredTo: { select: { id: true } },
+          },
         }),
         // When each person last checked out, which keeps them out at an event without re-entry.
         prisma.scanEvent.groupBy({
@@ -325,6 +334,11 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
         checkIn: checkInStatus(t),
         waiver: waiverStatus(t),
         leftAt: leftAt.get(t.id) ?? null,
+        invalid: invalidReason({
+          status: t.status,
+          orderStatus: t.order.status,
+          transferred: t.transferredTo !== null,
+        }),
       })),
     };
   });

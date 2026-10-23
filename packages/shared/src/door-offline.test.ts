@@ -20,6 +20,7 @@ const ticket = (fields: Partial<DoorListTicket> = {}): DoorListTicket => ({
   checkIn: "not-arrived",
   waiver: "signed",
   leftAt: null,
+  invalid: null,
   ...fields,
 });
 const ann = { attendeeName: "Ann Lee", ticketTypeName: "Guest" };
@@ -96,6 +97,25 @@ describe("decideOffline", () => {
   });
 });
 
+describe("decideOffline for a ticket voided while its holder is inside", () => {
+  it("lets them check out, but not back in", () => {
+    const voided = ticket({ checkIn: "inside", invalid: "cancelled" });
+    expect(decideOffline(voided, { direction: "out" }, true)).toEqual({
+      result: { outcome: "checked_out", ticket: ann, reentryAllowed: true },
+      moves: true,
+    });
+    const gone = ticket({ checkIn: "left", leftAt, invalid: "cancelled" });
+    for (const direction of ["in", "out"] as const) {
+      expect(decideOffline(gone, { direction }, true)).toEqual({
+        result: { outcome: "invalid_ticket", reason: "cancelled" },
+        moves: false,
+      });
+    }
+    // Inside, a scan in is still turned down, as at the API.
+    expect(decideOffline(voided, { direction: "in" }, true).result.outcome).toBe("invalid_ticket");
+  });
+});
+
 describe("afterScan", () => {
   const at = new Date("2026-05-03T01:00:00Z");
 
@@ -141,6 +161,16 @@ describe("afterScan", () => {
   it("takes a ticket that no longer gets anyone in off the list", () => {
     expect(afterScan(ticket(), { outcome: "invalid_ticket", reason: "cancelled" }, at)).toBeNull();
   });
+
+  it("keeps a voided ticket whose holder is inside, so they can be checked out", () => {
+    expect(
+      afterScan(
+        ticket({ checkIn: "inside" }),
+        { outcome: "invalid_ticket", reason: "cancelled" },
+        at,
+      ),
+    ).toMatchObject({ checkIn: "inside", invalid: "cancelled" });
+  });
 });
 
 describe("searchDoorList", () => {
@@ -171,6 +201,11 @@ describe("searchDoorList", () => {
     const found = searchDoorList(list, "ann");
     expect(found.tickets).toHaveLength(DOOR_LOOKUP_LIMIT);
     expect(found.more).toBe(true);
+  });
+
+  it("leaves out tickets that can't get anyone in", () => {
+    const list = [ticket(), ticket({ ticketId: "2", checkIn: "inside", invalid: "cancelled" })];
+    expect(searchDoorList(list, "ann").tickets.map((t) => t.ticketId)).toEqual([list[0]!.ticketId]);
   });
 });
 

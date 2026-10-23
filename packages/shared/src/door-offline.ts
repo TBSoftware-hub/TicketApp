@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   DOOR_LOOKUP_LIMIT,
   doorLookupTicketSchema,
+  scanInvalidReasonSchema,
   type DoorLookupResult,
   type DoorScanResult,
   type ScanDisplay,
@@ -23,6 +24,11 @@ export const doorListTicketSchema = doorLookupTicketSchema.extend({
   codeHash: z.string().regex(/^[0-9a-f]{64}$/),
   /** When they last checked out, which keeps them out at an event without re-entry. */
   leftAt: timestamp.nullable(),
+  /**
+   * Why the ticket won't get anyone in, such as one voided or refunded while its holder is inside:
+   * they're listed so they can still be checked out, but not let in again. Null for a valid ticket.
+   */
+  invalid: scanInvalidReasonSchema.nullable(),
 });
 export type DoorListTicket = z.infer<typeof doorListTicketSchema>;
 
@@ -46,6 +52,8 @@ export const OFFLINE_SCAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export function searchDoorList(tickets: DoorListTicket[], q: string): DoorLookupResult {
   const words = q.trim().toLowerCase().split(/\s+/);
   const found = tickets
+    // A lookup only finds tickets that can get someone in.
+    .filter((t) => !t.invalid)
     .filter((t) => {
       const first = t.firstName.toLowerCase();
       const last = t.lastName.toLowerCase();
@@ -89,10 +97,16 @@ export function decideOffline(
     if (isInside) {
       return { result: { outcome: "checked_out", ticket: details, reentryAllowed }, moves: true };
     }
+    if (ticket.invalid) {
+      return { result: { outcome: "invalid_ticket", reason: ticket.invalid }, moves: false };
+    }
     return {
       result: { outcome: "not_inside", ticket: details, leftAt: ticket.leftAt },
       moves: false,
     };
+  }
+  if (ticket.invalid) {
+    return { result: { outcome: "invalid_ticket", reason: ticket.invalid }, moves: false };
   }
   if (isInside) {
     return {
@@ -125,7 +139,8 @@ export function decideOffline(
 /**
  * A saved ticket brought up to date with what a scan's answer says about it, so the next answer
  * given offline knows. Null when the ticket can't get anyone in any more, such as one cancelled
- * since the list was saved, which takes it off the list.
+ * since the list was saved, which takes it off the list; unless its holder is inside, who stays on
+ * it to be checked out.
  */
 export function afterScan(
   ticket: DoorListTicket,
@@ -149,7 +164,7 @@ export function afterScan(
         waiver: result.reason === "not_signed" ? "missing" : "waiting",
       };
     case "invalid_ticket":
-      return null;
+      return ticket.checkIn === "inside" ? { ...ticket, invalid: result.reason } : null;
   }
 }
 

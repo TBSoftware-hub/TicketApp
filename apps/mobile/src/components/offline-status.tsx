@@ -13,7 +13,7 @@ function plural(n: number, one: string, many: string) {
  * are still to send.
  */
 export function OfflineStatus({ event }: { event: DoorEvent }) {
-  const { offline, reachable, listSavedAt, pending } = useOffline();
+  const { offline, reachable, listSavedAt, pending, waitingForOthers } = useOffline();
   const time = (d: Date) =>
     d.toLocaleTimeString("en-US", {
       timeZone: event.organization.timezone,
@@ -21,6 +21,11 @@ export function OfflineStatus({ event }: { event: DoorEvent }) {
       minute: "2-digit",
     });
   const scans = plural(pending, "scan", "scans");
+  // Someone else's scans wait for them to sign back in here; the ones after them wait too.
+  const waiting =
+    waitingForOthers > 0
+      ? ` ${plural(waitingForOthers, "scan", "scans")} saved by someone else ${waitingForOthers === 1 ? "waits" : "wait"} for them to sign in on this device, and later scans for this event go after them.`
+      : "";
 
   if (!offline) return null;
   return (
@@ -28,9 +33,11 @@ export function OfflineStatus({ event }: { event: DoorEvent }) {
       <Text style={styles.title}>{reachable ? "Back online" : "Offline"}</Text>
       <Text style={styles.text}>
         {reachable
-          ? `Sending ${scans} saved while offline. New scans are checked against the saved list until they've gone.`
+          ? waiting
+            ? `New scans are checked against the saved list.${waiting}`
+            : `Sending ${scans} saved while offline. New scans are checked against the saved list until they've gone.`
           : listSavedAt
-            ? `Checking tickets against the list saved at ${time(listSavedAt)}.${pending > 0 ? ` ${scans} will be sent when the connection is back.` : ""}`
+            ? `Checking tickets against the list saved at ${time(listSavedAt)}.${pending > waitingForOthers ? ` ${plural(pending - waitingForOthers, "scan", "scans")} will be sent when the connection is back.` : ""}${waiting}`
             : "This device has no saved list for this event, so tickets can't be checked until the connection is back."}
       </Text>
     </View>

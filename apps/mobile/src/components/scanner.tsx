@@ -28,6 +28,9 @@ const SAME_CODE_IGNORED_MS = 5000;
 /** Shown when scans saved offline are still to send and there's no list to check this one on. */
 const PENDING_NO_LIST =
   "This device is still sending scans saved offline and has no saved list to check this one against. Try again once they've gone.";
+/** Shown when the scans saved offline on this device can't be read back. */
+const QUEUE_UNREADABLE =
+  "This device couldn't read back the scans it saved offline, so it can't check tickets in order. Try again in a moment, or restart the app.";
 /** How long a check may take before staff are offered Try again or Skip. */
 const SCAN_TIMEOUT_MS = 10_000;
 
@@ -120,7 +123,11 @@ export function Scanner({ event }: { event: DoorEvent }) {
       };
       void (async () => {
         const offline = doorRef.current;
+        // As the saved list had them before this scan was sent, in case its answer is lost.
+        let before: Awaited<ReturnType<typeof offline.before>> = null;
         try {
+          // Scans saved offline before the app last stopped go first, so they're read back first.
+          if (!(await offline.ready())) return fail(QUEUE_UNREADABLE);
           // Offline, or still sending scans saved offline, the saved list answers straight away:
           // waiting on a dead connection for each person would back up the line.
           if (offline.isOffline()) {
@@ -130,6 +137,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
             if (offline.hasPending()) return fail(PENDING_NO_LIST);
           }
           const { code, ticketId, direction, key, override, overrideReason } = scan;
+          before = await offline.before(scan);
           const result = doorScanResultSchema.parse(
             await call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
               method: "POST",
@@ -146,8 +154,13 @@ export function Scanner({ event }: { event: DoorEvent }) {
             // The scan may have reached TicketApp before the connection went: one saved here goes
             // with the same key, so it can't count twice.
             offline.unreachable();
-            const display = await offline.answer(scan).catch(() => null);
+            const display = await offline.answer(scan, before).catch(() => null);
             if (display) return show(display);
+          }
+          // TicketApp won't let this account work the event, or it can't be worked any more: its
+          // saved list mustn't answer for it either.
+          if (err instanceof ApiError && [403, 404, 409].includes(err.status)) {
+            offline.refused(event.id);
           }
           fail(err instanceof ApiError ? err.message : UNREACHABLE);
         } finally {

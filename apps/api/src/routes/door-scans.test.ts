@@ -1039,6 +1039,11 @@ describe("door scanner", () => {
       // A cancelled ticket can't get anyone in, so it isn't listed.
       const gone = await p.comp("Di");
       await t.prisma.order.update({ where: { id: gone.orderId }, data: { status: "CANCELLED" } });
+      // Unless its holder is inside: they're listed, marked, so they can still be checked out.
+      const ed = await p.comp("Ed");
+      await p.sign(ed.ticketId);
+      await p.scan(ed.code);
+      await t.prisma.order.update({ where: { id: ed.orderId }, data: { status: "REFUNDED" } });
 
       const res = await doorList(p);
       expect(res.statusCode).toBe(200);
@@ -1051,12 +1056,13 @@ describe("door scanner", () => {
         where: { ticketId: cy.ticketId, outcome: "CHECKED_OUT" },
       });
       expect(
-        list.tickets.map(({ attendeeName, codeHash, checkIn, waiver, leftAt }) => ({
+        list.tickets.map(({ attendeeName, codeHash, checkIn, waiver, leftAt, invalid }) => ({
           attendeeName,
           codeHash,
           checkIn,
           waiver,
           leftAt,
+          invalid,
         })),
       ).toEqual([
         {
@@ -1065,6 +1071,7 @@ describe("door scanner", () => {
           checkIn: "inside",
           waiver: "signed",
           leftAt: null,
+          invalid: null,
         },
         {
           attendeeName: "Bo Lee",
@@ -1072,6 +1079,7 @@ describe("door scanner", () => {
           checkIn: "not-arrived",
           waiver: "missing",
           leftAt: null,
+          invalid: null,
         },
         {
           attendeeName: "Cy Lee",
@@ -1079,6 +1087,15 @@ describe("door scanner", () => {
           checkIn: "left",
           waiver: "signed",
           leftAt: checkOut.scannedAt,
+          invalid: null,
+        },
+        {
+          attendeeName: "Ed Lee",
+          codeHash: sha256(ed.code),
+          checkIn: "inside",
+          waiver: "signed",
+          leftAt: null,
+          invalid: "cancelled",
         },
       ]);
       expect(list.tickets[0]).toMatchObject({ firstName: "Ann", lastName: "Lee", grade: null });
