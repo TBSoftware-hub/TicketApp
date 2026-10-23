@@ -1,5 +1,5 @@
 import { doorEventSchema, type DoorEvent } from "@ticketapp/shared";
-import { createContext, use, useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PropsWithChildren } from "react";
 import { api, ApiError } from "./api";
 import { getItem, setItem } from "./storage";
@@ -61,6 +61,8 @@ export function SessionProvider({ children }: PropsWithChildren) {
   const [isLoading, setLoading] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [event, setEvent] = useState<DoorEvent | null>(null);
+  // The token in use right now, so a late answer to an earlier session's request can tell it's stale.
+  const activeToken = useRef<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -70,6 +72,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
           getItem(EVENT_KEY),
         ]);
         const restored = parseSaved(savedSession, parseSession);
+        activeToken.current = restored?.token ?? null;
         setSession(restored);
         if (restored) setEvent(parseSaved(savedEvent, (v) => doorEventSchema.parse(v)));
       } finally {
@@ -85,10 +88,12 @@ export function SessionProvider({ children }: PropsWithChildren) {
 
   const signIn = useCallback(async (next: Session) => {
     await setItem(SESSION_KEY, JSON.stringify(next));
+    activeToken.current = next.token;
     setSession(next);
   }, []);
 
   const forget = useCallback(async () => {
+    activeToken.current = null;
     setSession(null);
     setEvent(null);
     await Promise.all([setItem(SESSION_KEY, null), setItem(EVENT_KEY, null)]);
@@ -104,10 +109,20 @@ export function SessionProvider({ children }: PropsWithChildren) {
 
   const call = useCallback(
     async <T,>(path: string, options: { method?: string; body?: unknown } = {}) => {
+      const token = session?.token;
       try {
-        return await api<T>(path, { ...options, token: session?.token });
+        return await api<T>(path, { ...options, token });
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) await forget();
+        // Only sign out if the rejected token is still the one in use: a request started before
+        // a sign-out must not throw away whoever signed in since.
+        if (
+          err instanceof ApiError &&
+          err.status === 401 &&
+          token &&
+          token === activeToken.current
+        ) {
+          await forget();
+        }
         throw err;
       }
     },

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp } from "../test-helpers";
 
@@ -304,6 +304,14 @@ describe("door app sign-in with an emailed code", () => {
     expect(await t.prisma.magicLinkToken.count({ where: { email } })).toBe(5);
   });
 
+  it("stores a keyed hash of the code, so a leaked table can't be searched for it", async () => {
+    const email = `door-hmac-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    const row = await t.prisma.magicLinkToken.findFirstOrThrow({ where: { email } });
+    expect(row.codeHash).not.toBe(createHash("sha256").update(code).digest("hex"));
+    expect(row.codeHash).not.toBe(createHash("sha256").update(`${email}:${code}`).digest("hex"));
+  });
+
   it("shares the five-per-fifteen-minutes limit with sign-in links", async () => {
     const email = `door-limit-${randomUUID()}@example.com`;
     for (let i = 0; i < 3; i++) {
@@ -328,5 +336,45 @@ describe("door app sign-in with an emailed code", () => {
       payload: { token: code.padEnd(20, "0") },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("door app sign-in setup", () => {
+  it("turns code sign-in off, rather than weakening it, when production has no code key", async () => {
+    const env = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    const t = await buildTestApp({ signInCodeKey: undefined });
+    try {
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/sign-in-code",
+        payload: { email: `no-key-${randomUUID()}@example.com` },
+      });
+      expect(res.statusCode).toBe(503);
+      expect(t.sent).toHaveLength(0);
+    } finally {
+      process.env.NODE_ENV = env;
+      await t.close();
+    }
+  });
+});
+
+describe("sign-in requests per IP across links and codes", () => {
+  it("counts link and code requests from one client against one allowance", async () => {
+    const t = await buildTestApp({ magicLinkPerIpPerMinute: 2 });
+    try {
+      const request = (url: string) =>
+        t.app.inject({
+          method: "POST",
+          url,
+          payload: { email: `ip-${randomUUID()}@example.com` },
+        });
+      expect((await request("/auth/magic-link")).statusCode).toBe(202);
+      expect((await request("/auth/sign-in-code")).statusCode).toBe(202);
+      expect((await request("/auth/sign-in-code")).statusCode).toBe(429);
+      expect((await request("/auth/magic-link")).statusCode).toBe(429);
+    } finally {
+      await t.close();
+    }
   });
 });

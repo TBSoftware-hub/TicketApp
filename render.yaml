@@ -37,6 +37,9 @@ services:
         sync: false
       - key: WEB_ORIGIN
         sync: false
+      # Secret the door app's sign-in codes are hashed with; Render generates it once.
+      - key: SIGN_IN_CODE_KEY
+        generateValue: true
       # Free Render services block outbound SMTP, so email goes over Resend's HTTPS API.
       # On a paid plan, SMTP_URL can be used instead (see docs/deploy.md).
       - key: RESEND_API_KEY

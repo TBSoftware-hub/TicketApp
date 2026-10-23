@@ -42,6 +42,11 @@ export interface AppDeps {
   payments?: Payments;
   /** Base URL of the web dashboard, used in sign-in links. */
   webBaseUrl?: string;
+  /**
+   * Server-only secret the door app's sign-in codes are hashed with. Left out in production, code
+   * sign-in is switched off; elsewhere a fixed development key is used.
+   */
+  signInCodeKey?: string;
   /** Sign-in link requests allowed per client IP per minute (default 10). */
   magicLinkPerIpPerMinute?: number;
   /** Checkouts started per client IP per minute (default 30). */
@@ -98,6 +103,10 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
     prisma: deps.prisma,
     mailer,
     webBaseUrl,
+    signInCodeKey:
+      deps.signInCodeKey ??
+      process.env.SIGN_IN_CODE_KEY ??
+      (process.env.NODE_ENV === "production" ? undefined : "development-sign-in-code-key"),
     magicLinkPerIpPerMinute: deps.magicLinkPerIpPerMinute ?? 10,
   });
   await app.register(orgRoutes, { prisma: deps.prisma });

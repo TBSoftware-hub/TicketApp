@@ -6,7 +6,7 @@ import {
   verifySignInCodeSchema,
 } from "@ticketapp/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { randomInt } from "node:crypto";
+import { createHmac, randomInt } from "node:crypto";
 import { requireUser, SESSION_TTL_MS } from "../lib/auth";
 import { HttpError } from "../lib/errors";
 import type { Mailer } from "../lib/mailer";
@@ -83,21 +83,44 @@ async function wrongGuesses(tx: Prisma.TransactionClient, email: string, now: Da
   return _max.failedAttempts ?? 0;
 }
 
+/**
+ * A six-digit code has only a million values, so a plain hash could be reversed by trying them all.
+ * Keying the hash with a server-only secret means a leaked table alone doesn't give codes away.
+ */
+function hashCode(key: string, email: string, code: string) {
+  return createHmac("sha256", key).update(`${email}:${code}`).digest("hex");
+}
+
 export interface AuthRouteOptions {
   prisma: PrismaClient;
   mailer: Mailer;
   webBaseUrl: string;
+  /** Key for sign-in code hashes; without one, code sign-in is switched off. */
+  signInCodeKey?: string;
   /** Sign-in link requests allowed per client IP per minute. */
   magicLinkPerIpPerMinute: number;
 }
 
 export async function authRoutes(
   app: FastifyInstance,
-  { prisma, mailer, webBaseUrl, magicLinkPerIpPerMinute }: AuthRouteOptions,
+  { prisma, mailer, webBaseUrl, signInCodeKey, magicLinkPerIpPerMinute }: AuthRouteOptions,
 ) {
+  function codeKey() {
+    if (!signInCodeKey) {
+      throw new HttpError(503, "Door app sign-in isn't set up yet. Ask your TicketApp admin.");
+    }
+    return signInCodeKey;
+  }
+
+  // Links and codes share one allowance per client. One limiter instance has one counter; a
+  // route's own rateLimit config would get a counter of its own even with a shared groupId.
+  const signInRequestLimit = {
+    preHandler: app.rateLimit({ max: magicLinkPerIpPerMinute, timeWindow: "1 minute" }),
+  };
+  const verifyCodeLimit = { rateLimit: { max: magicLinkPerIpPerMinute, timeWindow: "1 minute" } };
+
   // Always 202 so the response doesn't reveal whether an account exists for the email.
-  const magicLinkLimit = { rateLimit: { max: magicLinkPerIpPerMinute, timeWindow: "1 minute" } };
-  app.post("/auth/magic-link", { config: magicLinkLimit }, async (request, reply) => {
+  app.post("/auth/magic-link", signInRequestLimit, async (request, reply) => {
     const { email, name } = parse(magicLinkRequestSchema, request.body);
     const token = generateToken();
     const link = await prisma.$transaction(async (tx) => {
@@ -150,8 +173,9 @@ export async function authRoutes(
   });
 
   // The door app's sign-in: the same per-email limit as links, but the email carries a code.
-  app.post("/auth/sign-in-code", { config: magicLinkLimit }, async (request, reply) => {
+  app.post("/auth/sign-in-code", signInRequestLimit, async (request, reply) => {
     const { email } = parse(signInCodeRequestSchema, request.body);
+    const key = codeKey();
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
     const link = await prisma.$transaction(async (tx) => {
       await lockEmail(tx, email);
@@ -165,7 +189,7 @@ export async function authRoutes(
           email,
           // Never sent anywhere: a code row can only be redeemed through /auth/verify-code.
           tokenHash: hashToken(generateToken()),
-          codeHash: hashToken(code),
+          codeHash: hashCode(key, email, code),
           failedAttempts,
           expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
         },
@@ -186,8 +210,9 @@ export async function authRoutes(
     return reply.code(202).send({ ok: true });
   });
 
-  app.post("/auth/verify-code", { config: magicLinkLimit }, async (request) => {
+  app.post("/auth/verify-code", { config: verifyCodeLimit }, async (request) => {
     const { email, code } = parse(verifySignInCodeSchema, request.body);
+    const key = codeKey();
     const now = new Date();
 
     const sessionToken = generateToken();
@@ -197,7 +222,7 @@ export async function authRoutes(
       await lockEmail(tx, email);
       if ((await wrongGuesses(tx, email, now)) >= MAX_CODE_ATTEMPTS) return undefined;
       const consumed = await tx.magicLinkToken.updateManyAndReturn({
-        where: { ...openCodes(email, now), codeHash: hashToken(code) },
+        where: { ...openCodes(email, now), codeHash: hashCode(key, email, code) },
         data: { consumedAt: now },
       });
       const link = consumed[0];
