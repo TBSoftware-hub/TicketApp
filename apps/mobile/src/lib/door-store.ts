@@ -11,6 +11,9 @@ export const DOOR_QUEUE_FILE = "door-queue.json";
 
 export async function readFile(name: string): Promise<string | null> {
   if (web) return globalThis.localStorage?.getItem(`ticketapp.${name}`) ?? null;
+  // A finished copy not yet put in place, after the app stopped part-way: it's the latest.
+  const pending = new File(Paths.document, `${name}.new`);
+  if (pending.exists) return pending.text();
   const file = new File(Paths.document, name);
   return file.exists ? file.text() : null;
 }
@@ -26,12 +29,24 @@ export function writeFile(name: string, text: string | null): Promise<void> {
       return;
     }
     const file = new File(Paths.document, name);
+    const pending = new File(Paths.document, `${name}.new`);
+    const draft = new File(Paths.document, `${name}.tmp`);
     if (text === null) {
-      if (file.exists) file.delete();
+      for (const f of [file, pending, draft]) if (f.exists) f.delete();
       return;
     }
-    if (!file.exists) file.create();
-    await file.write(text);
+    // Written in full to a draft and checked, then named as a finished copy, then put in place: a
+    // write that fails or is cut off leaves the last one, or a finished copy, never half a file.
+    if (draft.exists) draft.delete();
+    draft.create();
+    await draft.write(text);
+    if ((await draft.text()) !== text) {
+      draft.delete();
+      throw new Error(`Couldn't save ${name}`);
+    }
+    if (pending.exists) pending.delete();
+    draft.rename(pending.name);
+    await new File(Paths.document, `${name}.new`).move(file, { overwrite: true });
   };
   const next = (writes.get(name) ?? Promise.resolve()).then(write, write);
   writes.set(name, next);

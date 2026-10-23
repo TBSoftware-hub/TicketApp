@@ -54,6 +54,8 @@ export interface DoorScanRequest {
 interface SavedList extends DoorList {
   eventId: string;
   savedAt: number;
+  /** TicketApp gave an answer the list can't be brought up to date from: download it again. */
+  stale?: boolean;
 }
 
 /** A scan made offline that let someone in or out, waiting to be sent. */
@@ -454,10 +456,20 @@ export function OfflineProvider({ children }: PropsWithChildren) {
                 (s) =>
                   s.key !== key && s.eventId === eventId && s.listTicketId === scan.listTicketId,
               );
-              if (!later) {
-                updateTicket(eventId, scan.listTicketId, (t) =>
-                  afterScan(t, result, new Date(offlineAt)),
-                );
+              if (result.outcome === outcome || result.outcome === "invalid_ticket") {
+                if (!later) {
+                  updateTicket(eventId, scan.listTicketId, (t) =>
+                    afterScan(t, result, new Date(offlineAt)),
+                  );
+                }
+              } else {
+                // A different answer may be one TicketApp gave this scan earlier, whose answer was
+                // lost, and say nothing of where they stand now. Until the list is downloaded
+                // again, which happens next, their ticket isn't answered for offline.
+                updateList(eventId, (l) => ({
+                  ...changeTicket(l, scan.listTicketId, () => null),
+                  stale: true,
+                }));
               }
             }
           } catch (err) {
@@ -515,7 +527,14 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       const current = eventRef.current;
       if (!current || (pendingFor(queue.saved, current.id) > 0 && !held.has(current.id))) return;
       const mine = list.current?.eventId === current.id ? list.current : null;
-      if (mine && reachableRef.current && Date.now() - mine.savedAt < LIST_FRESH_MS) return;
+      if (
+        mine &&
+        !mine.stale &&
+        reachableRef.current &&
+        Date.now() - mine.savedAt < LIST_FRESH_MS
+      ) {
+        return;
+      }
       const dropped = drops.current;
       const made: NonNullable<typeof edits.current> = [];
       edits.current = made;
@@ -554,7 +573,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     } finally {
       queue.syncing = false;
     }
-  }, [load, updateTicket, learnPolicy, dropList, saveList, setReachable, rerender]);
+  }, [load, updateList, updateTicket, learnPolicy, dropList, saveList, setReachable, rerender]);
 
   // Saved scans are sent whatever event is picked, or none: they may be for one that has ended.
   const eventId = event?.id;
@@ -644,14 +663,21 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   const answered = useCallback(
     async (scan: DoorScanRequest, result: DoorScanResult) => {
       setReachable(true);
-      const found = await find(scan);
-      if (!found) return;
-      learnPolicy(found.current.eventId, result);
-      const ticket = found.current.tickets[found.index];
-      if (!ticket) return;
-      updateTicket(found.current.eventId, ticket.ticketId, (t) => afterScan(t, result, new Date()));
+      const eventId = eventRef.current?.id;
+      if (!eventId) return;
+      const hash = scan.code === undefined ? undefined : await hashCode(scan.code);
+      const at = new Date();
+      learnPolicy(eventId, result);
+      // Made to the list being downloaded too, which may have a ticket bought since the saved
+      // one was, so it's found by its code or id there rather than here.
+      updateList(eventId, (l) => {
+        const ticket = l.tickets.find((t) =>
+          hash === undefined ? t.ticketId === scan.ticketId : t.codeHash === hash,
+        );
+        return ticket ? changeTicket(l, ticket.ticketId, (t) => afterScan(t, result, at)) : l;
+      });
     },
-    [find, updateTicket, learnPolicy, setReachable],
+    [updateList, learnPolicy, setReachable],
   );
 
   const unreachable = useCallback(() => setReachable(false), [setReachable]);
