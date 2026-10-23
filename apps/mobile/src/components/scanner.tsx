@@ -36,6 +36,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
   const [torch, setTorch] = useState(false);
   // The camera reports the same code many times a second; this holds it to one check at a time.
   const locked = useRef(false);
+  // Set while a check is on its way, so a retry tapped twice can't send the code twice.
+  const inFlight = useRef(false);
   const lastCode = useRef<{ code: string; until: number } | null>(null);
   // Set false on unmount, so a late answer isn't shown on a screen that moved on.
   const mounted = useRef(true);
@@ -48,6 +50,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
 
   const check = useCallback(
     (code: string) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
       locked.current = true;
       setBusy(true);
       call(`/orgs/${event.organization.id}/events/${event.id}/scans`, {
@@ -71,6 +75,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
           );
         })
         .finally(() => {
+          inFlight.current = false;
           if (mounted.current) setBusy(false);
         });
     },
@@ -130,7 +135,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
           enableTorch={torch}
         />
         {shown ? (
-          <Result shown={shown} onNext={next} onRetry={() => check(shown.code)} />
+          <Result shown={shown} busy={busy} onNext={next} onRetry={() => check(shown.code)} />
         ) : (
           <View style={styles.hint} pointerEvents="none">
             <Text style={styles.hintText}>
@@ -152,10 +157,13 @@ export function Scanner({ event }: { event: DoorEvent }) {
 
 function Result({
   shown,
+  busy,
   onNext,
   onRetry,
 }: {
   shown: Shown;
+  /** A retry is on its way: its answer replaces this one, so nothing here can be tapped. */
+  busy: boolean;
   onNext: () => void;
   onRetry: () => void;
 }) {
@@ -169,6 +177,7 @@ function Result({
       accessibilityLiveRegion="assertive"
       // Tapping anywhere on a result moves on; after a failed check it tries the same code again.
       onPress={failed ? onRetry : onNext}
+      disabled={busy}
       style={[StyleSheet.absoluteFill, styles.result, { backgroundColor: colors[tone] }]}
     >
       <Text style={styles.resultTitle}>{title}</Text>
@@ -177,8 +186,12 @@ function Result({
           {line}
         </Text>
       ))}
-      <Text style={styles.resultAction}>{failed ? "Tap to try again" : "Tap to scan next"}</Text>
-      {failed && (
+      {busy ? (
+        <Text style={styles.resultLine}>Checking ticket…</Text>
+      ) : (
+        <Text style={styles.resultAction}>{failed ? "Tap to try again" : "Tap to scan next"}</Text>
+      )}
+      {failed && !busy && (
         <Pressable accessibilityRole="button" onPress={onNext} hitSlop={12}>
           <Text style={styles.resultAction}>Skip</Text>
         </Pressable>

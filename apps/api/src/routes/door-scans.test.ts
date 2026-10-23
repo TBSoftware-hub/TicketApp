@@ -174,6 +174,23 @@ describe("door scanner", () => {
     });
   });
 
+  it("waits for a transfer in progress and then turns the old code away", async () => {
+    const p = await party();
+    const { orderId, ticketId, code } = await p.comp("Nia");
+    let scanning: ReturnType<typeof p.scan> | undefined;
+    // A transfer locks the order and voids the old ticket without touching the order row; a scan
+    // that starts meanwhile has to see the voided ticket once the transfer commits.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId}::uuid FOR UPDATE`;
+      await tx.ticket.update({ where: { id: ticketId }, data: { status: "VOID" } });
+      scanning = p.scan(code);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect((await scanning!).json()).toEqual({ outcome: "invalid_ticket", reason: "cancelled" });
+    const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+    expect(ticket.isInside).toBe(false);
+  });
+
   it("turns away a ticket whose checkout wasn't paid for", async () => {
     const p = await party();
     const { orderId, code } = await p.comp("Ivy");
@@ -222,6 +239,28 @@ describe("door scanner", () => {
       `/orgs/${p.orgId}/events/${other.prom.eventId}`,
     );
     expect(res.statusCode).toBe(404);
+  });
+
+  it("stops scanning for an event that was cancelled, unpublished or has ended", async () => {
+    const p = await party();
+    const { code } = await p.comp("Oz");
+    const where = { id: p.prom.eventId };
+    await t.prisma.event.update({ where, data: { status: "CANCELLED" } });
+    expect((await p.scan(code)).json()).toEqual({ error: "This event was cancelled" });
+    await t.prisma.event.update({ where, data: { status: "DRAFT" } });
+    expect((await p.scan(code)).json()).toEqual({ error: "This event isn't published yet" });
+    await t.prisma.event.update({
+      where,
+      data: {
+        status: "PUBLISHED",
+        startsAt: new Date(Date.now() - 5 * 60 * 60_000),
+        endsAt: new Date(Date.now() - 60_000),
+      },
+    });
+    const ended = await p.scan(code);
+    expect(ended.statusCode).toBe(409);
+    expect(ended.json()).toEqual({ error: "This event has ended" });
+    expect(await t.prisma.scanEvent.count({ where: { eventId: p.prom.eventId } })).toBe(0);
   });
 
   it("rejects an empty scan", async () => {

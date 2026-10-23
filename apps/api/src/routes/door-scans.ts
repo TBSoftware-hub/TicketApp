@@ -33,9 +33,14 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
     const { code } = parse(doorScanSchema, request.body);
     const event = await prisma.event.findFirst({
       where: { id: eventId, organizationId: orgId },
-      select: { id: true },
+      select: { status: true, endsAt: true },
     });
     if (!event) throw new HttpError(404, "Event not found");
+    // The same events the door app's picker offers: a device left on an event that was cancelled
+    // or has ended since can't keep letting people in.
+    if (event.status === "CANCELLED") throw new HttpError(409, "This event was cancelled");
+    if (event.status !== "PUBLISHED") throw new HttpError(409, "This event isn't published yet");
+    if (event.endsAt <= new Date()) throw new HttpError(409, "This event has ended");
 
     return prisma.$transaction(async (tx): Promise<DoorScanResult> => {
       const scannedAt = new Date();
@@ -49,12 +54,17 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
 
       // Shares the order's lock with other scans but waits on a cancel or transfer, which take it
       // for update: a ticket can't be voided while it lets someone in, or moved once they're inside.
+      // The ticket is read in a second statement, after the lock is held: a transfer changes ticket
+      // rows but not the order's, so a read made while waiting would still see the old ticket.
+      await tx.$queryRaw`
+        SELECT o.id FROM "Order" o JOIN "Ticket" t ON t."orderId" = o.id
+        WHERE t.code = ${code}
+        FOR SHARE OF o`;
       const [ticket] = await tx.$queryRaw<ScannedTicket[]>`
         SELECT t.id, t."eventId", t.status::text AS status, o.status::text AS "orderStatus",
           EXISTS (SELECT 1 FROM "Ticket" n WHERE n."transferredFromId" = t.id) AS transferred
         FROM "Ticket" t JOIN "Order" o ON o.id = t."orderId"
-        WHERE t.code = ${code}
-        FOR SHARE OF o`;
+        WHERE t.code = ${code}`;
       // A ticket for another event is left off this event's record, as an unknown code is.
       if (!ticket || ticket.eventId !== eventId) {
         await record(null, "INVALID_TICKET");
@@ -81,7 +91,7 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
       // Only one of two devices scanning the same ticket at once gets to let them in; the other
       // waits on the row and then finds them already inside.
       const { count } = await tx.ticket.updateMany({
-        where: { id: ticket.id, isInside: false },
+        where: { id: ticket.id, status: "VALID", isInside: false },
         data: { isInside: true },
       });
       if (count === 1) {
