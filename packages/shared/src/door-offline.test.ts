@@ -5,6 +5,7 @@ import {
   DOOR_LOOKUP_LIMIT,
   doorListSchema,
   searchDoorList,
+  withMovements,
   type DoorListTicket,
 } from "./index";
 
@@ -182,5 +183,22 @@ describe("doorListSchema", () => {
     });
     expect(parsed.fetchedAt).toEqual(new Date("2026-05-03T01:00:00Z"));
     expect(parsed.tickets[0]!.leftAt).toEqual(leftAt);
+  });
+});
+
+describe("withMovements", () => {
+  it("replays moves not sent yet onto a saved list that missed them, in order", () => {
+    const at = new Date("2026-05-03T01:00:00Z");
+    const list = [ticket({ ticketId: "a" }), ticket({ ticketId: "b" }), ticket({ ticketId: "c" })];
+    const next = withMovements(list, [
+      { ticketId: "a", outcome: "admitted", at },
+      { ticketId: "b", outcome: "admitted", at },
+      { ticketId: "b", outcome: "checked_out", at },
+      { ticketId: "gone", outcome: "admitted", at },
+    ]);
+    expect(next.map((t) => t.checkIn)).toEqual(["inside", "left", "not-arrived"]);
+    expect(next[1]!.leftAt).toEqual(at);
+    // A list that already has them is left as it is.
+    expect(withMovements(next, [{ ticketId: "a", outcome: "admitted", at }])).toEqual(next);
   });
 });

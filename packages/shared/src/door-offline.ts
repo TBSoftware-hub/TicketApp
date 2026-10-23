@@ -177,3 +177,32 @@ export const OFFLINE_NOT_SAVED: ScanDisplay = {
     "This device is offline and couldn't save the scan to send later, so it hasn't counted. Free up space on the phone, or try again once the connection is back.",
   ],
 };
+
+/** Someone the device let in or out while offline, in a scan not sent yet. */
+export interface OfflineMovement {
+  ticketId: string;
+  outcome: "admitted" | "checked_out";
+  at: Date;
+}
+
+/**
+ * The saved tickets with the moves still waiting to be sent applied in order. The list and the
+ * scans waiting to be sent are saved separately, so one restored after the app stopped part-way
+ * through saving still knows who is inside. Applying a move twice changes nothing.
+ */
+export function withMovements(
+  tickets: DoorListTicket[],
+  movements: OfflineMovement[],
+): DoorListTicket[] {
+  const index = new Map(tickets.map((t, i) => [t.ticketId, i]));
+  const next = [...tickets];
+  for (const { ticketId, outcome, at } of movements) {
+    const i = index.get(ticketId);
+    if (i === undefined) continue;
+    next[i] =
+      outcome === "admitted"
+        ? { ...next[i]!, checkIn: "inside" }
+        : { ...next[i]!, checkIn: "left", leftAt: at };
+  }
+  return next;
+}

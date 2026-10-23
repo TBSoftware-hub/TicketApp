@@ -9,7 +9,9 @@ import {
   OFFLINE_NOT_SAVED,
   OFFLINE_SCAN_MAX_AGE_MS,
   searchDoorList,
+  withMovements,
   type DoorList,
+  type DoorListTicket,
   type DoorLookupResult,
   type DoorScanResult,
   type ScanDirection,
@@ -58,10 +60,14 @@ interface SavedList extends DoorList {
 interface QueuedScan extends DoorScanRequest {
   orgId: string;
   eventId: string;
+  eventName: string;
+  timeZone: string;
+  /** The ticket it moved, however staff found it: by QR code or by name. */
+  listTicketId: string;
   /** When it was made, in ISO form. */
   offlineAt: string;
   /** What the door told staff, so a different answer from TicketApp can be pointed out. */
-  outcome: DoorScanResult["outcome"];
+  outcome: "admitted" | "checked_out";
   shown: string;
   name: string;
 }
@@ -70,6 +76,8 @@ interface QueuedScan extends DoorScanRequest {
 export interface SyncProblem {
   key: string;
   eventId: string;
+  eventName: string;
+  timeZone: string;
   name: string;
   offlineAt: string;
   /** What the door said at the time, such as "Let them in". */
@@ -96,7 +104,10 @@ interface OfflineContext {
   listSavedAt: Date | null;
   /** Scans for this event made offline and not sent yet. */
   pending: number;
-  /** Scans for this event that TicketApp answered differently once they were sent. */
+  /**
+   * Scans TicketApp answered differently once they were sent, for any event: the event may have
+   * ended since, and staff still need to see them.
+   */
   problems: SyncProblem[];
   dismissProblems: () => void;
   /** Answers a scan from the saved list, or null with no list to answer from. */
@@ -153,6 +164,38 @@ function parseSaved(raw: string | null): Saved {
 }
 
 /**
+ * The scans waiting to be sent and the problems to show, kept once for the whole app as the file
+ * keeps them: a door screen left behind by signing out and back in can't then save an older copy
+ * over a newer one, or send the same scan alongside the new screen.
+ */
+const queue = {
+  saved: { scans: [], problems: [] } as Saved,
+  loaded: null as Promise<void> | null,
+  syncing: false,
+};
+
+function loadQueue() {
+  queue.loaded ??= readFile(DOOR_QUEUE_FILE)
+    .then((raw) => {
+      queue.saved = parseSaved(raw);
+    })
+    .catch(() => undefined);
+  return queue.loaded;
+}
+
+function saveQueue() {
+  void writeFile(DOOR_QUEUE_FILE, JSON.stringify(queue.saved)).catch(() => undefined);
+}
+
+/** A saved list with the moves still waiting to be sent for its event applied. */
+function withQueued(list: SavedList): SavedList {
+  const movements = queue.saved.scans
+    .filter((s) => s.eventId === list.eventId)
+    .map((s) => ({ ticketId: s.listTicketId, outcome: s.outcome, at: new Date(s.offlineAt) }));
+  return { ...list, tickets: withMovements(list.tickets, movements) };
+}
+
+/**
  * Keeps the door working when the connection drops: a saved copy of the event's list to answer
  * scans from, and the scans that let people in or out while offline, sent in order once
  * TicketApp can be reached again.
@@ -165,11 +208,9 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   // The source of truth is kept in refs, so answers given in quick succession each see the last.
   const reachableRef = useRef(true);
   const list = useRef<SavedList | null>(null);
-  const saved = useRef<Saved>({ scans: [], problems: [] });
   const loaded = useRef<Promise<void> | null>(null);
   // Counts changes made to the saved list here, so a download started before one is thrown away.
   const changes = useRef(0);
-  const syncing = useRef(false);
   // False once signed out: a download that lands after that mustn't save everyone's names again.
   const mounted = useRef(true);
   useEffect(() => {
@@ -189,10 +230,10 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   }, []);
 
   const load = useCallback(() => {
-    loaded.current ??= Promise.all([readFile(DOOR_LIST_FILE), readFile(DOOR_QUEUE_FILE)])
-      .then(([rawList, rawSaved]) => {
-        list.current = parseList(rawList);
-        saved.current = parseSaved(rawSaved);
+    loaded.current ??= Promise.all([readFile(DOOR_LIST_FILE), loadQueue()])
+      .then(([rawList]) => {
+        const saved = parseList(rawList);
+        list.current = saved && withQueued(saved);
       })
       .catch(() => undefined)
       .finally(rerender);
@@ -205,61 +246,60 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       () => undefined,
     );
   }, []);
-  const saveQueue = useCallback(() => {
-    void writeFile(DOOR_QUEUE_FILE, JSON.stringify(saved.current)).catch(() => undefined);
-  }, []);
 
   const isOffline = useCallback(
-    () => !reachableRef.current || pendingFor(saved.current, eventRef.current?.id) > 0,
+    () => !reachableRef.current || pendingFor(queue.saved, eventRef.current?.id) > 0,
     [],
   );
-  const hasPending = useCallback(() => pendingFor(saved.current, eventRef.current?.id) > 0, []);
+  const hasPending = useCallback(() => pendingFor(queue.saved, eventRef.current?.id) > 0, []);
 
-  /** The saved ticket a scan is for, if the event's list has it. */
-  const find = useCallback(
-    async (scan: Pick<DoorScanRequest, "code" | "ticketId">, eventId = eventRef.current?.id) => {
-      const hash = scan.code === undefined ? undefined : await hashCode(scan.code);
-      const current = list.current;
-      if (!current || current.eventId !== eventId) return null;
-      const index = current.tickets.findIndex((t) =>
-        hash === undefined ? t.ticketId === scan.ticketId : t.codeHash === hash,
-      );
-      return { current, index };
-    },
-    [],
-  );
+  /** The saved ticket a scan is for, if this event's list has it. */
+  const find = useCallback(async (scan: Pick<DoorScanRequest, "code" | "ticketId">) => {
+    const hash = scan.code === undefined ? undefined : await hashCode(scan.code);
+    const current = list.current;
+    if (!current || current.eventId !== eventRef.current?.id) return null;
+    const index = current.tickets.findIndex((t) =>
+      hash === undefined ? t.ticketId === scan.ticketId : t.codeHash === hash,
+    );
+    return { current, index };
+  }, []);
 
-  /** Brings the saved list up to date with an answer TicketApp gave for one of its tickets. */
-  const reconcile = useCallback(
-    async (
-      scan: Pick<DoorScanRequest, "code" | "ticketId">,
-      result: DoorScanResult,
-      eventId?: string,
+  /**
+   * Updates one ticket on the saved list as it is now, which may have changed since the caller
+   * last looked: `next` gives the ticket after, or null to take it off the list.
+   */
+  const updateTicket = useCallback(
+    (
+      eventId: string,
+      ticketId: string,
+      next: (ticket: DoorListTicket) => DoorListTicket | null,
     ) => {
-      const found = await find(scan, eventId);
-      const ticket = found && found.current.tickets[found.index];
-      // The list may have been replaced while the code was hashed; that one is newer anyway.
-      if (!found || !ticket || list.current !== found.current) return;
-      const next = afterScan(ticket, result, new Date());
-      const tickets = [...found.current.tickets];
-      if (next) tickets[found.index] = next;
-      else tickets.splice(found.index, 1);
-      list.current = { ...found.current, tickets };
+      const current = list.current;
+      const index =
+        current?.eventId === eventId
+          ? current.tickets.findIndex((t) => t.ticketId === ticketId)
+          : -1;
+      if (!current || index < 0) return;
+      const tickets = [...current.tickets];
+      const after = next(tickets[index]!);
+      if (after) tickets[index] = after;
+      else tickets.splice(index, 1);
+      list.current = { ...current, tickets };
       changes.current++;
       saveList();
     },
-    [find, saveList],
+    [saveList],
   );
 
   const sync = useCallback(async () => {
-    if (syncing.current) return;
-    syncing.current = true;
+    if (queue.syncing) return;
+    queue.syncing = true;
     try {
       await load();
       // Events whose scans this account can't send; later scans for them wait too, to stay in order.
       const held = new Set<string>();
-      for (const scan of [...saved.current.scans]) {
-        const { orgId, eventId, key, offlineAt, outcome, shown, name } = scan;
+      for (const scan of [...queue.saved.scans]) {
+        const { orgId, eventId, eventName, timeZone, key, offlineAt, outcome, shown, name } = scan;
         if (held.has(eventId)) continue;
         let answer: string | null = null;
         if (Date.parse(offlineAt) < Date.now() - OFFLINE_SCAN_MAX_AGE_MS) {
@@ -283,16 +323,19 @@ export function OfflineProvider({ children }: PropsWithChildren) {
             const parsed = doorScanResultSchema.safeParse(res);
             if (!parsed.success) answer = "TicketApp gave an answer this app doesn't understand";
             else {
-              if (parsed.data.outcome !== outcome) answer = describeScan(parsed.data, "UTC").title;
+              const result = parsed.data;
+              if (result.outcome !== outcome) answer = describeScan(result, timeZone).title;
               // The list takes TicketApp's word for it, unless a later saved scan of the same
-              // ticket is still to go, whose answer will be the newer one.
-              const later = saved.current.scans.some(
+              // ticket, by code or by name, is still to go, whose answer will be the newer one.
+              const later = queue.saved.scans.some(
                 (s) =>
-                  s.key !== key &&
-                  s.eventId === eventId &&
-                  (scan.code === undefined ? s.ticketId === scan.ticketId : s.code === scan.code),
+                  s.key !== key && s.eventId === eventId && s.listTicketId === scan.listTicketId,
               );
-              if (!later) await reconcile(scan, parsed.data, eventId);
+              if (!later) {
+                updateTicket(eventId, scan.listTicketId, (t) =>
+                  afterScan(t, result, new Date(offlineAt)),
+                );
+              }
             }
           } catch (err) {
             if (!(err instanceof ApiError) || err.status === 0) {
@@ -311,12 +354,15 @@ export function OfflineProvider({ children }: PropsWithChildren) {
             answer = err.message;
           }
         }
-        saved.current = {
-          scans: saved.current.scans.filter((s) => s.key !== key),
+        queue.saved = {
+          scans: queue.saved.scans.filter((s) => s.key !== key),
           problems:
             answer === null
-              ? saved.current.problems
-              : [...saved.current.problems, { key, eventId, name, offlineAt, shown, answer }],
+              ? queue.saved.problems
+              : [
+                  ...queue.saved.problems,
+                  { key, eventId, eventName, timeZone, name, offlineAt, shown, answer },
+                ],
         };
         saveQueue();
         rerender();
@@ -325,7 +371,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       // Download the list again once it's stale, or to find out if TicketApp is back. Not while
       // scans for the event wait to be sent: the list wouldn't have them yet.
       const current = eventRef.current;
-      if (!current || pendingFor(saved.current, current.id) > 0) return;
+      if (!current || pendingFor(queue.saved, current.id) > 0) return;
       const mine = list.current?.eventId === current.id ? list.current : null;
       if (mine && reachableRef.current && Date.now() - mine.savedAt < LIST_FRESH_MS) return;
       const before = changes.current;
@@ -346,9 +392,9 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         if (!(err instanceof ApiError) || err.status === 0) setReachable(false);
       }
     } finally {
-      syncing.current = false;
+      queue.syncing = false;
     }
-  }, [load, reconcile, saveList, saveQueue, setReachable, rerender]);
+  }, [load, updateTicket, saveList, setReachable, rerender]);
 
   // Saved scans are sent whatever event is picked, or none: they may be for one that has ended.
   const eventId = event?.id;
@@ -381,12 +427,17 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       }
       const { result, moves } = decideOffline(ticket, scan, found.current.reentryAllowed);
       const display = describeScan(result, current.organization.timezone);
-      if (!moves) return { ...display, lines: [...display.lines, fromList] };
+      if (!moves || (result.outcome !== "admitted" && result.outcome !== "checked_out")) {
+        return { ...display, lines: [...display.lines, fromList] };
+      }
 
       const queued: QueuedScan = {
         ...scan,
         orgId: current.organization.id,
         eventId: current.id,
+        eventName: current.name,
+        timeZone: current.organization.timezone,
+        listTicketId: ticket.ticketId,
         offlineAt: at.toISOString(),
         outcome: result.outcome,
         shown: display.title,
@@ -396,19 +447,15 @@ export function OfflineProvider({ children }: PropsWithChildren) {
       try {
         await writeFile(
           DOOR_QUEUE_FILE,
-          JSON.stringify({ ...saved.current, scans: [...saved.current.scans, queued] }),
+          JSON.stringify({ ...queue.saved, scans: [...queue.saved.scans, queued] }),
         );
       } catch {
         return OFFLINE_NOT_SAVED;
       }
-      // Added to the queue as it is now, which a send may have shortened while that was written.
-      saved.current = { ...saved.current, scans: [...saved.current.scans, queued] };
+      // Added to the queue and the list as they are now, which a send may have changed meanwhile.
+      queue.saved = { ...queue.saved, scans: [...queue.saved.scans, queued] };
       saveQueue();
-      const tickets = [...found.current.tickets];
-      tickets[found.index] = afterScan(ticket, result, at) ?? ticket;
-      list.current = { ...found.current, tickets };
-      changes.current++;
-      saveList();
+      updateTicket(current.id, ticket.ticketId, (t) => afterScan(t, result, at) ?? t);
       rerender();
       // Back online but still sending earlier scans: this one goes straight after them.
       if (reachableRef.current) void sync();
@@ -420,15 +467,18 @@ export function OfflineProvider({ children }: PropsWithChildren) {
         ],
       };
     },
-    [find, load, saveList, saveQueue, rerender, sync],
+    [find, load, updateTicket, rerender, sync],
   );
 
   const answered = useCallback(
     async (scan: DoorScanRequest, result: DoorScanResult) => {
       setReachable(true);
-      await reconcile(scan, result);
+      const found = await find(scan);
+      const ticket = found?.current.tickets[found.index];
+      if (!found || !ticket) return;
+      updateTicket(found.current.eventId, ticket.ticketId, (t) => afterScan(t, result, new Date()));
     },
-    [reconcile, setReachable],
+    [find, updateTicket, setReachable],
   );
 
   const unreachable = useCallback(() => setReachable(false), [setReachable]);
@@ -440,16 +490,12 @@ export function OfflineProvider({ children }: PropsWithChildren) {
   }, []);
 
   const dismissProblems = useCallback(() => {
-    saved.current = {
-      ...saved.current,
-      problems: saved.current.problems.filter((p) => p.eventId !== eventRef.current?.id),
-    };
+    queue.saved = { ...queue.saved, problems: [] };
     saveQueue();
     rerender();
-  }, [saveQueue, rerender]);
+  }, [rerender]);
 
-  const pending = pendingFor(saved.current, eventId);
-  const problems = saved.current.problems.filter((p) => p.eventId === eventId);
+  const pending = pendingFor(queue.saved, eventId);
   const mine = list.current?.eventId === eventId ? list.current : null;
 
   // Rebuilt on each render, which follows every change to what's saved.
@@ -460,7 +506,7 @@ export function OfflineProvider({ children }: PropsWithChildren) {
     hasPending,
     listSavedAt: mine ? new Date(mine.savedAt) : null,
     pending,
-    problems,
+    problems: queue.saved.problems,
     dismissProblems,
     answer,
     answered,

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { AppState, KeyboardAvoidingView, Platform, ScrollView, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
-import { OfflineStatus } from "@/components/offline-status";
+import { OfflineStatus, SyncProblems } from "@/components/offline-status";
 import { Scanner } from "@/components/scanner";
 import { StaffBar } from "@/components/staff-bar";
 import { useSession } from "@/lib/session";
@@ -72,6 +72,7 @@ export default function Door() {
             {event.venue ? ` · ${event.venue}` : ""}
           </Text>
           <OfflineStatus event={event} />
+          <SyncProblems />
           {checking ? (
             <Text style={ui.muted}>Checking the event is still on…</Text>
           ) : (
