@@ -1,7 +1,7 @@
 import { doorEventSchema, type DoorEvent } from "@ticketapp/shared";
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PropsWithChildren } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, type ApiOptions } from "./api";
 import { getItem, setItem } from "./storage";
 
 const SESSION_KEY = "ticketapp.session";
@@ -28,7 +28,7 @@ interface SessionContext {
   signOut: () => Promise<void>;
   chooseEvent: (event: DoorEvent | null) => Promise<void>;
   /** Calls the API as the signed-in staff member; an expired session signs the device out. */
-  call: <T>(path: string, options?: { method?: string; body?: unknown }) => Promise<T>;
+  call: <T>(path: string, options?: Omit<ApiOptions, "token">) => Promise<T>;
 }
 
 const Context = createContext<SessionContext | null>(null);
@@ -108,7 +108,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
   }, [session, forget]);
 
   const call = useCallback(
-    async <T,>(path: string, options: { method?: string; body?: unknown } = {}) => {
+    async <T,>(path: string, options: Omit<ApiOptions, "token"> = {}) => {
       const token = session?.token;
       try {
         return await api<T>(path, { ...options, token });

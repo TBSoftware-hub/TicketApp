@@ -16,6 +16,7 @@ import { authRoutes } from "./routes/auth";
 import { checkoutRoutes } from "./routes/checkout";
 import { compRoutes } from "./routes/comps";
 import { doorSaleRoutes } from "./routes/door-sales";
+import { doorScanRoutes } from "./routes/door-scans";
 import { eventRoutes } from "./routes/events";
 import { guardianSignatureRoutes } from "./routes/guardian-signatures";
 import { memberRoutes } from "./routes/members";
@@ -167,6 +168,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(rosterRoutes, { prisma: deps.prisma });
   await app.register(compRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
   await app.register(doorSaleRoutes, { prisma: deps.prisma, payments: deps.payments, confirm });
+  await app.register(doorScanRoutes, { prisma: deps.prisma });
   await app.register(orderRoutes, {
     prisma: deps.prisma,
     payments: deps.payments,
