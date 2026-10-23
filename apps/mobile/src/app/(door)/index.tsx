@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { AppState, KeyboardAvoidingView, Platform, ScrollView, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
-import { OfflineStatus, SyncProblems } from "@/components/offline-status";
+import { InsideCount, OfflineStatus, SyncProblems } from "@/components/offline-status";
 import { Scanner } from "@/components/scanner";
 import { StaffBar } from "@/components/staff-bar";
 import { useSession } from "@/lib/session";
@@ -71,6 +71,7 @@ export default function Door() {
             {formatDoorEventTime(event)}
             {event.venue ? ` · ${event.venue}` : ""}
           </Text>
+          <InsideCount />
           <OfflineStatus event={event} />
           <SyncProblems />
           {checking ? (

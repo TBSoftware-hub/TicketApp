@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DOOR_LOOKUP_LIMIT, doorListSchema, OFFLINE_SCAN_MAX_AGE_MS } from "@ticketapp/shared";
+import {
+  DOOR_CHANGES_MAX_AGE_MS,
+  DOOR_LOOKUP_LIMIT,
+  doorListChangesSchema,
+  doorListSchema,
+  OFFLINE_SCAN_MAX_AGE_MS,
+} from "@ticketapp/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp, uniqueSlug } from "../test-helpers";
 
@@ -1188,6 +1194,125 @@ describe("door scanner", () => {
       });
       expect(old.statusCode).toBe(400);
       expect(await t.prisma.scanEvent.count({ where: { eventId: p.prom.eventId } })).toBe(0);
+    });
+  });
+
+  describe("several door devices", () => {
+    const changes = (
+      p: Awaited<ReturnType<typeof party>>,
+      since: string,
+      headers = p.owner.headers,
+    ) =>
+      t.app.inject({
+        method: "GET",
+        url: `${p.prom.base}/door-list/changes?since=${encodeURIComponent(since)}`,
+        headers,
+      });
+    /** Makes everything about the event so far older than a device's last ask could look back. */
+    const backdate = async (eventId: string) => {
+      const long = new Date(Date.now() - 60 * 60_000);
+      await t.prisma.ticket.updateMany({ where: { eventId }, data: { updatedAt: long } });
+      await t.prisma.scanEvent.updateMany({ where: { eventId }, data: { scannedAt: long } });
+      await t.prisma.waiverSignature.updateMany({
+        where: { ticket: { eventId } },
+        data: { signedAt: long },
+      });
+    };
+
+    it("sends a device what the other doors did since it last asked", async () => {
+      const p = await waiverParty();
+      const ann = await p.comp("Ann");
+      const bo = await p.comp("Bo");
+      const cy = await p.comp("Cy");
+      const ed = await p.comp("Ed");
+      const fi = await p.comp("Fi");
+      await p.sign(ann.ticketId);
+      await p.sign(bo.ticketId);
+      await p.sign(fi.ticketId);
+      await p.scan(fi.code);
+      await backdate(p.prom.eventId);
+      const since = new Date().toISOString();
+
+      // Another door lets Ann in, and Bo in and back out; Cy signs her waiver in the line; Ed's
+      // ticket is voided. Nothing happens to Fi.
+      const door = await t.signIn();
+      await t.prisma.membership.create({
+        data: { userId: door.userId, organizationId: p.orgId, role: "DOOR_STAFF" },
+      });
+      expect((await p.scan(ann.code, door.headers)).json()).toMatchObject({ outcome: "admitted" });
+      await p.scan(bo.code, door.headers);
+      await p.send(bo.code, { direction: "out" }, door.headers);
+      await p.sign(cy.ticketId);
+      await t.prisma.ticket.update({ where: { id: ed.ticketId }, data: { status: "VOID" } });
+
+      const res = await changes(p, since);
+      expect(res.statusCode).toBe(200);
+      const body = doorListChangesSchema.parse(res.json());
+      const boOut = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId: bo.ticketId, outcome: "CHECKED_OUT" },
+      });
+      expect(
+        body.tickets.map(({ attendeeName, checkIn, waiver, leftAt }) => ({
+          attendeeName,
+          checkIn,
+          waiver,
+          leftAt,
+        })),
+      ).toEqual([
+        { attendeeName: "Ann Lee", checkIn: "inside", waiver: "signed", leftAt: null },
+        { attendeeName: "Bo Lee", checkIn: "left", waiver: "signed", leftAt: boOut.scannedAt },
+        { attendeeName: "Cy Lee", checkIn: "not-arrived", waiver: "signed", leftAt: null },
+      ]);
+      expect(body.removed).toEqual([ed.ticketId]);
+      expect(body.reentryAllowed).toBe(false);
+      // The codes themselves never leave the API.
+      expect(JSON.stringify(body)).not.toContain(ann.code);
+
+      // Asked again from the answer's time, a ticket changed since then still comes back, as
+      // does anything from just before it: sending one twice changes nothing.
+      await p.send(ann.code, { direction: "out" });
+      const next = doorListChangesSchema.parse(
+        (await changes(p, body.fetchedAt.toISOString())).json(),
+      );
+      expect(next.tickets.map((t) => [t.attendeeName, t.checkIn])).toEqual([
+        ["Ann Lee", "left"],
+        ["Bo Lee", "left"],
+        ["Cy Lee", "not-arrived"],
+      ]);
+    });
+
+    it("keeps someone inside on a ticket voided since, so they can still be checked out", async () => {
+      const p = await party();
+      const ann = await p.comp("Ann");
+      await p.scan(ann.code);
+      await backdate(p.prom.eventId);
+      const since = new Date().toISOString();
+      await t.prisma.order.update({ where: { id: ann.orderId }, data: { status: "REFUNDED" } });
+      await t.prisma.ticket.update({ where: { id: ann.ticketId }, data: { status: "VOID" } });
+      const body = doorListChangesSchema.parse((await changes(p, since)).json());
+      expect(body.tickets).toMatchObject([
+        { attendeeName: "Ann Lee", checkIn: "inside", invalid: "cancelled" },
+      ]);
+      expect(body.removed).toEqual([]);
+    });
+
+    it("tells a device that's been away too long to download the whole list again", async () => {
+      const p = await party();
+      const old = new Date(Date.now() - DOOR_CHANGES_MAX_AGE_MS - 60_000).toISOString();
+      expect((await changes(p, old)).json()).toEqual({ error: "Download the whole list again" });
+      expect((await changes(p, "yesterday")).statusCode).toBe(400);
+    });
+
+    it("keeps the changes to door staff for an event that's still on", async () => {
+      const p = await party();
+      const since = new Date().toISOString();
+      const outsider = await t.signIn();
+      expect((await changes(p, since, outsider.headers)).statusCode).toBe(404);
+      await t.prisma.event.update({
+        where: { id: p.prom.eventId },
+        data: { status: "CANCELLED" },
+      });
+      expect((await changes(p, since)).json()).toEqual({ error: "This event was cancelled" });
     });
   });
 });

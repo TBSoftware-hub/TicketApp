@@ -4,7 +4,9 @@ import {
   decideOffline,
   DOOR_LOOKUP_LIMIT,
   doorListSchema,
+  doorListChangesQuerySchema,
   searchDoorList,
+  withChanges,
   withMovements,
   type DoorListTicket,
 } from "./index";
@@ -235,5 +237,35 @@ describe("withMovements", () => {
     expect(next[1]!.leftAt).toEqual(at);
     // A list that already has them is left as it is.
     expect(withMovements(next, [{ ticketId: "a", outcome: "admitted", at }])).toEqual(next);
+  });
+});
+
+describe("withChanges", () => {
+  it("swaps in the tickets sent, adds new ones, and takes removed ones off", () => {
+    const bo = ticket({ ticketId: "b", attendeeName: "Bo Lee" });
+    const cy = ticket({ ticketId: "c", attendeeName: "Cy Lee" });
+    const di = ticket({ ticketId: "d", attendeeName: "Di Lee" });
+    const saved = [ticket({ ticketId: "a" }), bo, cy];
+    const next = withChanges(saved, {
+      tickets: [{ ...bo, checkIn: "inside" }, di],
+      removed: ["c", "gone"],
+    });
+    expect(next.map((t) => [t.ticketId, t.checkIn])).toEqual([
+      ["a", "not-arrived"],
+      ["b", "inside"],
+      ["d", "not-arrived"],
+    ]);
+    // The saved list is left as it was.
+    expect(saved[1]!.checkIn).toBe("not-arrived");
+  });
+});
+
+describe("doorListChangesQuerySchema", () => {
+  it("only takes a full ISO time", () => {
+    expect(doorListChangesQuerySchema.parse({ since: "2026-05-02T23:00:00.000Z" }).since).toEqual(
+      leftAt,
+    );
+    expect(doorListChangesQuerySchema.safeParse({ since: "yesterday" }).success).toBe(false);
+    expect(doorListChangesQuerySchema.safeParse({ since: "1700000000" }).success).toBe(false);
   });
 });

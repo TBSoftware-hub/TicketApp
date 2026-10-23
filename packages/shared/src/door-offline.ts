@@ -42,6 +42,31 @@ export const doorListSchema = z.object({
 export type DoorList = z.infer<typeof doorListSchema>;
 
 /**
+ * What changed on an event's door list since a door device last asked: the tickets other doors
+ * have scanned, or whose waiver was signed, as they stand now. `removed` are ones that were touched
+ * and can't get anyone in any more. `fetchedAt` is what the device asks from next time.
+ */
+export const doorListChangesSchema = z.object({
+  reentryAllowed: z.boolean(),
+  tickets: z.array(doorListTicketSchema),
+  removed: z.array(z.string()),
+  fetchedAt: timestamp,
+});
+export type DoorListChanges = z.infer<typeof doorListChangesSchema>;
+
+export const doorListChangesQuerySchema = z.object({
+  since: z.iso.datetime({ offset: true }).pipe(z.coerce.date()),
+});
+
+/**
+ * How far back a device may ask for changes: one that's been away longer downloads the whole list
+ * again. And how far before `since` the API looks, for a scan whose transaction began before the
+ * last answer was put together and was only saved after it.
+ */
+export const DOOR_CHANGES_MAX_AGE_MS = 10 * 60 * 1000;
+export const DOOR_CHANGES_OVERLAP_MS = 30 * 1000;
+
+/**
  * How far ahead of the API's clock a queued scan's time may be, for a device whose clock runs a
  * little fast; and how far back, so a forgotten phone can't post last week's scans.
  */
@@ -220,4 +245,24 @@ export function withMovements(
         : { ...next[i]!, checkIn: "left", leftAt: at };
   }
   return next;
+}
+
+/**
+ * The saved tickets brought up to date with the changes TicketApp sent: each ticket sent takes
+ * the place of the one saved, or joins the list, and each removed one comes off.
+ */
+export function withChanges(
+  tickets: DoorListTicket[],
+  changes: Pick<DoorListChanges, "tickets" | "removed">,
+): DoorListTicket[] {
+  const sent = new Map(changes.tickets.map((t) => [t.ticketId, t]));
+  const removed = new Set(changes.removed);
+  const next = tickets
+    .filter((t) => !removed.has(t.ticketId))
+    .map((t) => {
+      const fresh = sent.get(t.ticketId);
+      sent.delete(t.ticketId);
+      return fresh ?? t;
+    });
+  return [...next, ...sent.values()];
 }
