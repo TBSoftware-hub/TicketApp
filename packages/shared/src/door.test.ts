@@ -127,6 +127,20 @@ describe("describeScan", () => {
     expect(display.lines[1]).toBe("This ticket has already been used.");
   });
 
+  it("names who's held up by a missing waiver, and offers an override", () => {
+    expect(
+      describeScan(
+        { outcome: "waiver_missing", ticket, reason: "guardian_pending" },
+        "America/New_York",
+      ),
+    ).toEqual({
+      tone: "stop",
+      title: "Waiver missing",
+      lines: ["Ann Lee", "Their parent or guardian hasn't signed the waiver yet."],
+      overridable: true,
+    });
+  });
+
   it("says why a ticket won't get anyone in", () => {
     expect(
       describeScan({ outcome: "invalid_ticket", reason: "transferred" }, "America/New_York"),
@@ -139,6 +153,18 @@ describe("describeScan", () => {
 });
 
 describe("doorScanSchema", () => {
+  it("trims an override reason and turns away one too short to mean anything", () => {
+    const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
+    expect(
+      doorScanSchema.parse({ scanKey, code: "abc", overrideReason: " Paper waiver " }),
+    ).toEqual({ scanKey, code: "abc", overrideReason: "Paper waiver" });
+    expect(doorScanSchema.safeParse({ scanKey, code: "abc", overrideReason: " ok " }).success).toBe(
+      false,
+    );
+    const zero = { scanKey, code: "abc", overrideReason: "Paper\u0000waiver" };
+    expect(doorScanSchema.safeParse(zero).success).toBe(false);
+  });
+
   it("trims the scanned code and turns away an empty one", () => {
     const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
     expect(doorScanSchema.parse({ scanKey, code: " abc\n" })).toEqual({ scanKey, code: "abc" });

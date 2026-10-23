@@ -51,6 +51,15 @@ export const doorScanSchema = z.object({
   // Scanners can pick up stray whitespace. Any QR code at all may be held up, such as a long
   // web address or contact card, and is answered as not a ticket, so the limit is generous.
   code: z.string().trim().min(1, "Scan a ticket's QR code").max(4096, "That isn't a ticket code"),
+  /** Sent when staff let someone in whose waiver is missing; kept on the scan's record. */
+  overrideReason: z
+    .string()
+    .trim()
+    .min(3, "Say why you're letting them in")
+    .max(500, "Keep the reason under 500 characters")
+    // Postgres text can't hold a zero byte, so a reason with one couldn't be kept on the record.
+    .refine((reason) => !reason.includes("\u0000"), "Retype the reason")
+    .optional(),
 });
 export type DoorScan = z.infer<typeof doorScanSchema>;
 
@@ -64,7 +73,14 @@ export const scanInvalidReasonSchema = z.enum([
 ]);
 export type ScanInvalidReason = z.infer<typeof scanInvalidReasonSchema>;
 
-/** The answer to a door scan: admitted, already used, or not a ticket that works here. */
+/** Why a valid ticket's holder can't come in until a waiver is signed or staff override it. */
+export const scanWaiverMissingReasonSchema = z.enum(["not_signed", "guardian_pending"]);
+export type ScanWaiverMissingReason = z.infer<typeof scanWaiverMissingReasonSchema>;
+
+/**
+ * The answer to a door scan: admitted, already used, waiting on a waiver, or not a ticket that
+ * works here.
+ */
 export const doorScanResultSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("admitted"),
@@ -75,6 +91,11 @@ export const doorScanResultSchema = z.discriminatedUnion("outcome", [
     ticket: z.object({ attendeeName: z.string(), ticketTypeName: z.string() }),
     /** When the ticket first got them in this time, if that scan is on record. */
     admittedAt: timestamp.nullable(),
+  }),
+  z.object({
+    outcome: z.literal("waiver_missing"),
+    ticket: z.object({ attendeeName: z.string(), ticketTypeName: z.string() }),
+    reason: scanWaiverMissingReasonSchema,
   }),
   z.object({ outcome: z.literal("invalid_ticket"), reason: scanInvalidReasonSchema }),
 ]);
@@ -89,11 +110,26 @@ export const SCAN_INVALID_TEXT: Record<ScanInvalidReason, string> = {
   unpaid: "This ticket hasn't been paid for.",
 };
 
+/** What door staff are told about a ticket held up by its waiver. */
+export const SCAN_WAIVER_MISSING_TEXT: Record<ScanWaiverMissingReason, string> = {
+  not_signed: "They haven't signed the event's waiver.",
+  guardian_pending: "Their parent or guardian hasn't signed the waiver yet.",
+};
+
+/** Reasons door staff can pick for letting someone in without a signed waiver, or edit first. */
+export const WAIVER_OVERRIDE_REASONS = [
+  "Signed a paper waiver at the door",
+  "Guardian is here and signed on paper",
+  "Approved by the event chair",
+];
+
 /** How the door app shows a scan's answer: a colour staff can read at a glance, and the details. */
 export interface ScanDisplay {
   tone: "go" | "stop" | "warn";
   title: string;
   lines: string[];
+  /** Staff may let them in anyway, giving a reason. The first line is then their name. */
+  overridable?: boolean;
 }
 
 export function describeScan(result: DoorScanResult, timeZone: string): ScanDisplay {
@@ -119,6 +155,13 @@ export function describeScan(result: DoorScanResult, timeZone: string): ScanDisp
         ],
       };
     }
+    case "waiver_missing":
+      return {
+        tone: "stop",
+        title: "Waiver missing",
+        lines: [result.ticket.attendeeName, SCAN_WAIVER_MISSING_TEXT[result.reason]],
+        overridable: true,
+      };
     case "invalid_ticket":
       return {
         tone: "stop",

@@ -1,6 +1,6 @@
 import { doorEventsResponseSchema, formatDoorEventTime } from "@ticketapp/shared";
 import { useEffect, useState } from "react";
-import { AppState, ScrollView, Text } from "react-native";
+import { AppState, KeyboardAvoidingView, Platform, ScrollView, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
 import { Scanner } from "@/components/scanner";
@@ -50,22 +50,28 @@ export default function Door() {
 
   return (
     <SafeAreaView style={ui.screen}>
-      <ScrollView contentContainerStyle={ui.content}>
-        <StaffBar />
-        <Text style={ui.eyebrow}>{event.organization.name.toUpperCase()}</Text>
-        <Text style={ui.title}>{event.name}</Text>
-        <Text style={ui.muted}>
-          {formatDoorEventTime(event)}
-          {event.venue ? ` · ${event.venue}` : ""}
-        </Text>
-        {checking ? (
-          <Text style={ui.muted}>Checking the event is still on…</Text>
-        ) : (
-          // A fresh scanner for each event, so nothing from the last one carries over.
-          <Scanner key={event.id} event={event} />
-        )}
-        <Button label="Change event" variant="secondary" onPress={() => void chooseEvent(null)} />
-      </ScrollView>
+      {/* The waiver override asks for a reason, so the keyboard can come up over the scanner. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
+          <StaffBar />
+          <Text style={ui.eyebrow}>{event.organization.name.toUpperCase()}</Text>
+          <Text style={ui.title}>{event.name}</Text>
+          <Text style={ui.muted}>
+            {formatDoorEventTime(event)}
+            {event.venue ? ` · ${event.venue}` : ""}
+          </Text>
+          {checking ? (
+            <Text style={ui.muted}>Checking the event is still on…</Text>
+          ) : (
+            // A fresh scanner for each event, so nothing from the last one carries over.
+            <Scanner key={event.id} event={event} />
+          )}
+          <Button label="Change event" variant="secondary" onPress={() => void chooseEvent(null)} />
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
