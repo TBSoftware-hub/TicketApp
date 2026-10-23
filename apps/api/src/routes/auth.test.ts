@@ -1,7 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHash, randomInt, randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { reviewSignInFromEnv } from "../app";
 import { buildTestApp } from "../test-helpers";
+
+// Real randomness by default; a test can line up the codes it needs with mockReturnValueOnce.
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomInt: vi.fn(actual.randomInt) };
+});
 
 describe("staff sign-in", () => {
   let t: Awaited<ReturnType<typeof buildTestApp>>;
@@ -399,13 +405,11 @@ describe("app store review sign-in", () => {
     const t = await buildTestApp({ reviewSignIn: review });
     try {
       const email = `not-review-${randomUUID()}@example.com`;
-      const codes = new Set<string>();
-      for (let i = 0; i < 3; i++) {
-        await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
-        codes.add(t.sent.findLast((m) => m.to === email)!.subject.slice(0, 7));
-      }
-      expect(codes.has("246 810")).toBe(false);
+      vi.mocked(randomInt).mockImplementationOnce(() => 13579);
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      expect(t.sent.findLast((m) => m.to === email)!.subject).toContain("013 579");
       expect((await verify(t, email, review.code)).statusCode).toBe(400);
+      expect((await verify(t, email, "013579")).statusCode).toBe(200);
     } finally {
       await t.close();
     }

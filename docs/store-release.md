@@ -9,8 +9,10 @@ Everything here runs from `apps/mobile`. Use `npx eas-cli@latest` wherever the E
 
 ## What's already set up in the repo
 
-- `eas.json` has two build profiles. `preview` makes an install-anywhere build (an APK on Android)
-  for a quick look on one phone. `production` makes store builds, and its build numbers count up
+- `eas.json` has two build profiles. `preview` makes an internal build for a quick look: on
+  Android an APK that installs on any phone, on iOS an ad hoc build that installs only on iPhones
+  registered first with `npx eas-cli@latest device:create`. TestFlight (below) has no such limit.
+  `production` makes store builds, and its build numbers count up
   on their own (kept by EAS, so they never go backwards).
 - `eas.json` sends Android uploads to the **internal testing** track, so `eas submit` never
   reaches the public by accident.
@@ -43,8 +45,10 @@ These need your accounts and cards, so they can't be done from the repo.
    `init` adds an `extra.eas.projectId` (and `owner`) to `app.json`. Commit that change, or send
    Claude the project ID and it will.
 
-4. **App Store Connect**: create the app under **Apps > +**. Bundle ID `com.tbsoftware.ticketapp`
-   (EAS registers it on the first iOS build if it isn't there yet). The store name must be unique
+4. **App Store Connect**: first register the bundle ID `com.tbsoftware.ticketapp` at
+   developer.apple.com under **Certificates, Identifiers & Profiles > Identifiers > +** (App IDs,
+   App), since creating the app means picking an ID that already exists. Then create the app under
+   **Apps > +** with that bundle ID. The store name must be unique
    across the App Store, and "TicketApp" is likely taken, so pick something like "MySchoolTix
    Door". The name on the home screen stays "TicketApp" unless we change `app.json`.
 5. **Play Console**: **Create app**, then fill in the **App content** section (privacy policy,
@@ -84,17 +88,21 @@ Set these two on Render (**ticketapp-api > Environment**) while a review is open
 - `REVIEW_SIGN_IN_CODE`: any six digits
 
 That address's code is then always the one you set. Everything else about sign-in still applies:
-the reviewer still taps **Email me a code**, the code works once per request, and five wrong guesses
-lock the address for 15 minutes. The API refuses to start if only one of the two is set, or the
-code isn't six digits.
+the reviewer still taps **Email me a code**, the code works once per request, and five wrong
+guesses lock the address for 15 minutes. The API refuses to start if only one of the two is set,
+or the code isn't six digits.
 
 Give the review address door access to a demo event only. Create a demo organization in the
-dashboard with an event dated in the future, a few tickets (one with a missing waiver shows the
-override), and invite the review address as door staff. Never add it to a real school.
+dashboard with a **published** event dated in the future (drafts don't show in the door app) and a
+few tickets (one with a missing waiver shows the override). Invite the review address as door
+staff, then open the invitation email and **accept it**: until it's accepted the address isn't a
+member and sees no events. Never add it to a real school. Before submitting, sign in on a test
+build with the review email and code and check the demo event is listed.
 
 In the review notes for both stores, give the email and code and say: "Tap Email me a code, then
-enter the code below and tap Sign in. Pick the demo event, then use Look up by name to admit an attendee, as the camera
-scans printed tickets." Attach a PDF of a demo ticket if you want them to try the scanner.
+enter the code below and tap Sign in. Pick the demo event, then use Look up by name to admit an
+attendee, as the camera scans printed tickets." Attach a PDF of a demo ticket if you want them to
+try the scanner.
 
 Remove both variables when the review is approved.
 
@@ -105,10 +113,13 @@ Remove both variables when the review is approved.
   member's email address, for sign-in and app functionality, linked to them, not used for
   tracking, encrypted in transit. Scan records (who was admitted, when and by whom) are app
   functionality data. No analytics, ads or third-party tracking.
-- **Account deletion**: both stores ask whether users can delete their account. Staff accounts
-  are made by the school inviting them, so answer that accounts are managed by the organization,
-  and give a contact address for deletion requests. If a reviewer pushes back, we add a delete
-  option.
+- **Account deletion (must be settled before submitting)**: today the door app creates a staff
+  account for any email that signs in, even without an invitation. Apple requires apps that let
+  people create an account to let them start deleting it from inside the app, and Google requires
+  that plus a web page for deletion requests. Either the door app stops creating accounts (only
+  people already invited can sign in, so accounts are only ever made by a school), or it gets a
+  **Delete account** option and the site gets a deletion request page. This is a follow-up change
+  in the repo, not a store form answer.
 - **Screenshots**: iPhone 6.9-inch (1320 x 2868) is the only size Apple requires. The app also
   runs on iPad (`supportsTablet`), so Apple asks for 13-inch iPad screenshots too. Play needs at
   least two phone screenshots.
