@@ -19,20 +19,29 @@ const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
 const MAX_LINKS_PER_EMAIL = 5;
 /** A sign-in code stops working after this many wrong guesses, so six digits can't be brute-forced. */
 const MAX_CODE_ATTEMPTS = 5;
+const WRONG_CODE = "That code is wrong or has expired. Check the email or ask for a new code.";
 
-/** Turn a consumed link or code into a session, creating the staff account on first sign-in. */
+/**
+ * Turn a consumed link or code into a session. Links create the staff account on first sign-in;
+ * door app codes never do, so the store apps can't make accounts (and owe no in-app deletion).
+ */
 async function startSession(
   tx: Prisma.TransactionClient,
   link: MagicLinkToken,
   sessionToken: string,
   request: FastifyRequest,
   now: Date,
+  { createAccount }: { createAccount: boolean },
 ) {
-  const user = await tx.user.upsert({
-    where: { email: link.email },
-    update: {},
-    create: { email: link.email, name: link.name ?? link.email.split("@")[0] ?? link.email },
-  });
+  const user = createAccount
+    ? await tx.user.upsert({
+        where: { email: link.email },
+        update: {},
+        create: { email: link.email, name: link.name ?? link.email.split("@")[0] ?? link.email },
+      })
+    : await tx.user.findUnique({ where: { email: link.email } });
+  // The account a code was sent to was removed since; throwing also undoes consuming the code.
+  if (!user) throw new HttpError(400, WRONG_CODE);
 
   await tx.session.create({
     data: {
@@ -181,7 +190,7 @@ export async function authRoutes(
       });
       const link = consumed[0];
       if (!link) throw new HttpError(400, "This sign-in link is invalid or has expired");
-      return startSession(tx, link, sessionToken, request, now);
+      return startSession(tx, link, sessionToken, request, now, { createAccount: true });
     });
 
     return { sessionToken, user: { id: user.id, email: user.email, name: user.name } };
@@ -195,32 +204,42 @@ export async function authRoutes(
       reviewSignIn?.email === email
         ? reviewSignIn.code
         : randomInt(0, 1_000_000).toString().padStart(6, "0");
-    const link = await prisma.$transaction(async (tx) => {
+    const { link, hasAccount } = await prisma.$transaction(async (tx) => {
       await lockEmail(tx, email);
       await checkIssueLimit(tx, email);
       const failedAttempts = await wrongGuesses(tx, email, new Date());
       if (failedAttempts >= MAX_CODE_ATTEMPTS) {
         throw new HttpError(429, "Too many wrong codes. Try again in 15 minutes.");
       }
-      return tx.magicLinkToken.create({
+      const hasAccount = (await tx.user.count({ where: { email } })) > 0;
+      const link = await tx.magicLinkToken.create({
         data: {
           email,
           // Never sent anywhere: a code row can only be redeemed through /auth/verify-code.
           tokenHash: hashToken(generateToken()),
-          codeHash: hashCode(key, email, code),
+          // Without an account there's no code to redeem; the row still counts toward the limit.
+          codeHash: hasAccount ? hashCode(key, email, code) : null,
           failedAttempts,
           expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
         },
       });
+      return { link, hasAccount };
     });
 
+    // Same response either way, so the request doesn't reveal who has an account.
     await sendOrFail(
       mailer,
-      {
-        to: email,
-        subject: `${code.slice(0, 3)} ${code.slice(3)} is your TicketApp sign-in code`,
-        text: `Enter this code in the TicketApp door app to sign in. It works once and expires in 15 minutes.\n\n${code.slice(0, 3)} ${code.slice(3)}\n\nIf you didn't ask for this, you can ignore this email.`,
-      },
+      hasAccount
+        ? {
+            to: email,
+            subject: `${code.slice(0, 3)} ${code.slice(3)} is your TicketApp sign-in code`,
+            text: `Enter this code in the TicketApp door app to sign in. It works once and expires in 15 minutes.\n\n${code.slice(0, 3)} ${code.slice(3)}\n\nIf you didn't ask for this, you can ignore this email.`,
+          }
+        : {
+            to: email,
+            subject: "No TicketApp account for this address",
+            text: `Someone asked to sign in to the TicketApp door app with this address, but it doesn't have a TicketApp account yet.\n\nAsk your school's TicketApp organizer to invite you, accept the invitation from the email, then sign in to the door app again.\n\nIf you didn't ask for this, you can ignore this email.`,
+          },
       request.log,
       () => prisma.magicLinkToken.delete({ where: { id: link.id } }),
     );
@@ -244,7 +263,9 @@ export async function authRoutes(
         data: { consumedAt: now },
       });
       const link = consumed[0];
-      if (link) return startSession(tx, link, sessionToken, request, now);
+      if (link) {
+        return startSession(tx, link, sessionToken, request, now, { createAccount: false });
+      }
       await tx.magicLinkToken.updateMany({
         where: openCodes(email, now),
         data: { failedAttempts: { increment: 1 } },
@@ -252,10 +273,7 @@ export async function authRoutes(
       return undefined;
     });
     if (!user) {
-      throw new HttpError(
-        400,
-        "That code is wrong or has expired. Check the email or ask for a new code.",
-      );
+      throw new HttpError(400, WRONG_CODE);
     }
 
     return { sessionToken, user: { id: user.id, email: user.email, name: user.name } };

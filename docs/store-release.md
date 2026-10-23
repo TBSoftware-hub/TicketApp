@@ -113,13 +113,12 @@ Remove both variables when the review is approved.
   member's email address, for sign-in and app functionality, linked to them, not used for
   tracking, encrypted in transit. Scan records (who was admitted, when and by whom) are app
   functionality data. No analytics, ads or third-party tracking.
-- **Account deletion (must be settled before submitting)**: today the door app creates a staff
-  account for any email that signs in, even without an invitation. Apple requires apps that let
-  people create an account to let them start deleting it from inside the app, and Google requires
-  that plus a web page for deletion requests. Either the door app stops creating accounts (only
-  people already invited can sign in, so accounts are only ever made by a school), or it gets a
-  **Delete account** option and the site gets a deletion request page. This is a follow-up change
-  in the repo, not a store form answer.
+- **Account deletion**: the door app can't create accounts. Its sign-in only works for an email
+  that already has a TicketApp account, which a school makes by inviting someone on the dashboard;
+  any other address is emailed a note to ask their school for an invite. Apple's in-app deletion
+  rule and Google's deletion page rule apply to apps that let people create accounts, so when the
+  forms ask, answer that the app doesn't create accounts: they're made by the organization on the
+  web. If a reviewer still asks, give a contact address for deletion requests.
 - **Screenshots**: iPhone 6.9-inch (1320 x 2868) is the only size Apple requires. The app also
   runs on iPad (`supportsTablet`), so Apple asks for 13-inch iPad screenshots too. Play needs at
   least two phone screenshots.
