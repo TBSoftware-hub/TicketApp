@@ -1,7 +1,8 @@
 # Deploying
 
 The API and its Postgres database run on Render, set up from `render.yaml`. The web dashboard
-runs on Vercel. The mobile app ships through Expo later (E1.7).
+runs on Vercel. The door app ships to the App Store and Google Play through EAS; see
+[store-release.md](store-release.md).
 
 ## Email for sign-in links
 

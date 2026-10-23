@@ -1,6 +1,21 @@
-import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHash, randomInt, randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { reviewSignInFromEnv } from "../app";
 import { buildTestApp } from "../test-helpers";
+
+/** Door app codes only sign in existing accounts, so tests make one first. */
+const staffAccount = (t: Awaited<ReturnType<typeof buildTestApp>>, email: string) =>
+  t.prisma.user.upsert({
+    where: { email: email.toLowerCase() },
+    update: {},
+    create: { email: email.toLowerCase(), name: "Door staff" },
+  });
+
+// Real randomness by default; a test can line up the codes it needs with mockReturnValueOnce.
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomInt: vi.fn(actual.randomInt) };
+});
 
 describe("staff sign-in", () => {
   let t: Awaited<ReturnType<typeof buildTestApp>>;
@@ -171,6 +186,7 @@ describe("door app sign-in with an emailed code", () => {
   });
 
   async function requestCode(email: string) {
+    await staffAccount(t, email);
     const res = await t.app.inject({
       method: "POST",
       url: "/auth/sign-in-code",
@@ -328,6 +344,61 @@ describe("door app sign-in with an emailed code", () => {
     expect(res.statusCode).toBe(429);
   });
 
+  it("never creates an account, and emails no code to an address without one", async () => {
+    const email = `door-new-${randomUUID()}@example.com`;
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/sign-in-code",
+      payload: { email },
+    });
+    expect(res.statusCode).toBe(202);
+    const mail = t.sent.findLast((m) => m.to === email)!;
+    expect(mail.subject).toBe("No TicketApp account for this address");
+    expect(mail.text).toContain("invite you");
+    expect(mail.text).not.toMatch(/\b\d{3} \d{3}\b/);
+    expect((await verify(email, "000000")).statusCode).toBe(400);
+    expect(await t.prisma.user.count({ where: { email } })).toBe(0);
+  });
+
+  it("still counts requests from an address without an account toward its limit", async () => {
+    const email = `door-new-limit-${randomUUID()}@example.com`;
+    for (let i = 0; i < 5; i++) {
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+    }
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/sign-in-code",
+      payload: { email },
+    });
+    expect(res.statusCode).toBe(429);
+  });
+
+  it("locks an address without an account after five wrong codes, like one with", async () => {
+    const lockout = async (email: string) => {
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      for (let i = 0; i < 5; i++) await verify(email, "000000");
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/sign-in-code",
+        payload: { email },
+      });
+      return { status: res.statusCode, body: res.json() };
+    };
+    const known = `door-known-${randomUUID()}@example.com`;
+    await staffAccount(t, known);
+    const unknown = await lockout(`door-unknown-${randomUUID()}@example.com`);
+    expect(unknown.status).toBe(429);
+    expect(unknown).toEqual(await lockout(known));
+  });
+
+  it("refuses a code whose account was removed after it was sent", async () => {
+    const email = `door-gone-${randomUUID()}@example.com`;
+    const code = await requestCode(email);
+    await t.prisma.user.delete({ where: { email } });
+    expect((await verify(email, code)).statusCode).toBe(400);
+    expect(await t.prisma.user.count({ where: { email } })).toBe(0);
+  });
+
   it("can't be redeemed as a sign-in link", async () => {
     const email = `door-link-${randomUUID()}@example.com`;
     const code = await requestCode(email);
@@ -357,6 +428,97 @@ describe("door app sign-in setup", () => {
       process.env.NODE_ENV = env;
       await t.close();
     }
+  });
+});
+
+describe("app store review sign-in", () => {
+  const review = { email: `review-${randomUUID()}@example.com`, code: "246810" };
+  const verify = (t: Awaited<ReturnType<typeof buildTestApp>>, email: string, code: string) =>
+    t.app.inject({ method: "POST", url: "/auth/verify-code", payload: { email, code } });
+
+  it("issues the fixed code to the review address and signs it in", async () => {
+    const t = await buildTestApp({ reviewSignIn: review });
+    try {
+      await staffAccount(t, review.email);
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/sign-in-code",
+        payload: { email: review.email.toUpperCase() },
+      });
+      expect(res.statusCode).toBe(202);
+      expect(t.sent.findLast((m) => m.to === review.email)!.subject).toContain("246 810");
+      expect((await verify(t, review.email, "246 810")).statusCode).toBe(200);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("only works after a code is asked for, and once per code", async () => {
+    const email = `review-once-${randomUUID()}@example.com`;
+    const t = await buildTestApp({ reviewSignIn: { email, code: "135790" } });
+    try {
+      await staffAccount(t, email);
+      expect((await verify(t, email, "135790")).statusCode).toBe(400);
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      expect((await verify(t, email, "135790")).statusCode).toBe(200);
+      expect((await verify(t, email, "135790")).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("gives every other address a random code", async () => {
+    const t = await buildTestApp({ reviewSignIn: review });
+    try {
+      const email = `not-review-${randomUUID()}@example.com`;
+      await staffAccount(t, email);
+      vi.mocked(randomInt).mockImplementationOnce(() => 13579);
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      expect(t.sent.findLast((m) => m.to === email)!.subject).toContain("013 579");
+      expect((await verify(t, email, review.code)).statusCode).toBe(400);
+      expect((await verify(t, email, "013579")).statusCode).toBe(200);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("still locks the review address after five wrong codes", async () => {
+    const email = `review-lock-${randomUUID()}@example.com`;
+    const t = await buildTestApp({ reviewSignIn: { email, code: "246810" } });
+    try {
+      await staffAccount(t, email);
+      await t.app.inject({ method: "POST", url: "/auth/sign-in-code", payload: { email } });
+      for (let i = 0; i < 5; i++) await verify(t, email, "000000");
+      expect((await verify(t, email, "246810")).statusCode).toBe(400);
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe("reviewSignInFromEnv", () => {
+  it("is off when neither variable is set", () => {
+    expect(reviewSignInFromEnv({})).toBeUndefined();
+  });
+
+  it("normalizes the address and code", () => {
+    expect(
+      reviewSignInFromEnv({
+        REVIEW_SIGN_IN_EMAIL: " Review@Example.com ",
+        REVIEW_SIGN_IN_CODE: "246 810",
+      }),
+    ).toEqual({ email: "review@example.com", code: "246810" });
+  });
+
+  it("refuses half a setting or a code that isn't six digits", () => {
+    expect(() => reviewSignInFromEnv({ REVIEW_SIGN_IN_EMAIL: "review@example.com" })).toThrow();
+    expect(() => reviewSignInFromEnv({ REVIEW_SIGN_IN_CODE: "246810" })).toThrow();
+    expect(() =>
+      reviewSignInFromEnv({
+        REVIEW_SIGN_IN_EMAIL: "review@example.com",
+        REVIEW_SIGN_IN_CODE: "1234",
+      }),
+    ).toThrow();
   });
 });
 
