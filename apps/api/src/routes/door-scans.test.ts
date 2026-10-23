@@ -312,6 +312,12 @@ describe("door scanner", () => {
     const second = await p.comp("Tam");
     const scanKey = randomUUID();
     await p.scan(first.code, p.owner.headers, p.prom.base, scanKey);
+    const unused = await p.comp("Ula");
+    const fresh = await p.scan(unused.code, p.owner.headers, p.prom.base, scanKey);
+    expect(fresh.statusCode).toBe(409);
+    // Turned away without letting the unused ticket's holder in.
+    const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: unused.ticketId } });
+    expect(ticket.isInside).toBe(false);
     await p.scan(second.code);
     const reused = await p.scan(second.code, p.owner.headers, p.prom.base, scanKey);
     expect(reused.statusCode).toBe(409);

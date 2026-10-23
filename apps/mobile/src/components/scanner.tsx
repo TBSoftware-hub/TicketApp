@@ -41,6 +41,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
   const [shown, setShown] = useState<Shown | null>(null);
   const [busy, setBusy] = useState(false);
   const [torch, setTorch] = useState(false);
+  const [width, setWidth] = useState(0);
   // The camera reports the same code many times a second; this holds it to one check at a time.
   const locked = useRef(false);
   // Set while a check is on its way, so a retry tapped twice can't send the code twice.
@@ -141,7 +142,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
 
   return (
     <View style={{ gap: 12 }}>
-      <View style={styles.frame}>
+      {/* Square while scanning; a result taller than that (large text, a long name) grows it. */}
+      <View style={styles.frame} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
         <CameraView
           style={StyleSheet.absoluteFill}
           facing="back"
@@ -150,12 +152,20 @@ export function Scanner({ event }: { event: DoorEvent }) {
           enableTorch={torch}
         />
         {shown ? (
-          <Result shown={shown} busy={busy} onNext={next} onRetry={() => check(shown)} />
+          <Result
+            shown={shown}
+            busy={busy}
+            minHeight={width}
+            onNext={next}
+            onRetry={() => check(shown)}
+          />
         ) : (
-          <View style={styles.hint} pointerEvents="none">
-            <Text style={styles.hintText}>
-              {busy ? "Checking ticket…" : "Point at a ticket's QR code"}
-            </Text>
+          <View style={styles.square}>
+            <View style={styles.hint} pointerEvents="none">
+              <Text style={styles.hintText}>
+                {busy ? "Checking ticket…" : "Point at a ticket's QR code"}
+              </Text>
+            </View>
           </View>
         )}
       </View>
@@ -173,10 +183,13 @@ export function Scanner({ event }: { event: DoorEvent }) {
 function Result({
   shown,
   busy,
+  minHeight,
   onNext,
   onRetry,
 }: {
   shown: Shown;
+  /** At least the camera square's height, so a short result still covers the camera. */
+  minHeight: number;
   /** A retry is on its way: its answer replaces this one, so nothing here can be tapped. */
   busy: boolean;
   onNext: () => void;
@@ -210,7 +223,7 @@ function Result({
         else if (failed) onRetry();
         else onNext();
       }}
-      style={[StyleSheet.absoluteFill, styles.result, { backgroundColor: colors[tone] }]}
+      style={[styles.result, { minHeight, backgroundColor: colors[tone] }]}
     >
       <Text style={styles.resultTitle}>{title}</Text>
       {lines.map((line, i) => (
@@ -234,12 +247,12 @@ function Result({
 
 const styles = StyleSheet.create({
   frame: {
-    aspectRatio: 1,
     width: "100%",
     borderRadius: 16,
     overflow: "hidden",
     backgroundColor: "#000",
   },
+  square: { aspectRatio: 1, width: "100%" },
   hint: {
     position: "absolute",
     left: 0,
