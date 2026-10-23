@@ -42,8 +42,9 @@ These need your accounts and cards, so they can't be done from the repo.
    npx eas-cli@latest init
    ```
 
-   `init` adds an `extra.eas.projectId` (and `owner`) to `app.json`. Commit that change, or send
-   Claude the project ID and it will.
+   `init` links the app to an Expo project and adds its ID to `app.json` as `extra.eas.projectId`.
+   That's done: the ID is in the repo. Discard your local `app.json` change (`git checkout
+   app.json`) and pull instead.
 
 4. **App Store Connect**: first register the bundle ID `com.tbsoftware.ticketapp` at
    developer.apple.com under **Certificates, Identifiers & Profiles > Identifiers > +** (App IDs,
