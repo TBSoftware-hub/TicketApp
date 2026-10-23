@@ -19,8 +19,8 @@ const TYPING_PAUSE_MS = 300;
 /** How long a lookup may take before staff are told it couldn't reach TicketApp. */
 const LOOKUP_TIMEOUT_MS = 10_000;
 
-/** The answer to the last name looked up, kept on screen while the next one is on its way. */
-type Found = { q: string; result: DoorLookupResult } | { error: string } | null;
+/** The answer to the last name looked up, and which name it was for. */
+type Found = ({ result: DoorLookupResult } | { error: string }) & { q: string };
 
 /**
  * Finds someone coming to `event` by name, for a guest who can't show their QR code. Picking them
@@ -41,10 +41,13 @@ export function Lookup({
 }) {
   const { call } = useSession();
   const [name, setName] = useState("");
-  const [found, setFound] = useState<Found>(null);
+  const [found, setFound] = useState<Found | null>(null);
   const [searching, setSearching] = useState(false);
   const parsed = doorLookupSchema.safeParse({ q: name });
   const q = parsed.success ? parsed.data.q : null;
+  // Only the answer for the name as it's typed now is shown: an earlier name's list could check in
+  // the wrong person.
+  const answer = found && !searching && found.q === q ? found : null;
 
   useEffect(() => {
     if (!q) {
@@ -63,7 +66,7 @@ export function Lookup({
           if (current) setFound({ q, result: doorLookupResultSchema.parse(res) });
         })
         .catch((err: unknown) => {
-          if (current) setFound({ error: err instanceof ApiError ? err.message : UNREACHABLE });
+          if (current) setFound({ q, error: err instanceof ApiError ? err.message : UNREACHABLE });
         })
         .finally(() => {
           if (current) setSearching(false);
@@ -96,27 +99,27 @@ export function Lookup({
       />
       {!q ? (
         <Text style={ui.muted}>Type at least two letters of their first or last name.</Text>
-      ) : searching && !found ? (
+      ) : !answer ? (
         <ActivityIndicator color={colors.accent} accessibilityLabel="Looking them up" />
-      ) : found && "error" in found ? (
+      ) : "error" in answer ? (
         <Text style={ui.error} accessibilityRole="alert">
-          {found.error}
+          {answer.error}
         </Text>
-      ) : found && found.result.tickets.length === 0 ? (
+      ) : answer.result.tickets.length === 0 ? (
         <Text style={ui.muted} accessibilityLiveRegion="polite">
-          No one coming to this event matches “{found.q}”. Check the spelling, or try their last
+          No one coming to this event matches “{answer.q}”. Check the spelling, or try their last
           name.
         </Text>
-      ) : found ? (
+      ) : (
         <View style={styles.list}>
-          {found.result.tickets.map((ticket) => (
+          {answer.result.tickets.map((ticket) => (
             <Person key={ticket.ticketId} ticket={ticket} onPress={() => onPick(ticket)} />
           ))}
-          {found.result.more && (
+          {answer.result.more && (
             <Text style={ui.muted}>More people match. Type more of their name to narrow it.</Text>
           )}
         </View>
-      ) : null}
+      )}
       <Button label="Back to scanning" variant="secondary" onPress={onCancel} />
     </View>
   );

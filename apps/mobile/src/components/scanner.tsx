@@ -163,24 +163,8 @@ export function Scanner({ event }: { event: DoorEvent }) {
     return () => clearTimeout(timer);
   }, [shown, next]);
 
-  if (!permission) return null;
-  if (!permission.granted) {
-    return (
-      <View style={[ui.card, { gap: 12 }]}>
-        <Text style={ui.heading}>Scan tickets with the camera</Text>
-        <Text style={ui.muted}>
-          {permission.canAskAgain
-            ? "TicketApp needs the camera to read the QR codes on tickets."
-            : "Camera access is off for TicketApp. Turn it on in Settings to scan tickets."}
-        </Text>
-        {permission.canAskAgain ? (
-          <Button label="Allow camera" onPress={() => void requestPermission()} />
-        ) : (
-          <Button label="Open Settings" onPress={() => void Linking.openSettings()} />
-        )}
-      </View>
-    );
-  }
+  // Looking people up by name doesn't need the camera, so only the camera waits on permission.
+  const cameraOn = !!permission?.granted;
 
   return (
     <View style={{ gap: 12 }}>
@@ -202,14 +186,19 @@ export function Scanner({ event }: { event: DoorEvent }) {
         ))}
       </View>
       {/* Square while scanning; a result taller than that (large text, a long name) grows it. */}
-      <View style={styles.frame} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-        <CameraView
-          style={StyleSheet.absoluteFill}
-          facing="back"
-          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-          onBarcodeScanned={shown || overriding || lookingUp || busy ? undefined : scanned}
-          enableTorch={torch}
-        />
+      <View
+        style={[styles.frame, !cameraOn && styles.frameOff]}
+        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+      >
+        {cameraOn && (
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+            onBarcodeScanned={shown || overriding || lookingUp || busy ? undefined : scanned}
+            enableTorch={torch}
+          />
+        )}
         {overriding ? (
           <Override
             name={overriding.name}
@@ -259,6 +248,23 @@ export function Scanner({ event }: { event: DoorEvent }) {
               check({ ticketId: ticket.ticketId, direction, key: Crypto.randomUUID() });
             }}
           />
+        ) : !cameraOn ? (
+          // Still asking the device whether the camera is allowed, when there's no permission yet.
+          permission && (
+            <View style={styles.cameraOff}>
+              <Text style={ui.heading}>Scan tickets with the camera</Text>
+              <Text style={ui.muted}>
+                {permission.canAskAgain
+                  ? "TicketApp needs the camera to read the QR codes on tickets. You can still look people up by name."
+                  : "Camera access is off for TicketApp. Turn it on in Settings to scan tickets, or look people up by name."}
+              </Text>
+              {permission.canAskAgain ? (
+                <Button label="Allow camera" onPress={() => void requestPermission()} />
+              ) : (
+                <Button label="Open Settings" onPress={() => void Linking.openSettings()} />
+              )}
+            </View>
+          )
         ) : (
           <View style={styles.square}>
             <View style={[styles.hint, direction === "out" && styles.hintOut]} pointerEvents="none">
@@ -281,7 +287,7 @@ export function Scanner({ event }: { event: DoorEvent }) {
           onPress={() => setLookingUp(true)}
         />
       )}
-      {Platform.OS !== "web" && !lookingUp && (
+      {Platform.OS !== "web" && cameraOn && !lookingUp && (
         <Button
           label={torch ? "Turn off light" : "Turn on light"}
           variant="secondary"
@@ -457,6 +463,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "#000",
   },
+  // Without the camera there's nothing to frame, so it reads as a card like the rest of the screen.
+  frameOff: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
+  cameraOff: { padding: 16, gap: 12 },
   square: { aspectRatio: 1, width: "100%" },
   modes: {
     flexDirection: "row",
