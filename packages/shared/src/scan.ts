@@ -11,6 +11,7 @@ export const scanOutcomeSchema = z.enum([
   "already_inside",
   "not_inside",
   "waiver_missing",
+  "reentry_denied",
   "invalid_ticket",
 ]);
 export type ScanOutcome = z.infer<typeof scanOutcomeSchema>;

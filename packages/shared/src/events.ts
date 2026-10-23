@@ -19,6 +19,8 @@ const eventFields = z.object({
   startsAt: timestamp,
   endsAt: timestamp,
   capacity: z.int().min(1).max(100_000).nullable().optional(),
+  /** Whether someone who checks out at the door may come back in. */
+  reentryAllowed: z.boolean().optional(),
 });
 
 const endsAfterStart = (e: { startsAt?: Date; endsAt?: Date }) =>

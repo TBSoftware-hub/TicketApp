@@ -24,7 +24,7 @@ describe("door scanner", () => {
         payload: { name: "Test High School", slug: uniqueSlug("ths"), type: "SCHOOL" },
       })
     ).json().organization.id as string;
-    const call = (method: "GET" | "POST", url: string, payload?: object) =>
+    const call = (method: "GET" | "POST" | "PATCH", url: string, payload?: object) =>
       t.app.inject({ method, url, headers: owner.headers, payload });
     const newEvent = async (name: string) => {
       const startsAt = new Date(Date.now() + 60 * 60_000);
@@ -72,7 +72,16 @@ describe("door scanner", () => {
         payload: { scanKey, code, overrideReason },
       });
 
-    return { owner, orgId, call, newEvent, prom, comp, scan };
+    /** Scans a code with any of the scan's other fields, such as a check-out or an override. */
+    const send = (code: string, fields: object = {}, headers = owner.headers) =>
+      t.app.inject({
+        method: "POST",
+        url: `${prom.base}/scans`,
+        headers,
+        payload: { scanKey: randomUUID(), code, ...fields },
+      });
+
+    return { owner, orgId, call, newEvent, prom, comp, scan, send };
   }
 
   /** Comps a ticket whose type asks for a waiver, which its holder hasn't signed yet. */
@@ -527,5 +536,319 @@ describe("door scanner", () => {
   it("rejects an empty scan", async () => {
     const p = await party();
     expect((await p.scan("   ")).statusCode).toBe(400);
+  });
+  describe("check-out and re-entry", () => {
+    const out = { direction: "out" };
+    const ann = { attendeeName: "Ann Lee", ticketTypeName: "Guest" };
+    const backIn = "Parent or guardian brought them back";
+    const allowReentry = (p: Awaited<ReturnType<typeof party>>) =>
+      p.call("PATCH", p.prom.base, { reentryAllowed: true });
+
+    it("checks someone out, records it, and says they can't come back in", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      const res = await p.send(code, out);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ outcome: "checked_out", ticket: ann, reentryAllowed: false });
+      const ticket = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+      expect(ticket.isInside).toBe(false);
+      const scans = await t.prisma.scanEvent.findMany({
+        where: { ticketId },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(scans).toMatchObject([
+        { direction: "IN", outcome: "ADMITTED" },
+        { direction: "OUT", outcome: "CHECKED_OUT", staffUserId: p.owner.userId },
+      ]);
+      expect(scans[1]!.scanKey).not.toBeNull();
+    });
+
+    it("shows a checked-out attendee in the list as left", async () => {
+      const p = await party();
+      const { code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      const list = await p.call("GET", `${p.prom.base}/attendees?checkIn=left`);
+      expect(list.json().attendees).toHaveLength(1);
+    });
+
+    it("keeps out someone who left an event without re-entry, saying when they left", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      const left = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId, outcome: "CHECKED_OUT" },
+      });
+      const res = await p.scan(code);
+      expect(res.json()).toEqual({
+        outcome: "reentry_denied",
+        ticket: ann,
+        leftAt: left.scannedAt.toISOString(),
+      });
+      const denied = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId, outcome: "REENTRY_DENIED" },
+      });
+      expect(denied).toMatchObject({ direction: "IN", overrideReason: null, scanKey: null });
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+    });
+
+    it("lets someone back in when the event allows re-entry", async () => {
+      const p = await party();
+      expect((await allowReentry(p)).json().event.reentryAllowed).toBe(true);
+      const { code } = await p.comp("Ann");
+      await p.scan(code);
+      expect((await p.send(code, out)).json()).toEqual({
+        outcome: "checked_out",
+        ticket: ann,
+        reentryAllowed: true,
+      });
+      expect((await p.scan(code)).json()).toEqual({ outcome: "admitted", ticket: ann });
+      expect((await p.scan(code)).json().outcome).toBe("already_inside");
+    });
+
+    it("doesn't ask a returning attendee for their waiver again", async () => {
+      const p = await waiverParty();
+      await allowReentry(p);
+      const { ticketId, code } = await p.comp("Ann");
+      await p.send(code, { overrideReason: reason });
+      await p.send(code, out);
+      expect((await p.scan(code)).json().outcome).toBe("admitted");
+      const scans = await t.prisma.scanEvent.findMany({
+        where: { ticketId, direction: "IN" },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(scans).toMatchObject([
+        { outcome: "WAIVER_MISSING", overrideReason: reason },
+        { outcome: "ADMITTED", overrideReason: null },
+      ]);
+    });
+
+    it("lets staff wave someone back in with a reason, kept on the scan", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      const res = await p.send(code, { overrideReason: backIn, override: "reentry_denied" });
+      expect(res.json()).toEqual({ outcome: "admitted", ticket: ann });
+      const scan = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId, overrideReason: { not: null } },
+      });
+      expect(scan).toMatchObject({
+        direction: "IN",
+        outcome: "REENTRY_DENIED",
+        overrideReason: backIn,
+      });
+      // The override counts as getting in, so the next scan says when it did.
+      expect((await p.scan(code)).json()).toMatchObject({
+        outcome: "already_inside",
+        admittedAt: scan.scannedAt.toISOString(),
+      });
+    });
+
+    it("won't let a waiver override wave someone back in", async () => {
+      const p = await party();
+      const { code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      // Sent as older apps do, with no override named.
+      expect((await p.send(code, { overrideReason: reason })).json().outcome).toBe(
+        "reentry_denied",
+      );
+    });
+
+    it("lets someone in plainly when re-entry was turned on after the override was asked", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      await allowReentry(p);
+      const res = await p.send(code, { overrideReason: backIn, override: "reentry_denied" });
+      expect(res.json().outcome).toBe("admitted");
+      const last = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId, direction: "IN" },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(last).toMatchObject({ outcome: "ADMITTED", overrideReason: null });
+    });
+
+    it("says someone who hasn't come in isn't inside", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      expect((await p.send(code, out)).json()).toEqual({
+        outcome: "not_inside",
+        ticket: ann,
+        leftAt: null,
+      });
+      const scans = await t.prisma.scanEvent.findMany({ where: { ticketId } });
+      expect(scans).toMatchObject([{ direction: "OUT", outcome: "NOT_INSIDE", scanKey: null }]);
+    });
+
+    it("says when someone checked out already, if they're scanned out twice", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      const left = await t.prisma.scanEvent.findFirstOrThrow({
+        where: { ticketId, outcome: "CHECKED_OUT" },
+      });
+      expect((await p.send(code, out)).json()).toEqual({
+        outcome: "not_inside",
+        ticket: ann,
+        leftAt: left.scannedAt.toISOString(),
+      });
+    });
+
+    it("lets only one of two devices checking out the same ticket at once record it", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      const results = await Promise.all([p.send(code, out), p.send(code, out), p.send(code, out)]);
+      const outcomes = results.map((r) => r.json().outcome).sort();
+      expect(outcomes).toEqual(["checked_out", "not_inside", "not_inside"]);
+      expect(await t.prisma.scanEvent.count({ where: { ticketId, outcome: "CHECKED_OUT" } })).toBe(
+        1,
+      );
+    });
+
+    it("answers a retried check-out the same way when its first answer was lost", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      const scanKey = randomUUID();
+      const first = (await p.send(code, { ...out, scanKey })).json();
+      expect(first.outcome).toBe("checked_out");
+      expect((await p.send(code, { ...out, scanKey })).json()).toEqual(first);
+      expect(await t.prisma.scanEvent.count({ where: { ticketId, outcome: "CHECKED_OUT" } })).toBe(
+        1,
+      );
+    });
+
+    it("won't replay a check-out's key as a check-in, or an admission's as a check-out", async () => {
+      const p = await party();
+      const { code } = await p.comp("Ann");
+      const inKey = randomUUID();
+      await p.send(code, { scanKey: inKey });
+      expect((await p.send(code, { ...out, scanKey: inKey })).statusCode).toBe(409);
+      const outKey = randomUUID();
+      await p.send(code, { ...out, scanKey: outKey });
+      await allowReentry(p);
+      // The key of the check-out can't let them back in; it was never an admission.
+      expect((await p.send(code, { scanKey: outKey })).statusCode).toBe(409);
+    });
+
+    it("keeps out someone whose check-out lands while their check-in is deciding", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      let scanning: ReturnType<typeof p.scan> | undefined;
+      // A check-out holds the ticket's row while it marks them out; a check-in that read them as
+      // inside meanwhile must not then let them back in past the lock-in.
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Ticket" WHERE id = ${ticketId}::uuid FOR UPDATE`;
+        scanning = p.scan(code);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.ticket.update({ where: { id: ticketId }, data: { isInside: false } });
+        await tx.scanEvent.create({
+          data: {
+            eventId: p.prom.eventId,
+            ticketId,
+            direction: "OUT",
+            outcome: "CHECKED_OUT",
+            staffUserId: p.owner.userId,
+            scannedAt: new Date(),
+          },
+        });
+      });
+      expect((await scanning!).json().outcome).toBe("reentry_denied");
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+    });
+
+    it("times a check-out that waited on a check-in after that check-in", async () => {
+      const p = await party();
+      await allowReentry(p);
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      await p.send(code, out);
+      let leaving: ReturnType<typeof p.send> | undefined;
+      // The check-out starts first but gets the ticket only after a check-in that came later.
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Ticket" WHERE id = ${ticketId}::uuid FOR UPDATE`;
+        leaving = p.send(code, out);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.ticket.update({ where: { id: ticketId }, data: { isInside: true } });
+        await tx.scanEvent.create({
+          data: {
+            eventId: p.prom.eventId,
+            ticketId,
+            direction: "IN",
+            outcome: "ADMITTED",
+            staffUserId: p.owner.userId,
+            scannedAt: new Date(),
+          },
+        });
+      });
+      expect((await leaving!).json().outcome).toBe("checked_out");
+      const [last, before] = await t.prisma.scanEvent.findMany({
+        where: { ticketId },
+        orderBy: [{ scannedAt: "desc" }, { id: "desc" }],
+        take: 2,
+      });
+      expect(last).toMatchObject({ direction: "OUT", outcome: "CHECKED_OUT" });
+      expect(before).toMatchObject({ direction: "IN", outcome: "ADMITTED" });
+    });
+
+    it("replays a check-out retried after they came back in", async () => {
+      const p = await party();
+      await allowReentry(p);
+      const { ticketId, code } = await p.comp("Ann");
+      await p.scan(code);
+      const scanKey = randomUUID();
+      const first = (await p.send(code, { ...out, scanKey })).json();
+      await p.scan(code);
+      expect((await p.send(code, { ...out, scanKey })).json()).toEqual(first);
+      // The retry changes nothing: they're still inside.
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        true,
+      );
+    });
+
+    it("replays an admission retried after they checked out", async () => {
+      const p = await party();
+      const { ticketId, code } = await p.comp("Ann");
+      const scanKey = randomUUID();
+      const first = (await p.send(code, { scanKey })).json();
+      expect(first.outcome).toBe("admitted");
+      await p.send(code, out);
+      expect((await p.send(code, { scanKey })).json()).toEqual(first);
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+      // With re-entry on, the retry still only replays rather than letting them in again.
+      await allowReentry(p);
+      expect((await p.send(code, { scanKey })).json()).toEqual(first);
+      expect((await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).isInside).toBe(
+        false,
+      );
+    });
+
+    it("turns away a code that isn't a ticket on the way out too", async () => {
+      const p = await party();
+      expect((await p.send("nope", out)).json()).toEqual({
+        outcome: "invalid_ticket",
+        reason: "unknown",
+      });
+      const { orderId, code } = await p.comp("Bea");
+      await p.call("POST", `${p.prom.base}/comps/${orderId}/void`);
+      expect((await p.send(code, out)).json()).toEqual({
+        outcome: "invalid_ticket",
+        reason: "cancelled",
+      });
+    });
   });
 });

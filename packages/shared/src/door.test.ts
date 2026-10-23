@@ -137,8 +137,52 @@ describe("describeScan", () => {
       tone: "stop",
       title: "Waiver missing",
       lines: ["Ann Lee", "Their parent or guardian hasn't signed the waiver yet."],
-      overridable: true,
+      override: "waiver_missing",
     });
+  });
+
+  it("keeps out someone who left a lock-in event, with when they left, and offers an override", () => {
+    const result = doorScanResultSchema.parse({
+      outcome: "reentry_denied",
+      ticket,
+      leftAt: "2026-05-03T03:05:00.000Z",
+    });
+    expect(describeScan(result, "America/New_York")).toEqual({
+      tone: "stop",
+      title: "No re-entry",
+      lines: [
+        "Ann Lee",
+        "They checked out at 11:05 PM, and this event doesn't let people back in.",
+      ],
+      override: "reentry_denied",
+    });
+  });
+
+  it("says whether someone checking out can come back in", () => {
+    const out = (reentryAllowed: boolean) =>
+      describeScan({ outcome: "checked_out", ticket, reentryAllowed }, "America/New_York");
+    expect(out(false)).toEqual({
+      tone: "go",
+      title: "Checked out",
+      lines: ["Ann Lee", "They can't come back in tonight."],
+    });
+    expect(out(true).lines[1]).toBe("They can come back in with the same ticket.");
+  });
+
+  it("warns when someone checking out isn't inside, saying when they left if they did", () => {
+    const result = doorScanResultSchema.parse({
+      outcome: "not_inside",
+      ticket,
+      leftAt: "2026-05-03T03:05:00.000Z",
+    });
+    expect(describeScan(result, "America/New_York")).toEqual({
+      tone: "warn",
+      title: "Not checked in",
+      lines: ["Ann Lee", "They already checked out at 11:05 PM."],
+    });
+    expect(
+      describeScan({ outcome: "not_inside", ticket, leftAt: null }, "America/New_York").lines[1],
+    ).toBe("This ticket hasn't been used to get in yet.");
   });
 
   it("says why a ticket won't get anyone in", () => {
@@ -157,7 +201,13 @@ describe("doorScanSchema", () => {
     const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
     expect(
       doorScanSchema.parse({ scanKey, code: "abc", overrideReason: " Paper waiver " }),
-    ).toEqual({ scanKey, code: "abc", overrideReason: "Paper waiver" });
+    ).toEqual({
+      scanKey,
+      code: "abc",
+      direction: "in",
+      overrideReason: "Paper waiver",
+      override: "waiver_missing",
+    });
     expect(doorScanSchema.safeParse({ scanKey, code: "abc", overrideReason: " ok " }).success).toBe(
       false,
     );
@@ -167,12 +217,26 @@ describe("doorScanSchema", () => {
 
   it("trims the scanned code and turns away an empty one", () => {
     const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
-    expect(doorScanSchema.parse({ scanKey, code: " abc\n" })).toEqual({ scanKey, code: "abc" });
+    expect(doorScanSchema.parse({ scanKey, code: " abc\n" })).toMatchObject({
+      scanKey,
+      code: "abc",
+    });
     expect(doorScanSchema.safeParse({ scanKey, code: "  " }).success).toBe(false);
   });
 
   it("lets a long QR code through, to be answered as not a ticket", () => {
     const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
     expect(doorScanSchema.safeParse({ scanKey, code: "x".repeat(1000) }).success).toBe(true);
+  });
+
+  it("scans in and overrides a missing waiver unless told otherwise, as older apps expect", () => {
+    const scanKey = "01a16685-93bb-72a0-ade3-a9d89f418403";
+    expect(doorScanSchema.parse({ scanKey, code: "abc" })).toMatchObject({
+      direction: "in",
+      override: "waiver_missing",
+    });
+    expect(doorScanSchema.safeParse({ scanKey, code: "abc", direction: "sideways" }).success).toBe(
+      false,
+    );
   });
 });

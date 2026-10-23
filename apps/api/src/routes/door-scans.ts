@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from "@ticketapp/db";
+import { Prisma, type PrismaClient, type ScanOutcome } from "@ticketapp/db";
 import {
   doorScanSchema,
   type DoorScanResult,
@@ -48,10 +48,13 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
   app.post("/orgs/:orgId/events/:eventId/scans", async (request) => {
     const { orgId, eventId } = parse(eventParamsSchema, request.params);
     const { user } = await requireOrgPermission(prisma, request, orgId, "checkin.scan");
-    const { scanKey, code, overrideReason } = parse(doorScanSchema, request.body);
+    const { scanKey, code, direction, overrideReason, override } = parse(
+      doorScanSchema,
+      request.body,
+    );
     const event = await prisma.event.findFirst({
       where: { id: eventId, organizationId: orgId },
-      select: { status: true, endsAt: true },
+      select: { status: true, endsAt: true, reentryAllowed: true },
     });
     if (!event) throw new HttpError(404, "Event not found");
     // The same events the door app's picker offers: a device left on an event that was cancelled
@@ -62,10 +65,9 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
 
     return prisma
       .$transaction(async (tx): Promise<DoorScanResult> => {
-        const scannedAt = new Date();
         const record = (
           ticketId: string | null,
-          outcome: "ADMITTED" | "ALREADY_INSIDE" | "WAIVER_MISSING" | "INVALID_TICKET",
+          outcome: ScanOutcome,
           // Set when staff let them in despite the outcome; that counts as an admission.
           reason: string | null = null,
         ) =>
@@ -73,15 +75,48 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
             data: {
               eventId,
               ticketId,
-              direction: "IN",
+              direction: direction === "in" ? "IN" : "OUT",
               outcome,
               overrideReason: reason,
               staffUserId: user.id,
-              scannedAt,
-              // Only an admission is ever replayed, so only an admission keeps its key.
-              scanKey: outcome === "ADMITTED" || reason !== null ? scanKey : null,
+              // Taken when the scan is recorded, which for one that moves them in or out is while the
+              // ticket's row is locked, so the record's order matches the order they happened in.
+              scannedAt: new Date(),
+              // Only a scan that moved someone in or out is ever replayed, so only those keep a key.
+              scanKey:
+                outcome === "ADMITTED" || outcome === "CHECKED_OUT" || reason !== null
+                  ? scanKey
+                  : null,
             },
           });
+        // A retry of the scan that let them in or out, sent because its answer was lost, gets that
+        // answer again: staff never saw the green, so "already checked in" would send the holder
+        // away. A retry racing its original waits on the ticket's row lock, so it finds the scan too.
+        const replayed = async (ticketId: string) => {
+          const earlier = await tx.scanEvent.findUnique({
+            where: { scanKey },
+            select: { eventId: true, ticketId: true, staffUserId: true, direction: true },
+          });
+          if (!earlier) return false;
+          if (
+            earlier.ticketId !== ticketId ||
+            earlier.eventId !== eventId.toLowerCase() ||
+            earlier.staffUserId !== user.id ||
+            earlier.direction !== (direction === "in" ? "IN" : "OUT")
+          ) {
+            throw new HttpError(409, "That scan was already recorded for another ticket");
+          }
+          return true;
+        };
+        /** When they last checked out, if they have. */
+        const lastCheckOut = async (ticketId: string) =>
+          (
+            await tx.scanEvent.findFirst({
+              where: { ticketId, direction: "OUT", outcome: "CHECKED_OUT" },
+              orderBy: [{ scannedAt: "desc" }, { id: "desc" }],
+              select: { scannedAt: true },
+            })
+          )?.scannedAt ?? null;
 
         // Postgres text can't hold a zero byte, and no ticket code has one: answer it before the
         // lookups, which would fail on it.
@@ -109,12 +144,9 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           await record(null, "INVALID_TICKET");
           return { outcome: "invalid_ticket", reason: ticket ? "other_event" : "unknown" };
         }
-        const reason = invalidReason(ticket);
-        if (reason) {
-          await record(ticket.id, "INVALID_TICKET");
-          return { outcome: "invalid_ticket", reason };
-        }
-
+        // Scans of the same ticket take turns from here, so whether they're inside, whether they
+        // left, and what that lets them do can't change under a scan that's deciding.
+        await tx.$queryRaw`SELECT id FROM "Ticket" WHERE id = ${ticket.id}::uuid FOR UPDATE`;
         const { attendee, ticketType, isInside, ...waiver } = await tx.ticket.findUniqueOrThrow({
           where: { id: ticket.id },
           select: {
@@ -130,41 +162,62 @@ export async function doorScanRoutes(app: FastifyInstance, { prisma }: { prisma:
           attendeeName: `${attendee.firstName} ${attendee.lastName}`,
           ticketTypeName: ticketType.name,
         };
+        const checkedOut = {
+          outcome: "checked_out",
+          ticket: details,
+          reentryAllowed: event.reentryAllowed,
+        } as const;
+        // A retry gets its first answer whatever has happened since, such as them going back out.
+        if (await replayed(ticket.id)) {
+          return direction === "in" ? { outcome: "admitted", ticket: details } : checkedOut;
+        }
+        const reason = invalidReason(ticket);
 
+        if (direction === "out") {
+          // Someone inside is let out whatever has happened to their ticket since it got them in.
+          if (isInside) {
+            await tx.ticket.update({ where: { id: ticket.id }, data: { isInside: false } });
+            await record(ticket.id, "CHECKED_OUT");
+            return checkedOut;
+          }
+          if (reason) {
+            await record(ticket.id, "INVALID_TICKET");
+            return { outcome: "invalid_ticket", reason };
+          }
+          await record(ticket.id, "NOT_INSIDE");
+          return { outcome: "not_inside", ticket: details, leftAt: await lastCheckOut(ticket.id) };
+        }
+
+        if (reason) {
+          await record(ticket.id, "INVALID_TICKET");
+          return { outcome: "invalid_ticket", reason };
+        }
+
+        // Someone who checked out is coming back: the event's re-entry rule decides, and their
+        // waiver isn't asked about again, since it got them in once already.
+        const leftAt = isInside ? null : await lastCheckOut(ticket.id);
+        if (leftAt && !event.reentryAllowed && !(overrideReason && override === "reentry_denied")) {
+          await record(ticket.id, "REENTRY_DENIED");
+          return { outcome: "reentry_denied", ticket: details, leftAt };
+        }
         // Someone already inside is told so below, whatever their waiver says: they got in once.
         // A waiver signed since the override was asked for needs no override, so none is recorded.
-        const missing = isInside ? null : waiverMissing(waiver);
-        if (missing && !overrideReason) {
+        const missing = isInside || leftAt ? null : waiverMissing(waiver);
+        if (missing && !(overrideReason && override === "waiver_missing")) {
           await record(ticket.id, "WAIVER_MISSING");
           return { outcome: "waiver_missing", ticket: details, reason: missing };
         }
+        // The answer staff let them in past, if it still holds; one that has cleared since (re-entry
+        // turned on, a waiver signed) needs no override, so none is recorded.
+        const overridden =
+          leftAt && !event.reentryAllowed ? "REENTRY_DENIED" : missing ? "WAIVER_MISSING" : null;
 
         // Only one of two devices scanning the same ticket at once gets to let them in; the other
-        // waits on the row and then finds them already inside.
-        const { count } = await tx.ticket.updateMany({
-          where: { id: ticket.id, status: "VALID", isInside: false },
-          data: { isInside: true },
-        });
-        if (count === 1) {
-          if (missing && overrideReason) await record(ticket.id, "WAIVER_MISSING", overrideReason);
+        // waits on the row lock above and then finds them already inside.
+        if (!isInside) {
+          await tx.ticket.update({ where: { id: ticket.id }, data: { isInside: true } });
+          if (overridden) await record(ticket.id, overridden, overrideReason ?? null);
           else await record(ticket.id, "ADMITTED");
-          return { outcome: "admitted", ticket: details };
-        }
-        // A retry of the scan that let them in, sent because its answer was lost, gets that answer
-        // again: staff never saw the green, so "already checked in" would send the holder away.
-        // A retry racing its original waits on the row above, so it finds the admission here too.
-        const earlier = await tx.scanEvent.findUnique({
-          where: { scanKey },
-          select: { eventId: true, ticketId: true, staffUserId: true },
-        });
-        if (earlier) {
-          if (
-            earlier.ticketId !== ticket.id ||
-            earlier.eventId !== eventId.toLowerCase() ||
-            earlier.staffUserId !== user.id
-          ) {
-            throw new HttpError(409, "That scan was already recorded for another ticket");
-          }
           return { outcome: "admitted", ticket: details };
         }
         const admitted = await tx.scanEvent.findFirst({

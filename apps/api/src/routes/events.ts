@@ -24,6 +24,7 @@ const eventFields = {
   startsAt: true,
   endsAt: true,
   capacity: true,
+  reentryAllowed: true,
   status: true,
 } as const;
 
