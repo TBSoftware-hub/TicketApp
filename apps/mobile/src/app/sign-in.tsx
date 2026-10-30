@@ -3,6 +3,7 @@ import { useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
+import { PrivacyLink } from "@/components/privacy-link";
 import { api, ApiError } from "@/lib/api";
 import { useSession, type Staff } from "@/lib/session";
 import { colors, ui } from "@/lib/theme";
@@ -147,6 +148,7 @@ export default function SignIn() {
               />
             </>
           )}
+          <PrivacyLink />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

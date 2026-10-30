@@ -9,6 +9,7 @@ import {
 } from "../../../../lib/public-events";
 import { formatPrice } from "../../../../lib/ticket-types";
 import { ShareButton } from "./share-button";
+import { SiteFooter } from "../../../site-footer";
 
 type Params = Promise<{ orgSlug: string; eventSlug: string }>;
 
@@ -96,6 +97,7 @@ export default async function PublicEventPage({ params }: { params: Params }) {
           )
         )}
       </section>
+      <SiteFooter />
     </main>
   );
 }

@@ -33,6 +33,7 @@ function RootNavigator() {
       <Stack.Protected guard={!session}>
         <Stack.Screen name="sign-in" />
       </Stack.Protected>
+      <Stack.Screen name="privacy" />
     </Stack>
   );
 }
