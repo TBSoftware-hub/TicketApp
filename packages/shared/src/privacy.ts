@@ -36,7 +36,7 @@ export const PRIVACY_POLICY: { updated: string; intro: string[]; sections: Priva
     {
       heading: "The TicketApp Door app",
       blocks: [
-        "The Door app is for school staff and volunteers. You can only sign in with an email address your school has already invited; the app can't create accounts.",
+        "The Door app is for school staff and volunteers. You can only sign in with an email address that already has a TicketApp account, which schools set up by inviting their staff on the dashboard; the app itself can't create accounts.",
         {
           bullets: [
             "Your email address, to send you a sign-in code.",
@@ -83,7 +83,8 @@ export const PRIVACY_POLICY: { updated: string; intro: string[]; sections: Priva
     {
       heading: "Children and students",
       blocks: [
-        "TicketApp is used by parents, adults and schools, not by children on their own. Information about students comes from their school or from the parent or guardian who buys their ticket. Where a student's information is part of their school record, we handle it as a service provider to the school, which stays in charge of it under laws such as FERPA.",
+        "Students may buy their own tickets and fill in and sign waivers themselves. When the attendee is a minor, an event can also require a parent or guardian to sign, and we send them a link to do so. Other information about students comes from their school (such as a roster) or from the parent or guardian who buys their ticket. Where a student's information is part of their school record, we handle it as a service provider to the school, which stays in charge of it under laws such as FERPA.",
+        "Tickets for children under 13 should be bought by a parent, guardian or the school. If we learn we collected information directly from a child under 13 without that consent, we'll delete it.",
         "A parent or guardian can ask to see, correct or delete their child's information by contacting the school or us.",
       ],
     },
