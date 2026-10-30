@@ -127,7 +127,9 @@ notes in both stores.
 - **Data the app collects** (for Apple's privacy labels and Play's data safety form): the staff
   member's email address, for sign-in and app functionality, linked to them, not used for
   tracking, encrypted in transit. Scan records (who was admitted, when and by whom) are app
-  functionality data. No analytics, ads or third-party tracking.
+  functionality data. The app also downloads the event's attendee names and check-in status
+  (other people's names, for app functionality, kept on the phone until sign-out). No analytics,
+  ads or third-party tracking.
 - **Account deletion**: the door app can't create accounts. Its sign-in only works for an email
   that already has a TicketApp account, which a school makes by inviting someone on the dashboard;
   any other address is emailed a note to ask their school for an invite. Apple's in-app deletion

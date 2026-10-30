@@ -15,7 +15,13 @@ export default function Privacy() {
   return (
     <SafeAreaView style={ui.screen}>
       <ScrollView contentContainerStyle={ui.content}>
-        <Pressable accessibilityRole="button" onPress={back} hitSlop={12}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          onPress={back}
+          hitSlop={12}
+          style={styles.backButton}
+        >
           <Text style={styles.back}>‹ Back</Text>
         </Pressable>
         <Text style={ui.eyebrow}>TICKETAPP</Text>
@@ -58,6 +64,7 @@ function Block({ block }: { block: PrivacyBlock }) {
 }
 
 const styles = StyleSheet.create({
+  backButton: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
   back: { color: colors.accent, fontSize: 16, fontWeight: "600" },
   section: { gap: 8, marginTop: 12 },
   bullet: { flexDirection: "row", gap: 8, paddingLeft: 4 },

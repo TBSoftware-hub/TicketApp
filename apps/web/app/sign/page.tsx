@@ -3,6 +3,7 @@ import { api, errorMessage } from "../../lib/api";
 import { formatEventTime } from "../../lib/events";
 import type { GuardianRequest } from "../../lib/guardian-signatures";
 import { GuardianSignForm } from "./sign-form";
+import { SiteFooter } from "../site-footer";
 
 export const metadata: Metadata = { title: "Sign a waiver", robots: { index: false } };
 
@@ -62,6 +63,7 @@ export default async function SignPage({
         </div>
       </dl>
       <GuardianSignForm token={token} initial={request} />
+      <SiteFooter />
     </main>
   );
 }

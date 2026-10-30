@@ -3,6 +3,7 @@ import { api } from "../../lib/api";
 import { ROLE_LABELS } from "../../lib/roles";
 import { acceptInvitation } from "../actions";
 import type { Role } from "@ticketapp/shared";
+import { SiteFooter } from "../site-footer";
 
 export const metadata: Metadata = { title: "Join your team · TicketApp" };
 
@@ -66,6 +67,7 @@ export default async function InvitePage({
         )}
         <button type="submit">Accept and sign in</button>
       </form>
+      <SiteFooter />
     </main>
   );
 }
