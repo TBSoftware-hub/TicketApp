@@ -19,9 +19,9 @@ Everything here runs from `apps/mobile`. Use `npx eas-cli@latest` wherever the E
 - `app.json` answers Apple's export compliance question (the app only uses HTTPS, so no
   non-exempt encryption) and strips Android permissions the app doesn't use (draw over other apps,
   read and write storage), which keeps the Play data safety form short.
-- `.env.production` bakes the production API address into store builds. A build always talks to
-  the address it was built with, so if the API moves to `api.myschooltix.com`, change that file
-  first and make a new build.
+- `.env.production` bakes the production API address (`https://api.myschooltix.com`) into store
+  builds. A build always talks to the address it was built with, so if the API ever moves, change
+  that file first and make a new build.
 - The API has a review sign-in (below) so Apple's and Google's reviewers can get past the email
   code.
 
