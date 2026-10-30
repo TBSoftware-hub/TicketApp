@@ -12,6 +12,7 @@ export * from "./invitations";
 export * from "./money";
 export * from "./orders";
 export * from "./orgs";
+export * from "./privacy";
 export * from "./promo-codes";
 export * from "./roles";
 export * from "./roster";

@@ -4,6 +4,7 @@ import { api, errorMessage } from "../../../../../../lib/api";
 import { formatEventTime } from "../../../../../../lib/events";
 import { publicEventPath } from "../../../../../../lib/public-events";
 import { formatPrice } from "../../../../../../lib/ticket-types";
+import { SiteFooter } from "../../../../../site-footer";
 
 export const metadata: Metadata = { title: "Your order", robots: { index: false } };
 
@@ -178,6 +179,7 @@ export default async function OrderPage({
           <strong>{formatPrice(order.totalCents)}</strong>
         </span>
       </section>
+      <SiteFooter />
     </main>
   );
 }

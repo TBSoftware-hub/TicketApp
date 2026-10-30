@@ -4,6 +4,7 @@ import { api } from "../../../../../lib/api";
 import { formatEventTime } from "../../../../../lib/events";
 import { canBuyOnline, loadPublicEvent, publicEventPath } from "../../../../../lib/public-events";
 import { CheckoutForm } from "./checkout-form";
+import { SiteFooter } from "../../../../site-footer";
 
 type Params = Promise<{ orgSlug: string; eventSlug: string }>;
 
@@ -81,6 +82,7 @@ export default async function CheckoutPage({
           }}
         />
       )}
+      <SiteFooter />
     </main>
   );
 }

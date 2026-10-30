@@ -9,6 +9,7 @@ import { Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from "
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "@/components/button";
 import { SyncProblems } from "@/components/offline-status";
+import { PrivacyLink } from "@/components/privacy-link";
 import { StaffBar } from "@/components/staff-bar";
 import { ApiError, UNREACHABLE } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -54,6 +55,7 @@ export default function EventPicker() {
         sections={sections}
         keyExtractor={(e) => e.id}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+        ListFooterComponent={<PrivacyLink />}
         ListHeaderComponent={
           <View style={{ gap: 12 }}>
             <StaffBar />

@@ -121,7 +121,9 @@ notes in both stores.
 
 ## Store listing
 
-- **Privacy policy URL**: both stores require one. The site doesn't have a privacy page yet.
+- **Privacy policy URL**: `https://app.myschooltix.com/privacy`. The door app shows the same policy
+  from its sign-in and event screens. The text lives in `packages/shared/src/privacy.ts`; if it
+  changes, check the answers below still match.
 - **Data the app collects** (for Apple's privacy labels and Play's data safety form): the staff
   member's email address, for sign-in and app functionality, linked to them, not used for
   tracking, encrypted in transit. Scan records (who was admitted, when and by whom) are app

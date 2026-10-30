@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { SignInForm } from "./sign-in-form";
+import { SiteFooter } from "../site-footer";
 
 export const metadata: Metadata = { title: "Sign in · TicketApp" };
 
@@ -20,6 +21,7 @@ export default async function SignInPage({
       )}
       <p className="muted">We&apos;ll email you a link that signs you in. No password needed.</p>
       <SignInForm />
+      <SiteFooter />
     </main>
   );
 }
